@@ -44,6 +44,33 @@
         .section p {
             margin-bottom: 15px;
         }
+        .images-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .images-row img {
+            width: 48%;
+            max-width: 100%;
+            height: auto;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .video-container {
+            position: relative;
+            padding-bottom: 56.25%; /* 16:9 aspect ratio */
+            height: 0;
+            overflow: hidden;
+            max-width: 100%;
+            background: #000;
+        }
+        .video-container iframe {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
         .code-block {
             background: #f4f4f4;
             border-left: 5px solid #ccc;
@@ -61,22 +88,60 @@
 <body>
     <div class="container markdown-body">
         <div class="header">
-            <h1>[Project Title]</h1>
-            <p>[A concise tagline or summary of your research]</p>
+            <h1>SOUS VIDE</h1>
+            <p>Scene Optimized Understanding via Synthesized Visual Inertial Data from Experts</p>
+        </div>
+        <img src="assets/images/PipelineDiagram_v3.png" alt="Sous Vide Pipeline" style="max-width: 100%; border: 1px solid #ddd;">
+        <!-- <img src="assets/images/FirstFlights.png" alt="First Flights" style="max-width: 100%; border: 1px solid #ddd;">
+
+        <div class="images-row">
+            <img src="assets/images/Samples_v3.png" alt="Sous Vide Pipeline">
+            <img src="assets/images/Novel.png" alt="Result 2">
+        </div> -->
+        <div class="section">
+            <h2>Demonstration</h2>
+            <p>Watch the videos below for a demonstration of our project in action:</p>
+            <div class="video-container">
+                <iframe src="https://youtu.be/IhZeXXJ47Js" frameborder="0" allowfullscreen></iframe>
+            </div>
+            <div class="video-container" style="margin-top: 20px;">
+                <iframe src="https://youtu.be/NKAVm2tnyTc" frameborder="0" allowfullscreen></iframe>
+            </div>
         </div>
 
         <div class="section">
-            <h2>About the Project</h2>
-            <p>This project introduces [describe your research briefly], offering a novel approach to [key research problem]. The goal is to [state primary objective or significance].</p>
-            <p>The paper demonstrates significant advancements in [specific domain, e.g., autonomous drone navigation, neural network interpretability, etc.], providing practical insights for researchers and practitioners alike.</p>
+            <h2>Abstract</h2>
+            <p>We propose a new simulator, training approach, and
+            policy architecture, collectively called SOUS VIDE, for end-to-
+            end visual drone navigation. Our trained policies exhibit zero-
+            shot sim-to-real transfer with robust real-world performance
+            using only on-board perception and computation. Our simulator,
+            called FiGS, couples a computationally simple drone dynamics
+            model with a high visual fidelity Gaussian Splatting scene re-
+            construction. FiGS can quickly simulate drone flights producing
+            photo-realistic images at over 100 fps. We use FiGS to collect
+            100k-300k observation-action pairs from an expert MPC with
+            privileged state and dynamics information, randomized over
+            dynamics parameters and spatial disturbances. We then distill
+            this expert MPC into an end-to-end visuomotor policy with a
+            lightweight neural architecture, called SV-Net. SV-Net processes
+            color image and IMU data streams into low-level body rate and
+            thrust commands at 20Hz onboard a drone. Crucially, SV-Net
+            includes a Rapid Motor Adaptation (RMA) module that adapts
+            at runtime to variations in the dynamics parameters of the drone.
+            In extensive hardware experiments, we show SOUS VIDE polices
+            to be robust to ±30% mass and thrust variations, 40 m/s wind
+            gusts, 60% changes in ambient brightness, shifting or removing
+            objects from the scene, and people moving aggressively through
+            the drone’s visual field. The project page and code can be found</p>
         </div>
 
         <div class="section">
             <h2>Key Contributions</h2>
             <ul>
-                <li>Innovative [method/algorithm/approach] to [specific problem].</li>
-                <li>Extensive experimental validation across [datasets/environments].</li>
-                <li>Comprehensive evaluation metrics for [specific task].</li>
+                <li><strong>Flying in Gaussian Splats (FiGS):</strong>A simulator that couples a GSplat scene model with a lightweight drone dynamics model to yield photorealistic visual flight data.</li>
+                <li><strong>Expert Demonstration Data:</strong>We use an MPC expert to generate behavior cloning data in FiGS with randomized dynamics parameters and positional disturbances.</li>
+                <li><strong>SV-Net:</strong>We introduce a lightweight policy architecture that takes image and IMU data to infer thrust and body rate control actions.  The policy uses an RMA module to adapt online to varying flight conditions.</li>
             </ul>
         </div>
 
@@ -113,12 +178,12 @@
 
         <div class="section">
             <h2>Acknowledgments</h2>
-            <p>We extend our gratitude to [individuals, institutions, or funding agencies].</p>
+            <p>This work was supported in part by DARPA grant HR001120C0107, ONR grant N00014-23-1-2354, and Lincoln Labs grant 7000603941. The second author was supported on an NDSEG fellowhsip. Toyota Research Institute provided funds to support this work.</p>
         </div>
 
         <div class="section">
             <h2>License</h2>
-            <p>This project is licensed under the [License Name] License. See the <a href="LICENSE">LICENSE</a> file for more details.</p>
+            <p>This project is licensed under the GNU General Public License v3.0. See the <a href="LICENSE">LICENSE</a> file for more details.</p>
         </div>
 
         <div class="footer">
