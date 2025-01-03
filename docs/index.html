@@ -1,218 +1,316 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Research Project: [Project Title]</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.1.0/github-markdown.min.css">
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 0;
-            line-height: 1.6;
-            background-color: #f9f9f9;
-            color: #333;
-        }
-        .container {
-            max-width: 800px;
-            margin: 50px auto;
-            padding: 20px;
-            background: #fff;
-            border-radius: 5px;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-        }
-        .header {
-            text-align: center;
-            margin-bottom: 40px;
-        }
-        .header h1 {
-            font-size: 2.5em;
-        }
-        .header p {
-            font-size: 1.2em;
-            color: #555;
-        }
-        .section {
-            margin-bottom: 30px;
-        }
-        .section h2 {
-            font-size: 1.8em;
-            color: #444;
-            margin-bottom: 10px;
-        }
-        .section p {
-            margin-bottom: 15px;
-        }
-        .images-row {
-            display: flex;
-            justify-content: space-between;
-            gap: 10px;
-        }
-        .images-row img {
-            width: 48%;
-            max-width: 100%;
-            height: auto;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-        }
-        .video-container {
-            position: relative;
-            padding-bottom: 56.25%; /* 16:9 aspect ratio */
-            height: 0;
-            overflow: hidden;
-            max-width: 100%;
-            background: #000;
-        }
-        .video-container iframe {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-        }
-        .code-block {
-            background: #f4f4f4;
-            border-left: 5px solid #ccc;
-            padding: 10px;
-            font-family: Consolas, monaco, monospace;
-        }
-        .footer {
-            text-align: center;
-            margin-top: 50px;
-            font-size: 0.9em;
-            color: #666;
-        }
-    </style>
+  <meta charset="utf-8">
+  <meta name="description"
+        content="SOUS VIDE creates end-to-end, zero-shot drone navigation policies using a simulator that combines Gaussian Splats with a lightweight 9-dimensional drone dynamics model">
+  <meta name="keywords" content="Behaviour Cloning, Gaussian Splats, Zero-Shot Learning">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SOUS VIDE: Cooking Visual Drone Navigation Policies in a Gaussian Splatting Vacuum</title>
+
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-341DGY43ET"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+
+    function gtag() {
+      dataLayer.push(arguments);
+    }
+
+    gtag('js', new Date());
+
+    gtag('config', 'G-341DGY43ET');
+  </script>
+
+  <link href="https://fonts.googleapis.com/css?family=Google+Sans|Noto+Sans|Castoro"
+        rel="stylesheet">
+
+  <link rel="stylesheet" href="./static/css/bulma.min.css">
+  <link rel="stylesheet" href="./static/css/bulma-carousel.min.css">
+  <link rel="stylesheet" href="./static/css/bulma-slider.min.css">
+  <link rel="stylesheet" href="./static/css/fontawesome.all.min.css">
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
+  <link rel="stylesheet" href="./static/css/index.css">
+  <link rel="icon" href="./static/images/favicon.svg">
+
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+  <script defer src="./static/js/fontawesome.all.min.js"></script>
+  <script src="./static/js/bulma-carousel.min.js"></script>
+  <script src="./static/js/bulma-slider.min.js"></script>
+  <script src="./static/js/index.js"></script>
 </head>
 <body>
-    <div class="container markdown-body">
-        <div class="header">
-            <h1>SOUS VIDE</h1>
-            <p>Scene Optimized Understanding via Synthesized Visual Inertial Data from Experts</p>
-        </div>
-        <img src="assets/images/PipelineDiagram_v3.png" alt="Sous Vide Pipeline" style="max-width: 100%; border: 1px solid #ddd;">
-        <!-- <img src="assets/images/FirstFlights.png" alt="First Flights" style="max-width: 100%; border: 1px solid #ddd;">
 
-        <div class="images-row">
-            <img src="assets/images/Samples_v3.png" alt="Sous Vide Pipeline">
-            <img src="assets/images/Novel.png" alt="Result 2">
-        </div> -->
-        <div class="section">
-            <h2>Demonstration</h2>
-            <p>Main Videos:</p>
-            <div class="video-container">
-                <iframe src="https://www.youtube.com/embed/IhZeXXJ47Js" frameborder="0" allowfullscreen></iframe>
-            </div>
-            <div class="video-container" style="margin-top: 20px;">
-                <iframe src="https://www.youtube.com/embed/NKAVm2tnyTc" frameborder="0" allowfullscreen></iframe>
-            </div>
-        </div>
+<nav class="navbar" role="navigation" aria-label="main navigation">
+  <div class="navbar-brand">
+    <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false">
+      <span aria-hidden="true"></span>
+      <span aria-hidden="true"></span>
+      <span aria-hidden="true"></span>
+    </a>
+  </div>
+  <div class="navbar-menu">
+    <div class="navbar-start" style="flex-grow: 1; justify-content: center;">
+      <a class="navbar-item" href="https://msl.stanford.edu">
+      <span class="icon">
+          <i class="fas fa-home"></i>
+      </span>
+      </a>
 
-        <div class="section">
-            <h2>Abstract</h2>
-            <p>We propose a new simulator, training approach, and
-            policy architecture, collectively called SOUS VIDE, for end-to-
-            end visual drone navigation. Our trained policies exhibit zero-
-            shot sim-to-real transfer with robust real-world performance
-            using only on-board perception and computation. Our simulator,
-            called FiGS, couples a computationally simple drone dynamics
-            model with a high visual fidelity Gaussian Splatting scene re-
-            construction. FiGS can quickly simulate drone flights producing
-            photo-realistic images at over 100 fps. We use FiGS to collect
-            100k-300k observation-action pairs from an expert MPC with
-            privileged state and dynamics information, randomized over
-            dynamics parameters and spatial disturbances. We then distill
-            this expert MPC into an end-to-end visuomotor policy with a
-            lightweight neural architecture, called SV-Net. SV-Net processes
-            color image and IMU data streams into low-level body rate and
-            thrust commands at 20Hz onboard a drone. Crucially, SV-Net
-            includes a Rapid Motor Adaptation (RMA) module that adapts
-            at runtime to variations in the dynamics parameters of the drone.
-            In extensive hardware experiments, we show SOUS VIDE polices
-            to be robust to ±30% mass and thrust variations, 40 m/s wind
-            gusts, 60% changes in ambient brightness, shifting or removing
-            objects from the scene, and people moving aggressively through
-            the drone’s visual field. The project page and code can be found</p>
+      <div class="navbar-item has-dropdown is-hoverable">
+        <a class="navbar-link">
+          More Research
+        </a>
+        <div class="navbar-dropdown">
+          <a class="navbar-item" href="https://msl.stanford.edu/projects/epistemic_planning_filtering">
+            Epistemic Planning
+          </a>
+          <a class="navbar-item" href="https://splatmover.github.io">
+            Splat-Mover
+          </a>
+          <a class="navbar-item" href="https://tri-ml.github.io/stochastic_verification">
+            Stochastic Verification
+          </a>
         </div>
-
-        <div class="section">
-            <h2>Key Contributions</h2>
-            <ul>
-                <li><strong>Flying in Gaussian Splats (FiGS):</strong>A simulator that couples a GSplat scene model with a lightweight drone dynamics model to yield photorealistic visual flight data.</li>
-                <li><strong>Expert Demonstration Data:</strong>We use an MPC expert to generate behavior cloning data in FiGS with randomized dynamics parameters and positional disturbances.</li>
-                <li><strong>SV-Net:</strong>We introduce a lightweight policy architecture that takes image and IMU data to infer thrust and body rate control actions.  The policy uses an RMA module to adapt online to varying flight conditions.</li>
-            </ul>
-        </div>
-
-        <div class="section">
-            <h2>Getting Started</h2>
-            <p>The codebase accompanying this research is available on this repository. To replicate our experiments, follow these steps:</p>
-            <ol>
-                <li>Clone the repository:</li>
-                <div class="code-block">
-                    <code>git clone https://github.com/username/repository-name.git</code>
-                </div>
-                <li>Install dependencies:</li>
-                <div class="code-block">
-                    <code>pip install -r requirements.txt</code>
-                </div>
-                <li>Run the experiments:</li>
-                <div class="code-block">
-                    <code>python run_experiments.py</code>
-                </div>
-            </ol>
-        </div>
-
-        <div class="section">
-            <h2>Results</h2>
-            <p>This work introduces SOUS VIDE, a novel training
-                paradigm leveraging Gaussian Splatting and lightweight vi-
-                suomotor policy architectures for end-to-end drone navigation.
-                By coupling high-fidelity visual data synthesis with online
-                adaptation mechanisms, SOUS VIDE achieves zero-shot sim-
-                to-real transfer, demonstrating remarkable robustness to varia-
-                tions in mass, thrust, lighting, and dynamic scene changes. Our
-                experiments underscore the policy’s ability to generalize across
-                diverse scenarios, including complex and extended trajectories,
-                with graceful degradation under extreme conditions. Notably,
-                the integration of a streamlined adaptation module enabled the
-                policy to overcome limitations of prior visuomotor approaches,
-                offering a computationally efficient yet effective solution for
-                addressing model inaccuracies.
-                These findings highlight the potential of SOUS VIDE as
-                a foundation for future advancements in autonomous drone
-                navigation. While its robustness and versatility are evident,
-                challenges such as inconsistent performance in multi-objective
-                tasks suggest opportunities for improvement through more
-                sophisticated objective encodings. Further exploration into
-                scaling the approach to more complex environments and in-
-                corporating additional sensory modalities could enhance both
-                adaptability and reliability. Ultimately, this work paves the
-                way for deploying learned visuomotor policies in real-world
-                applications, bridging the gap between simulation and practical
-                autonomy in drone operations.</p>
-        </div>
-
-        <div class="section">
-            <h2>Publication</h2>
-            <p>This research is detailed in our paper titled <em>"[Paper Title]"</em>, published at [Conference/Journal Name].</p>
-            <p><a href="[link-to-paper]" target="_blank">Read the full paper here</a>.</p>
-        </div>
-
-        <div class="section">
-            <h2>Acknowledgments</h2>
-            <p>This work was supported in part by DARPA grant HR001120C0107, ONR grant N00014-23-1-2354, and Lincoln Labs grant 7000603941. The second author was supported on an NDSEG fellowhsip. Toyota Research Institute provided funds to support this work.</p>
-        </div>
-
-        <div class="section">
-            <h2>License</h2>
-            <p>This project is licensed under the GNU General Public License v3.0. See the <a href="LICENSE">LICENSE</a> file for more details.</p>
-        </div>
-
-        <div class="footer">
-            <p>&copy; 2024 [Your Name/Organization]. All rights reserved.</p>
-        </div>
+      </div>
     </div>
+
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-body">
+    <div class="container is-max-desktop">
+      <div class="columns is-centered">
+        <div class="column has-text-centered">
+          <h1 class="title is-1 publication-title">SOUS VIDE: Cooking Visual Drone Navigation Policies in a Gaussian Splatting Vacuum</h1>
+          <div class="is-size-5 publication-authors">
+            <span class="author-block">
+              <a href="https://msl.stanford.edu/people/junenlow">JunEn Low</a>,</span>
+            <span class="author-block">
+              <a href="https://msl.stanford.edu/people/maximilianadang">Maximilian Adang</a>,</span>
+            <span class="author-block">
+              <a href="https://msl.stanford.edu/people/javieryu">Javier Yu</a>,
+            </span>
+            <span class="author-block">
+              <a href="https://msl.stanford.edu/people/keikonagami">Keiko Nagami</a>,
+            </span>
+            <span class="author-block">
+              <a href="https://web.stanford.edu/~schwager/">Mac Schwager</a>,
+            </span>
+          </div>
+
+          <div class="is-size-5 publication-authors">
+            <span class="author-block">Stanford University</span>
+          </div>
+
+          <div class="column has-text-centered">
+            <div class="publication-links">
+              <!-- PDF Link. -->
+              <span class="link-block">
+                <a href="https://arxiv.org/abs/2412.16346"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="ai ai-arxiv"></i>
+                  </span>
+                  <span>arXiv</span>
+                </a>
+              </span>
+              <!-- Code Link. -->
+              <span class="link-block">
+                <a href="https://github.com/StanfordMSL/SousVide"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fab fa-github"></i>
+                  </span>
+                  <span>Code</span>
+                  </a>
+              </span>
+              <!-- Dataset Link. -->
+              <span class="link-block">
+                <a href="https://drive.google.com/drive/folders/1ZlHMpX21gEpfLsk2xmMi6XPzRP95VGms?usp=sharing"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="far fa-images"></i>
+                  </span>
+                  <span>Data</span>
+                  </a>
+              </span>
+              <!-- Videos Link. -->
+              <span class="link-block">
+                <a href="https://drive.google.com/drive/folders/1ZlHMpX21gEpfLsk2xmMi6XPzRP95VGms?usp=sharing"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fab fa-youtube"></i>
+                  </span>
+                  <span>Video</span>
+                </a>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="hero teaser">
+  <div class="container is-max-desktop">
+    <div class="hero-body">
+      <video id="teaser" autoplay muted loop playsinline height="100%">
+        <source src="./static/videos/dynamic_robustness.mp4"
+                type="video/mp4">
+      </video>
+      <h2 class="subtitle has-text-centered">
+        SOUS VIDE creates end-to-end, zero-shot visual drone navigation policies that are robust to scene changes.
+      </h2>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <!-- Abstract. -->
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Abstract</h2>
+        <div class="content has-text-justified">
+          <p>
+            We propose a new simulator, training approach, and policy architecture,
+            collectively called SOUS VIDE, for end-toend visual drone navigation.
+            Our trained policies exhibit zeroshot sim-to-real transfer with robust
+            real-world performance using only on-board perception and computation.
+            Our simulator, called FiGS, couples a computationally simple drone dynamics
+            model with a high visual fidelity Gaussian Splatting scene reconstruction.
+            FiGS can quickly simulate drone flights producing photorealistic images
+            at up to 130 fps. We use FiGS to collect 100k300k observation-action pairs
+            from an expert MPC with privileged state and dynamics information, randomized
+            over dynamics parameters and spatial disturbances. We then distill this
+            expert MPC into an end-to-end visuomotor policy with a lightweight neural
+            architecture, called SV-Net. SV-Net processes color image, optical flow
+            and IMU data streams into low-level body rate and thrust commands at 20Hz
+            onboard a drone. Crucially, SV-Net includes a Rapid Motor Adaptation (RMA)
+            module that adapts at runtime to variations in drone dynamics. In a campaign
+            of 105 hardware experiments, we show SOUS VIDE policies to be robust to 30%
+            mass variations, 40 m/s wind gusts, 60% changes in ambient brightness, shifting
+            or removing objects from the scene, and people moving aggressively through
+            the drone’s visual field. Code, data, and videos can be found in the links above.
+          </p>
+          <img id="pipeline-image", src="./static/images/PipelineDiagram_jy.png"
+          alt="SOUS VIDE Pipeline."/>
+        </div>
+      </div>
+    </div>
+    <!--/ Abstract. -->
+
+    <!-- Paper video. -->
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Video</h2>
+        <div class="publication-video">
+          <iframe src="https://www.youtube.com/embed/IhZeXXJ47Js?rel=0&amp;showinfo=0"
+                  frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+        </div>
+      </div>
+    </div>
+    <!--/ Paper video. -->
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container is-max-desktop">
+
+    <div class="columns is-centered">
+
+      <!-- Visual Effects. -->
+      <div class="column">
+        <div class="content">
+          <h2 class="title is-3">FiGS</h2>
+          <p>
+            Flying in Gaussian Splats (FiGS) is our lightweight simulator that renders images from a
+            Gaussian Splat along the trajectory solution of a simplified 9-dimensional drone dynamics
+            model to produce visual and state data. To produce this data, users need only provide a
+            short video recording of the scene with a single Aruco tag placed within it.
+          </p>
+          <img id="samples-image", src="./static/images/Samples_jy.png"
+          alt="Example data generation from FiGS."/>
+        </div>
+      </div>
+      <!--/ Visual Effects. -->
+      <div class="column">
+        <div class="content">
+          <h2 class="title is-3">SV-Net</h2>
+          <p>
+            We train a visuomotor navigation policy using our SV-Net architecture, detailed below.
+            Notably, the architecture incorporates a history network to perform a variant of Rapid
+            Motor Adaptation (RMA), effectively addressing variations in drone dynamics between the
+            real world and the simulation environment used to generate the training data.
+          </p>
+          <img id="samples-image", src="./static/images/DNN_Architecture_jy.png"
+          alt="Example data generation from FiGS."/>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <!-- Paper video. -->
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Videos</h2>
+        <div class="publication-video">
+          <iframe src="https://www.youtube.com/embed/IhZeXXJ47Js?rel=0&amp;showinfo=0"
+                  frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+        </div>
+      </div>
+    </div>
+    <!--/ Paper video. -->
+  </div>
+</section>
+
+<section class="section" id="BibTeX">
+  <div class="container is-max-desktop content">
+    <h2 class="title">BibTeX</h2>
+    <pre><code>@article{low2024sousvide,
+        author  = {Low, JunEn, and Adang, Max and Yu, Javier and Nagami, Keiko and Schwager, Mac},
+        title   = {SOUS VIDE: Cooking Visual Drone Navigation Policies in a Gaussian Splatting Vacuum},
+        journal = {IEEE Robotics and Automation Letters (under review)},
+        year    = {2024},
+        note    = {Available on arXiv: \url{https://arxiv.org/abs/2412.16346}},
+        archivePrefix = {arXiv},
+        eprint    = {2412.16346},
+        primaryClass = {cs.RO},
+}</code></pre>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="container">
+    <div class="content has-text-centered">
+      <a class="icon-link"
+         href="https://arxiv.org/abs/2412.16346">
+        <i class="fas fa-file-pdf"></i>
+      </a>
+      <a class="icon-link" href="https://github.com/StanfordMSL/SousVide" class="external-link" disabled>
+        <i class="fab fa-github"></i>
+      </a>
+    </div>
+    <div class="columns is-centered">
+      <div class="column is-8">
+        <div class="content">
+            <p>We thank <a href="https://github.com/nerfies/nerfies.github.io">Nerfies</a> for the website template.</p>
+            <p>This website is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by-sa/4.0/">Creative Commons Attribution-ShareAlike 4.0 International License</a>.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
 </body>
 </html>
