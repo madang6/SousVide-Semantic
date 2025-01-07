@@ -172,13 +172,13 @@
         <div class="content has-text-justified">
           <p>
             We propose a new simulator, training approach, and policy architecture,
-            collectively called SOUS VIDE, for end-toend visual drone navigation.
-            Our trained policies exhibit zeroshot sim-to-real transfer with robust
+            collectively called SOUS VIDE, for end-to-end visual drone navigation.
+            Our trained policies exhibit zero-shot sim-to-real transfer with robust
             real-world performance using only on-board perception and computation.
             Our simulator, called FiGS, couples a computationally simple drone dynamics
             model with a high visual fidelity Gaussian Splatting scene reconstruction.
             FiGS can quickly simulate drone flights producing photorealistic images
-            at up to 130 fps. We use FiGS to collect 100k300k observation-action pairs
+            at up to 130 fps. We use FiGS to collect 100k-300k observation-action pairs
             from an expert MPC with privileged state and dynamics information, randomized
             over dynamics parameters and spatial disturbances. We then distill this
             expert MPC into an end-to-end visuomotor policy with a lightweight neural
