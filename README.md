@@ -26,7 +26,7 @@ cd <repository-path>/SousVide/
 
 # Create and activate
 conda env create -f environment_x86.yml
-conda activate figs-env
+conda activate sv-env
 ```
 4) Download Example GSplats
 ```
