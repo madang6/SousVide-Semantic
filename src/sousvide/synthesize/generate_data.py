@@ -1,26 +1,27 @@
-from turtle import width
 import numpy as np
 import json
 import os
 from typing import Dict,Union,Tuple,List
 from tqdm.notebook import trange
+import figs.utilities.trajectory_helper as th
 
-from controller.vr_mpc import VehicleRateMPC
-from controller.pilot import Pilot
-import dynamics.quadcopter_config as qc
-import dynamics.quadcopter_simulate as qs
-import synthesize.trajectory_helper as th
-import synthesize.nerf_utils as nf
-import synthesize.data_utils as du
+import figs.tsplines.min_snap as ms
+from figs.simulator import Simulator
+from figs.control.vehicle_rate_mpc import VehicleRateMPC
+from figs.dynamics.model_specifications import generate_specifications
+import copy
+
+# from sousvide.controller.pilot import Pilot
+# import dynamics.quadcopter_config as qc
+# import dynamics.quadcopter_simulate as qs
+# import synthesize.trajectory_helper as th
+# import synthesize.nerf_utils as nf
+# import synthesize.data_utils as du
 import torch
 
-from synthesize.solvers import (
-    min_snap as ms,
-)
-
-def generate_rollout_data(cohort:str,courses:List[str],drone:str,method:str,
-                          nerf:nf.NeRF,
-                          Nro_tp:int,
+def generate_rollout_data(cohort_name:str,course_names:List[str],
+                          method_name:str='beta',policy_name:str='vrmpc_fr',frame_name:str='carl',
+                          Nro_tp:int=30,
                           Nro_sv:int=100,
                           Ntp_sc:int=10):
     
@@ -31,16 +32,14 @@ def generate_rollout_data(cohort:str,courses:List[str],drone:str,method:str,
     controller that has full knowledge. The flight data is saved to a .pt file in the cohort directory.
 
     Args:
-        cohort:         Name of the cohort.
-        courses:        Names of courses.
-        drone:          Name of the drone.
-        method:         Name of the method.
-        nerf:           NeRF model.
+        cohort_name:    Name of the cohort.
+        course_names:   Names of courses to generate over.
+        method_name:    Domain randomization parameters.
+        policy_name:    Name of the policy.
+        frame_name:     Name of the frame.
         Nro_tp:         Number of rollouts per time point.
         Nro_sv:         Number of rollouts per save.
         Ntp_sc:         Number of time points per second.
-        batch_size:     Number of rollouts to generate in a single batch.
-        plot_sample_size:  Number of sample flights to plot per course.
 
     Returns:
         None:           (flight data saved to cohort directory)
@@ -50,52 +49,65 @@ def generate_rollout_data(cohort:str,courses:List[str],drone:str,method:str,
     workspace_path = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
     
-    # Load drone and method configs
-    cohort_path = os.path.join(workspace_path,"cohorts",cohort)
-    drone_path  = os.path.join(workspace_path,"configs","drones",drone+".json")
-    method_path = os.path.join(workspace_path,"configs","methods",method+".json")
-
-    with open(drone_path) as json_file:
-        drone_config = json.load(json_file)
+    # Load configs
+    cohort_path = os.path.join(workspace_path,"cohorts",cohort_name)
+    method_path = os.path.join(workspace_path,"configs","method",method_name+".json")
+    policy_path = os.path.join(workspace_path,"configs","policy",policy_name+".json")
+    frame_path  = os.path.join(workspace_path,"configs","frame",frame_name+".json")
+        
     with open(method_path) as json_file:
         method_config = json.load(json_file)
         sample_set_config = method_config["sample_set"]
         trajectory_set_config = method_config["trajectory_set"]
-        drone_set_config = method_config["drone_set"]
-        
+        frame_set_config = method_config["frame_set"]
+
+    with open(policy_path) as json_file:
+        policy_config = json.load(json_file)
+
+    with open(frame_path) as json_file:
+        base_frame_config = json.load(json_file)   
+
     # Create cohort directory (if it does not exist)
     if not os.path.exists(cohort_path):
         os.makedirs(cohort_path)
 
-    # Generate base drone configuration
-    base_drone_config = qc.generate_preset_config(drone_config)
+    # Generate base drone specifications
+    base_frame_specs = generate_specifications(base_frame_config)
 
     # Print some useful information
     print("==========================================================================")
-    print("Cohort :",cohort)
-    print("Method :",method)
-    print("Drone  :",drone)
-    print("Courses:",courses)
+    print("Cohort :",cohort_name)
+    print("Method :",method_name)
+    print("Policy :",policy_name)
+    print("Frame  :",frame_name)
+    print("Courses:",course_names)
 
     # Generate rollouts for each course
-    for course in courses:
+    for course_name in course_names:
         # Load course_config
-        course_path = os.path.join(workspace_path,"configs","courses",course+".json")
+        course_path = os.path.join(workspace_path,"configs","course",course_name+".json")
 
         with open(course_path) as json_file:
             course_config = json.load(json_file)
 
-        # Generate ideal trajectory
-        Tpi,CPi = ms.solve(course_config)
-        tXUi = th.ts_to_tXU(Tpi,CPi,base_drone_config)
-
+        # Generate desired trajectory
+        output = ms.solve(course_config)
+        if output is not False:
+            Tpd,CPd = output
+            tXUd = th.TS_to_tXU(Tpd,CPd,base_frame_specs,policy_config["hz"])
+        else:
+            raise ValueError("Desired trajectory not feasible. Aborting.")
+        
+        # Generate simulator
+        simulator = Simulator(course_name,frame_name)
+        
         # Generate Sample Set Batches
-        Ntp = Ntp_sc*int(Tpi[-1])                                       # Number of time points per trajectory
+        Ntp = Ntp_sc*int(Tpd[-1])                                       # Number of time points per trajectory
         Nsp = Nro_tp*Ntp                                                # Number of sample points (total)
         
-        Tsp = np.tile(np.linspace(Tpi[0],Tpi[-1],Ntp+1)[:-1],Nro_tp)    # Entire sample points array
+        Tsp = np.tile(np.linspace(Tpd[0],Tpd[-1],Ntp+1)[:-1],Nro_tp)    # Entire sample points array
         Tsp += np.random.uniform(-1/Ntp_sc,1/Ntp_sc,Nsp)                # Add some noise to the sample points array
-        Tsp = np.clip(Tsp,Tpi[0],Tpi[-1])                               # Clip the sample points array
+        Tsp = np.clip(Tsp,Tpd[0],Tpd[-1])                               # Clip the sample points array
         np.random.shuffle(Tsp)                                          # Shuffle the sample points array
 
         TTsp = np.split(Tsp,np.arange(Nro_sv,Nsp,Nro_sv))               # Split the sample points array into their batches
@@ -104,7 +116,7 @@ def generate_rollout_data(cohort:str,courses:List[str],drone:str,method:str,
         Ndc = int(sample_set_config["rollout_duration"]*sample_set_config["simulation"]["hz_ctl"])
 
         print("--------------------------------------------------------------------------")
-        print("Course Name :",course)
+        print("Course Name :",course_name)
         print("Rollout Reps:",Nro_tp,"(per time point)")
         print("Rollout Rate:",Ntp_sc,"(per second)")
         print("Rollout Data:",Ndc,"(per sample)")
@@ -117,88 +129,29 @@ def generate_rollout_data(cohort:str,courses:List[str],drone:str,method:str,
             # Get the current batch
             Tsp = TTsp[idx]
             
-            # Generate sample drones
-            Drones = generate_drones(len(Tsp),drone_set_config,base_drone_config)
+            # Generate sample frames
+            Frames = generate_frames(len(Tsp),base_frame_config,frame_set_config)
 
             # Generate sample perturbations
-            Perturbations  = generate_perturbations(Tsp,trajectory_set_config,Tpi,CPi)
+            Perturbations  = generate_perturbations(Tsp,Tpd,CPd,trajectory_set_config)
 
             # Generate rollout data
-            Trajectories,Images = generate_rollouts(course_config,sample_set_config,nerf,Drones,Perturbations)
+            Trajectories,Images = generate_rollouts(simulator,course_name,Frames,Perturbations,sample_set_config)
 
-            # Save the rollout data
-            du.save_rollouts(cohort,course,Trajectories,Images,tXUi,idx)
+            # # Save the rollout data
+            # du.save_rollouts(cohort,course,Trajectories,Images,tXUd,idx)
 
-            # Update the data count
-            Ndata += sum([trajectory["Ndata"] for trajectory in Trajectories])
+            # # Update the data count
+            # Ndata += sum([trajectory["Ndata"] for trajectory in Trajectories])
 
         # Print some diagnostics
         print("--------------------------------------------------------------------------")
         print("Generated ",Ndata," points of data.")
         print("--------------------------------------------------------------------------")
 
-def generate_observation_data(cohort:str,roster:List[str],subsample:float=1.0):
-    """
-    Takes rollout data and generates observations for each pilot in the cohort. The observations are
-    generated by running the rollout data through the pilot's OODA function. The observations are saved
-    to a .pt file in the pilot's directory.
-
-    """
-    
-    # Generate some useful paths
-    workspace_path = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    cohort_path = os.path.join(workspace_path,"cohorts",cohort)
-    rollout_folder_path = os.path.join(cohort_path,"rollout_data")
-
-    # Initialize Pilots
-    Pilots = [Pilot(cohort,name) for name in roster]
-
-    for pilot in Pilots:
-        # Print some useful information
-        print("==========================================================================================")
-        print("------------------------------------------------------------------------------------------")
-        print(f"Pilot Name  : {pilot.name}")
-        print(f"Augmentation: {pilot.da_cfg['mean']}")
-        print( "            :                        +/-")
-        print(f"            : {pilot.da_cfg['std']}")
-        print(f"Subsample   : 1 in {int(1/subsample)}")
-        print("Model ------------------------------------------------------------------------------------")
-        print(f"Name        : {pilot.model.name}")
-        print( "Components  :", ','.join(pilot.model.network.keys()))
-        print("------------------------------------------------------------------------------------------")
-
-        # Get Course Folders
-        courses = [folder for folder in os.listdir(rollout_folder_path)]
-        
-        Nobs = 0
-        for course in courses:
-            # Load Trajectory Data
-            rollout_data_path = os.path.join(rollout_folder_path,course)
-            trajectory_data_files = sorted([
-                file for file in os.listdir(rollout_data_path)
-                if file.startswith("trajectories") and file.endswith(".pt")])
-            image_data_files = sorted([
-                file for file in os.listdir(rollout_data_path)
-                if file.startswith("images") and file.endswith(".pt")])
-            
-            # Generate Observation Data (sans images)
-            for trajectory_data_file,image_data_file in zip(trajectory_data_files,image_data_files):
-                trajectory_data_set = torch.load(os.path.join(rollout_data_path,trajectory_data_file))
-                image_data_set = torch.load(os.path.join(rollout_data_path,image_data_file))
-                observations = generate_observations(pilot,trajectory_data_set,image_data_set,subsample)
-                Nobs += observations["Nobs"]
-
-                # Save the observations
-                du.save_observations(cohort,course,pilot.name,observations)
-
-        print("Data Counts ------------------------------------------------------------------------------")
-        print("Extracted",Nobs,"observations from",len(courses),"course(s).")
-    print("==========================================================================================")
-
-def generate_drones(Nsps:int,
-                    drone_set_config:Dict[str,Union[float,list]],
-                    drone_base_config:Dict[str,Union[np.ndarray,str,int,float]],
+def generate_frames(Nsps:int,
+                    base_frame_config:Dict[str,Union[int,float,List[float]]],
+                    frame_set_config:Dict[str,Union[float,List[float]]],
                     rng_seed:Union[int,None]=None) -> List[Dict[str,Union[np.ndarray,str,int,float]]]:
     
     """
@@ -207,9 +160,9 @@ def generate_drones(Nsps:int,
     configurations generated is determined by the sample set config dictionary.
 
     Args:
-        Nsps:                     Number of drones to generate.
-        drone_set_config:       Drone set config dictionary.
-        drone_base_config:      Base drone configuration dictionary.
+        Nsps:                   Number of drones to generate.
+        base_frame_config:      Base frame configuration dictionary.
+        frame_set_config:       Frame sample set config dictionary.
         rng_seed:               Random number generator seed.
 
     Returns:
@@ -220,51 +173,35 @@ def generate_drones(Nsps:int,
     if rng_seed is not None:
         np.random.seed(rng_seed)
 
-    m   = np.array(drone_base_config["m"])
-    Imp = np.diag(drone_base_config["I"])/m
-    lf  = np.array(drone_base_config["lf"])
-    lb  = np.array(drone_base_config["lb"])
-    fn  = np.array(drone_base_config["fn"])
-    tg  = np.array(drone_base_config["tg"])
+    # Get frame items that will be randomized
+    Items = {}
+    for key in frame_set_config.keys():
+        if key not in base_frame_config.keys():
+            raise ValueError(f"Key '{key}' not found in base frame config.")
+        else:
+            value = np.array(base_frame_config[key])
+            bound = np.array(frame_set_config[key])
 
-    w_m  = np.array(drone_set_config["mass"],dtype=float)
-    w_I  = np.array(drone_set_config["inertia"],dtype=float)
-    w_lf = np.array(drone_set_config["arm_front"],dtype=float)
-    w_lb = np.array(drone_set_config["arm_back"],dtype=float)
-    w_fn = np.array(drone_set_config["force_normalized"],dtype=float)
-    w_tg = np.array(drone_set_config["torque_gain"],dtype=float)
-
-    # Compute bounds
-    m_bnd   = [m*(1-w_m),m*(1+w_m)]
-    Imp_bnd = [Imp*(1-w_I),Imp*(1+w_I)]
-    lf_bnd  = [lf*(1-w_lf),lf*(1+w_lf)]
-    lb_bnd  = [lb*(1-w_lb),lb*(1+w_lb)]
-    fn_bnd  = [fn*(1-w_fn),fn*(1+w_fn)]
-    tg_bnd  = [tg*(1-w_tg),tg*(1+w_tg)]
-
-    # # FIXME: Revert back to percentages
-    # m_bnd = [m-w_m,m+w_m]
-    # fn_bnd = [fn-w_fn,fn+w_fn]
+            Items[key] = [value*(1-bound),value*(1+bound)]
 
     # Generate Drone Frames
-    Drones = []
+    Frames = []
     for _ in range(Nsps):
-        m = np.random.uniform(*m_bnd)
-        Imp = np.random.uniform(*Imp_bnd)
-        lf = np.random.uniform(*lf_bnd)
-        lb = np.random.uniform(*lb_bnd)
-        fn = np.random.uniform(*fn_bnd)
-        tg = np.random.uniform(*tg_bnd)
+        # Instantiate a new frame
+        frame = copy.deepcopy(base_frame_config)
+
+        # Randomize the frame
+        for key in Items.keys():
+            frame[key] = np.random.uniform(*Items[key])
 
         # Save to a dictionary
-        quad = qc.generate_config(m,Imp,lf,lb,fn,tg)
-        Drones.append(quad)
+        Frames.append(frame)
 
-    return Drones
+    return Frames
 
 def generate_perturbations(Tsps:np.ndarray,
+                           Tpd:np.ndarray,CPd:np.ndarray,
                            trajectory_set_config:Dict[str,Union[int,bool]],
-                           Tpi:np.ndarray,CPi:np.ndarray,
                            rng_seed:int=None) -> List[Dict[str,Union[float,np.ndarray]]]:
     """
     Generates a list of perturbed initial states for the drone given an ideal trajectory. The perturbed
@@ -275,9 +212,9 @@ def generate_perturbations(Tsps:np.ndarray,
 
     Args:
         Tsps:                   Sample times.
-        trajectory_set_config:  Trajectory set config dictionary.
         Tpi:                    Ideal trajectory times.
         CPi:                    Ideal trajectory control points.
+        trajectory_set_config:  Trajectory set config dictionary.
         rng_seed:               Random number generator seed.
 
     Returns:
@@ -295,26 +232,26 @@ def generate_perturbations(Tsps:np.ndarray,
     w_x0 = np.array(trajectory_set_config["initial"],dtype=float)
     
     # Get ideal trajectory for quaternion checking
-    tXUi = th.ts_to_tXU(Tpi,CPi,None,10)
+    tXUd = th.TS_to_tXU(Tpd,CPd,None,10)
 
     # Generate perturbed starting points    
     Perturbations = []
     for i in range(Nsps):
         # Sample random start time and get corresponding state vector sample
         t0 = Tsps[i]
-        idx0 = np.where(Tpi <= t0)[0][-1]
-        idx0 = min(idx0,(len(Tpi)-2))
-        t00,t0f = Tpi[idx0],Tpi[idx0 + 1]
+        idx0 = np.where(Tpd <= t0)[0][-1]
+        idx0 = min(idx0,(len(Tpd)-2))
+        t00,t0f = Tpd[idx0],Tpd[idx0 + 1]
 
-        x0s = th.ts_to_xu(t0-t00,t0f-t00,CPi[idx0,:,:],None)[0:10]
+        x0s = th.ts_to_xu(t0-t00,t0f-t00,CPd[idx0,:,:],None)
         
         # Perturb state vector sample
         w0 = np.random.uniform(w_x0[0,:],w_x0[1,:])
         x0 = x0s + w0
         
         # Ensure quaternion is well-behaved (magnitude and closest to previous)
-        idxr = np.where(tXUi[0,:] <= t0)[0][-1]
-        x0[6:10] = th.obedient_quaternion(x0[6:10],tXUi[7:11,idxr])
+        idxr = np.where(tXUd[0,:] <= t0)[0][-1]
+        x0[6:10] = th.obedient_quaternion(x0[6:10],tXUd[7:11,idxr])
 
         # Store perturbation in list
         perturbation = {"t0":t0,"x0":x0}
@@ -323,11 +260,10 @@ def generate_perturbations(Tsps:np.ndarray,
     return Perturbations
 
 def generate_rollouts(
-        course_config:Dict[str,Dict[str,Union[float,np.ndarray]]],
+        simulator:Simulator,
+        Frames:Dict[str,Union[np.ndarray,str,int,float]],
+        Perturbations:Dict[str,Union[float,np.ndarray]],
         sample_set_config:Dict[str,Union[int,bool]],
-        nerf:nf.NeRF,
-        Drones:Dict[str,Union[np.ndarray,str,int,float]],
-        Perturbations:Dict[str,Union[float,np.ndarray]]
         ) -> Tuple[List[Dict[str,Union[np.ndarray,np.ndarray,np.ndarray]]],List[torch.Tensor]]:
     """
     Generates rollout data for the quadcopter given a list of drones and initial states (perturbations).
@@ -338,11 +274,10 @@ def generate_rollouts(
     state in the trajectory data. The image data consists of the image data and the data count.
 
     Args:
-        course_config:          Course config dictionary.
-        sample_set_config:      Sample set config dictionary.
-        nerf:                   NeRF model.
-        Drones:          List of drone configurations.
-        Perturbations:          List of perturbed initial states.
+        simulator:          Simulator object.
+        Frames:             List of drone configurations.
+        Perturbations:      List of perturbed initial states.
+        sample_set_config:  Sample set config dictionary.
 
     Returns:
         Trajectories:           List of trajectory rollouts.
@@ -367,7 +302,7 @@ def generate_rollouts(
     Trajectories,Images = [],[]
 
     # Rollout the trajectories
-    for idx,(drone,perturbation) in enumerate(zip(Drones,Perturbations)):
+    for idx,(drone,perturbation) in enumerate(zip(Frames,Perturbations)):
         # Unpack rollout variables
         t0,x0 = perturbation["t0"],perturbation["x0"]
         tf = t0 + dt_ro
@@ -405,86 +340,146 @@ def generate_rollouts(
 
     return Trajectories,Images
 
-def generate_observations(pilot:Pilot,
-                            trajectory_data_set:Dict[str,Union[str,int,Dict[str,Union[np.ndarray,float,str]]]],
-                            image_data_set:Dict[str,Union[str,int,Dict[str,Union[np.ndarray,float,str]]]],
-                            subsample:float=1) -> Dict[str,Union[str,int,Dict[str,Union[np.ndarray,float,str]]]]:
+# def generate_observation_data(cohort:str,roster:List[str],subsample:float=1.0):
+#     """
+#     Takes rollout data and generates observations for each pilot in the cohort. The observations are
+#     generated by running the rollout data through the pilot's OODA function. The observations are saved
+#     to a .pt file in the pilot's directory.
+
+#     """
     
-    # Initialize the observation data dictionary
-    Observations = []
+#     # Generate some useful paths
+#     workspace_path = os.path.dirname(
+#         os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+#     cohort_path = os.path.join(workspace_path,"cohorts",cohort)
+#     rollout_folder_path = os.path.join(cohort_path,"rollout_data")
 
-    # Unpack augmenteation variables
-    aug_type = np.array(pilot.da_cfg["type"])
-    aug_mean = np.array(pilot.da_cfg["mean"])
-    aug_std = np.array(pilot.da_cfg["std"])
+#     # Initialize Pilots
+#     Pilots = [Pilot(cohort,name) for name in roster]
 
-    # Set subsample step
-    nss = int(1/subsample)
+#     for pilot in Pilots:
+#         # Print some useful information
+#         print("==========================================================================================")
+#         print("------------------------------------------------------------------------------------------")
+#         print(f"Pilot Name  : {pilot.name}")
+#         print(f"Augmentation: {pilot.da_cfg['mean']}")
+#         print( "            :                        +/-")
+#         print(f"            : {pilot.da_cfg['std']}")
+#         print(f"Subsample   : 1 in {int(1/subsample)}")
+#         print("Model ------------------------------------------------------------------------------------")
+#         print(f"Name        : {pilot.model.name}")
+#         print( "Components  :", ','.join(pilot.model.network.keys()))
+#         print("------------------------------------------------------------------------------------------")
 
-    # Generate observations
-    Nobs = 0
-    for trajectory_data,image_data in zip(trajectory_data_set["data"],image_data_set["data"]):
-        # Unpack data
-        Tro,Xro,Uro = trajectory_data["Tro"],trajectory_data["Xro"],trajectory_data["Uro"]
-        obj,Ndata = trajectory_data["obj"],trajectory_data["Ndata"]
-        rollout_id,course = trajectory_data["rollout_id"],trajectory_data["course"]
-        drone = trajectory_data["drone"]
+#         # Get Course Folders
+#         courses = [folder for folder in os.listdir(rollout_folder_path)]
+        
+#         Nobs = 0
+#         for course in courses:
+#             # Load Trajectory Data
+#             rollout_data_path = os.path.join(rollout_folder_path,course)
+#             trajectory_data_files = sorted([
+#                 file for file in os.listdir(rollout_data_path)
+#                 if file.startswith("trajectories") and file.endswith(".pt")])
+#             image_data_files = sorted([
+#                 file for file in os.listdir(rollout_data_path)
+#                 if file.startswith("images") and file.endswith(".pt")])
+            
+#             # Generate Observation Data (sans images)
+#             for trajectory_data_file,image_data_file in zip(trajectory_data_files,image_data_files):
+#                 trajectory_data_set = torch.load(os.path.join(rollout_data_path,trajectory_data_file))
+#                 image_data_set = torch.load(os.path.join(rollout_data_path,image_data_file))
+#                 observations = generate_observations(pilot,trajectory_data_set,image_data_set,subsample)
+#                 Nobs += observations["Nobs"]
 
-        # Decompress and extract the image data
-        test = du.decompress_data(image_data)
-        Imgs = du.decompress_data(image_data)["images"]
+#                 # Save the observations
+#                 du.save_observations(cohort,course,pilot.name,observations)
 
-        # Check if images are raw or processed. Raw images are in (N,H,W,C) format while
-        # processed images are in (N,C,H,W) format.
-        height,width = Imgs.shape[1],Imgs.shape[2]
+#         print("Data Counts ------------------------------------------------------------------------------")
+#         print("Extracted",Nobs,"observations from",len(courses),"course(s).")
+#     print("==========================================================================================")
 
-        if height == 224 and width == 224:
-            Imgs = np.transpose(Imgs, (0, 3, 1, 2))
 
-        # Create Rollout Data
-        Xnn,Ynn = [],[]
-        upr = np.zeros(4)
-        znn_cr = torch.zeros(pilot.model.Nz).to(pilot.device)
-        for k in range(Ndata):
-            # Generate current state (with/without noise augmentation)
-            if aug_type == "additive":
-                xcr = Xro[:,k] + np.random.normal(aug_mean,aug_std)
-            elif aug_type == "multiplicative":
-                xcr = Xro[:,k] * (1 + np.random.normal(aug_mean,aug_std))
-            else:
-                xcr = Xro[:,k]
+# def generate_observations(pilot:Pilot,
+#                             trajectory_data_set:Dict[str,Union[str,int,Dict[str,Union[np.ndarray,float,str]]]],
+#                             image_data_set:Dict[str,Union[str,int,Dict[str,Union[np.ndarray,float,str]]]],
+#                             subsample:float=1) -> Dict[str,Union[str,int,Dict[str,Union[np.ndarray,float,str]]]]:
+    
+#     # Initialize the observation data dictionary
+#     Observations = []
 
-            # Extract other data
-            tcr = Tro[k]
-            ucr = Uro[:,k]
-            img_cr = Imgs[k,:,:,:]
+#     # Unpack augmenteation variables
+#     aug_type = np.array(pilot.da_cfg["type"])
+#     aug_mean = np.array(pilot.da_cfg["mean"])
+#     aug_std = np.array(pilot.da_cfg["std"])
 
-            # Generate the sfti data
-            _,znn_cr,_,xnn,_ = pilot.OODA(upr,tcr,xcr,obj,img_cr,znn_cr)
-            ynn = {"unn":ucr,"mfn":np.array([drone["m"],drone["fn"]]),"onn":xcr}
+#     # Set subsample step
+#     nss = int(1/subsample)
 
-            # Store the data
-            if k % nss == 0:
-                Xnn.append(xnn)
-                Ynn.append(ynn)
+#     # Generate observations
+#     Nobs = 0
+#     for trajectory_data,image_data in zip(trajectory_data_set["data"],image_data_set["data"]):
+#         # Unpack data
+#         Tro,Xro,Uro = trajectory_data["Tro"],trajectory_data["Xro"],trajectory_data["Uro"]
+#         obj,Ndata = trajectory_data["obj"],trajectory_data["Ndata"]
+#         rollout_id,course = trajectory_data["rollout_id"],trajectory_data["course"]
+#         drone = trajectory_data["drone"]
 
-            # Loop updates
-            upr = ucr
+#         # Decompress and extract the image data
+#         test = du.decompress_data(image_data)
+#         Imgs = du.decompress_data(image_data)["images"]
 
-        # Store the observation data
-        observations = {
-            "Xnn":Xnn,
-            "Ynn":Ynn,
-            "Ndata":len(Xnn),
-            "rollout_id":rollout_id,
-            "course":course,"drone":drone
-        }
-        Observations.append(observations)
-        Nobs += len(Xnn)
+#         # Check if images are raw or processed. Raw images are in (N,H,W,C) format while
+#         # processed images are in (N,C,H,W) format.
+#         height,width = Imgs.shape[1],Imgs.shape[2]
 
-    observations_data_set = {"data":Observations,
-                    "set":trajectory_data_set["set"],
-                    "Nobs":Nobs,
-                    "course":trajectory_data_set["course"]}
+#         if height == 224 and width == 224:
+#             Imgs = np.transpose(Imgs, (0, 3, 1, 2))
 
-    return observations_data_set
+#         # Create Rollout Data
+#         Xnn,Ynn = [],[]
+#         upr = np.zeros(4)
+#         znn_cr = torch.zeros(pilot.model.Nz).to(pilot.device)
+#         for k in range(Ndata):
+#             # Generate current state (with/without noise augmentation)
+#             if aug_type == "additive":
+#                 xcr = Xro[:,k] + np.random.normal(aug_mean,aug_std)
+#             elif aug_type == "multiplicative":
+#                 xcr = Xro[:,k] * (1 + np.random.normal(aug_mean,aug_std))
+#             else:
+#                 xcr = Xro[:,k]
+
+#             # Extract other data
+#             tcr = Tro[k]
+#             ucr = Uro[:,k]
+#             img_cr = Imgs[k,:,:,:]
+
+#             # Generate the sfti data
+#             _,znn_cr,_,xnn,_ = pilot.OODA(upr,tcr,xcr,obj,img_cr,znn_cr)
+#             ynn = {"unn":ucr,"mfn":np.array([drone["m"],drone["fn"]]),"onn":xcr}
+
+#             # Store the data
+#             if k % nss == 0:
+#                 Xnn.append(xnn)
+#                 Ynn.append(ynn)
+
+#             # Loop updates
+#             upr = ucr
+
+#         # Store the observation data
+#         observations = {
+#             "Xnn":Xnn,
+#             "Ynn":Ynn,
+#             "Ndata":len(Xnn),
+#             "rollout_id":rollout_id,
+#             "course":course,"drone":drone
+#         }
+#         Observations.append(observations)
+#         Nobs += len(Xnn)
+
+#     observations_data_set = {"data":Observations,
+#                     "set":trajectory_data_set["set"],
+#                     "Nobs":Nobs,
+#                     "course":trajectory_data_set["course"]}
+
+#     return observations_data_set

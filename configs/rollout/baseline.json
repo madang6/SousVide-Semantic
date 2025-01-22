@@ -1,5 +1,5 @@
 {  
-    "hz_sim": 100,
+    "frequency": 100,
     "delay": 0.0,
     "model_noise": {
         "mean": [
