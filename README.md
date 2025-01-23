@@ -1,4 +1,4 @@
-# FiGS-Examples
+# SOUS VIDE
 Installation steps
 1) Update submodules
 ```

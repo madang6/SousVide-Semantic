@@ -4,15 +4,11 @@ import os
 import torch
 from typing import Dict,Union,Tuple,List
 
-import dynamics.quadcopter_config as qc
-import synthesize.trajectory_helper as th
+import sousvide.dynamics.quadcopter_config as qc
+import sousvide.synthesize.synthesize_helper as sh
 
-from synthesize.solvers import (
-    min_snap as ms,
-)
 from PIL import Image
 from io import BytesIO
-
 def decompress_data(image_dict:Dict[str,Union[str,np.ndarray]]) -> Dict[str,Union[str,np.ndarray]]:
     """
     We apply a compression if the images are too large to be saved in the .pt file. This function
@@ -68,7 +64,7 @@ def compress_data(Images):
     
     return Images
 
-def save_rollouts(cohort_name:str,course_name:str,
+def save_rollouts(cohort_path:str,course_name:str,
                   Trajectories:List[Tuple[np.ndarray,np.ndarray,np.ndarray]],
                   Images:List[torch.Tensor],
                   tXUi:np.ndarray,
@@ -89,11 +85,6 @@ def save_rollouts(cohort_name:str,course_name:str,
     Returns:
         None:           (rollout data saved to cohort directory)
     """
-
-    # Some useful path(s)
-    workspace_path = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    cohort_path = os.path.join(workspace_path,"cohorts",cohort_name)
 
     # Create rollout course directory (if it does not exist)
     rollout_course_path = os.path.join(cohort_path,"rollout_data",course_name)
@@ -147,81 +138,81 @@ def save_observations(cohort_name:str,course_name:str,
 
     torch.save(observations,observations_data_path)
 
-def flight2rollout_data(cohort_name:str,drone_name:str):
-    # Some useful path(s)
-    workspace_path = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+# def flight2rollout_data(cohort_name:str,drone_name:str):
+#     # Some useful path(s)
+#     workspace_path = os.path.dirname(
+#         os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-    # Load drone and method configs
-    cohort_path = os.path.join(workspace_path,"cohorts",cohort_name)
-    flight_data_path = os.path.join(cohort_path,"flight_data")
-    drone_path  = os.path.join(workspace_path,"configs","drones",drone_name+".json")
+#     # Load drone and method configs
+#     cohort_path = os.path.join(workspace_path,"cohorts",cohort_name)
+#     flight_data_path = os.path.join(cohort_path,"flight_data")
+#     drone_path  = os.path.join(workspace_path,"configs","drones",drone_name+".json")
 
-    with open(drone_path) as json_file:
-        drone_config = json.load(json_file)
+#     with open(drone_path) as json_file:
+#         drone_config = json.load(json_file)
 
-    # Gather all the flight data files
-    file_list = os.listdir(flight_data_path)
-    file_list = [os.path.join(flight_data_path, f) for f in file_list if f.endswith('.pt')]
+#     # Gather all the flight data files
+#     file_list = os.listdir(flight_data_path)
+#     file_list = [os.path.join(flight_data_path, f) for f in file_list if f.endswith('.pt')]
 
-    # Assume the drone is Carl
-    drone = qc.generate_preset_config(drone_config)
+#     # Assume the drone is Carl
+#     drone = qc.generate_preset_config(drone_config)
 
-    # Convert flight data to training data
-    data_names = {}
-    for idx,file in enumerate(file_list):
-        # Load the flight data
-        data = torch.load(file)
+#     # Convert flight data to training data
+#     data_names = {}
+#     for idx,file in enumerate(file_list):
+#         # Load the flight data
+#         data = torch.load(file)
 
-        # Check if the data is in the old format
-        data = flightdata_check(data)
+#         # Check if the data is in the old format
+#         data = flightdata_check(data)
 
-        # Extract Some Useful Intermediate Variables
-        parts = file.split("/")[-1].split("_")
-        file_name_components = [part for part in parts if not part[0].isdigit()]
-        prefix = file_name_components[0]
-        course_name = "_".join(file_name_components[1:-1])
+#         # Extract Some Useful Intermediate Variables
+#         parts = file.split("/")[-1].split("_")
+#         file_name_components = [part for part in parts if not part[0].isdigit()]
+#         prefix = file_name_components[0]
+#         course_name = "_".join(file_name_components[1:-1])
 
-        # Check if course is in the dictionary
-        data_name = "_".join((prefix,course_name))
-        if data_name not in data_names:
-            data_names[data_name] = 0
-        else:
-            data_names[data_name] += 1
+#         # Check if course is in the dictionary
+#         data_name = "_".join((prefix,course_name))
+#         if data_name not in data_names:
+#             data_names[data_name] = 0
+#         else:
+#             data_names[data_name] += 1
 
-        # Generate ideal trajectory
-        course_path = os.path.join(workspace_path,"configs","courses",course_name+".json")
-        with open(course_path) as json_file:
-            course_config = json.load(json_file)
+#         # Generate ideal trajectory
+#         course_path = os.path.join(workspace_path,"configs","courses",course_name+".json")
+#         with open(course_path) as json_file:
+#             course_config = json.load(json_file)
 
-        Tpi,CPi = ms.solve(course_config)
-        tXUi = th.ts_to_tXU(Tpi,CPi,drone)
+#         Tpi,CPi = ms.solve(course_config)
+#         tXUi = th.ts_to_tXU(Tpi,CPi,drone)
         
-        # Create save directory
-        save_path = os.path.join(cohort_path,"rollout_data",course_name)
-        if not os.path.exists(save_path):
-            os.makedirs(save_path)
+#         # Create save directory
+#         save_path = os.path.join(cohort_path,"rollout_data",course_name)
+#         if not os.path.exists(save_path):
+#             os.makedirs(save_path)
 
-        # Pack into a dictionary
-        trajectory = {
-            "Tro":data["Tact"],"Xro":data["Xest"],"Uro":data["Uact"],
-            "Xid":None,"obj":data["obj"],"Ndata":data["Tact"].shape[0],"Tsol":data["Tsol"],"Adv":data["Adv"],
-            "rollout_id":str(data_names[data_name]).zfill(5),
-            "course":course_name,
-            "drone":drone
-            }
+#         # Pack into a dictionary
+#         trajectory = {
+#             "Tro":data["Tact"],"Xro":data["Xest"],"Uro":data["Uact"],
+#             "Xid":None,"obj":data["obj"],"Ndata":data["Tact"].shape[0],"Tsol":data["Tsol"],"Adv":data["Adv"],
+#             "rollout_id":str(data_names[data_name]).zfill(5),
+#             "course":course_name,
+#             "drone":drone
+#             }
 
-        images = {
-            "images": data["Imgs"].numpy(),  # Reshape to (w, h, c)
-            "rollout_id":str(data_names[data_name]).zfill(5),"course":course_name
-        }
+#         images = {
+#             "images": data["Imgs"].numpy(),  # Reshape to (w, h, c)
+#             "rollout_id":str(data_names[data_name]).zfill(5),"course":course_name
+#         }
 
-        # Save the training data.
-        save_name = "_".join(("",prefix,course_name,str(data_names[data_name]+1).zfill(3)))
-        save_rollouts(cohort_name,course_name,[trajectory],[images],tXUi,save_name)
+#         # Save the training data.
+#         save_name = "_".join(("",prefix,course_name,str(data_names[data_name]+1).zfill(3)))
+#         save_rollouts(cohort_name,course_name,[trajectory],[images],tXUi,save_name)
 
-        # # Print some diagnostics
-        # print("Generated ",data["Tact"].shape[0]," points of data for",course_name)
+#         # # Print some diagnostics
+#         # print("Generated ",data["Tact"].shape[0]," points of data for",course_name)
 
 def flightdata_check(data:dict):
     # Keys reference
@@ -244,7 +235,7 @@ def flightdata_check(data:dict):
             'Xext': data['Xact'],
             'Adv': data['Adv'],
             'Tsol': data['Tsol'],
-            'obj': th.tXU_to_obj(data['tXds']),
+            'obj': sh.tXU_to_obj(data['tXds']),
             'n_im': data['n_im']
         }
         return new_data

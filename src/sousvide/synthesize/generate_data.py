@@ -3,27 +3,26 @@ import json
 import os
 from typing import Dict,Union,Tuple,List
 from tqdm.notebook import trange
-import figs.utilities.trajectory_helper as th
+import copy
+import torch
 
+import figs.utilities.trajectory_helper as th
 import figs.tsplines.min_snap as ms
 from figs.simulator import Simulator
 from figs.control.vehicle_rate_mpc import VehicleRateMPC
 from figs.dynamics.model_specifications import generate_specifications
-import copy
 
+import sousvide.synthesize.synthesize_helper as sh
 # from sousvide.controller.pilot import Pilot
 # import dynamics.quadcopter_config as qc
 # import dynamics.quadcopter_simulate as qs
 # import synthesize.trajectory_helper as th
 # import synthesize.nerf_utils as nf
-# import synthesize.data_utils as du
-import torch
+import sousvide.synthesize.data_utils as du
 
-def generate_rollout_data(cohort_name:str,course_names:List[str],
-                          method_name:str='beta',policy_name:str='vrmpc_fr',frame_name:str='carl',
-                          Nro_tp:int=30,
-                          Nro_sv:int=100,
-                          Ntp_sc:int=10):
+def generate_rollout_data(cohort_name:str,method_name:str,
+                          flights:List[Tuple[str,str]],
+                          Nro_sv:int=100):
     
     """
     Generates flight data for a given cohort. A cohort comprises a set of courses flown on a specific
@@ -32,14 +31,10 @@ def generate_rollout_data(cohort_name:str,course_names:List[str],
     controller that has full knowledge. The flight data is saved to a .pt file in the cohort directory.
 
     Args:
-        cohort_name:    Name of the cohort.
-        course_names:   Names of courses to generate over.
-        method_name:    Domain randomization parameters.
-        policy_name:    Name of the policy.
-        frame_name:     Name of the frame.
-        Nro_tp:         Number of rollouts per time point.
+        cohort_name:    Cohort name.
+        method_name:    Sous Vide config.
+        flights:        List of flights (scene,course).
         Nro_sv:         Number of rollouts per save.
-        Ntp_sc:         Number of time points per second.
 
     Returns:
         None:           (flight data saved to cohort directory)
@@ -49,25 +44,36 @@ def generate_rollout_data(cohort_name:str,course_names:List[str],
     workspace_path = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
     
-    # Load configs
-    cohort_path = os.path.join(workspace_path,"cohorts",cohort_name)
+    # Extract method configs
     method_path = os.path.join(workspace_path,"configs","method",method_name+".json")
-    policy_path = os.path.join(workspace_path,"configs","policy",policy_name+".json")
-    frame_path  = os.path.join(workspace_path,"configs","frame",frame_name+".json")
         
     with open(method_path) as json_file:
         method_config = json.load(json_file)
-        sample_set_config = method_config["sample_set"]
-        trajectory_set_config = method_config["trajectory_set"]
-        frame_set_config = method_config["frame_set"]
+    
+    sample_set_config = method_config["sample_set"]
+    trajectory_set_config = method_config["trajectory_set"]
+    frame_set_config = method_config["frame_set"]
 
+    rollout_type = sample_set_config["rollout_type"]
+    policy_name = sample_set_config["policy_name"]
+    frame_name = sample_set_config["frame_name"]
+    Nro_tp = sample_set_config["rollout_reps"]
+    Ntp_sc = sample_set_config["rollout_rate"]
+    dt_ro = sample_set_config["rollout_duration"]
+    
+    # Extract policy and frame
+    policy_path = os.path.join(workspace_path,"configs","policy",policy_name+".json")
+    frame_path  = os.path.join(workspace_path,"configs","frame",frame_name+".json")
+    
     with open(policy_path) as json_file:
         policy_config = json.load(json_file)
 
     with open(frame_path) as json_file:
         base_frame_config = json.load(json_file)   
 
-    # Create cohort directory (if it does not exist)
+    # Create cohort folder
+    cohort_path = os.path.join(workspace_path,"cohorts",cohort_name)
+
     if not os.path.exists(cohort_path):
         os.makedirs(cohort_path)
 
@@ -80,15 +86,18 @@ def generate_rollout_data(cohort_name:str,course_names:List[str],
     print("Method :",method_name)
     print("Policy :",policy_name)
     print("Frame  :",frame_name)
-    print("Courses:",course_names)
+    print("Flights:",flights)
 
     # Generate rollouts for each course
-    for course_name in course_names:
+    for scene,course in flights:
         # Load course_config
-        course_path = os.path.join(workspace_path,"configs","course",course_name+".json")
+        course_path = os.path.join(workspace_path,"configs","course",course+".json")
 
         with open(course_path) as json_file:
             course_config = json.load(json_file)
+        
+        # Add course name
+        course_config["name"] = course
 
         # Generate desired trajectory
         output = ms.solve(course_config)
@@ -99,7 +108,7 @@ def generate_rollout_data(cohort_name:str,course_names:List[str],
             raise ValueError("Desired trajectory not feasible. Aborting.")
         
         # Generate simulator
-        simulator = Simulator(course_name,frame_name)
+        simulator = Simulator(scene,rollout_type)
         
         # Generate Sample Set Batches
         Ntp = Ntp_sc*int(Tpd[-1])                                       # Number of time points per trajectory
@@ -113,10 +122,10 @@ def generate_rollout_data(cohort_name:str,course_names:List[str],
         TTsp = np.split(Tsp,np.arange(Nro_sv,Nsp,Nro_sv))               # Split the sample points array into their batches
         
         # Print some diagnostics
-        Ndc = int(sample_set_config["rollout_duration"]*sample_set_config["simulation"]["hz_ctl"])
+        Ndc = int(sample_set_config["rollout_duration"]*policy_config["hz"])
 
         print("--------------------------------------------------------------------------")
-        print("Course Name :",course_name)
+        print("Course Name :",course)
         print("Rollout Reps:",Nro_tp,"(per time point)")
         print("Rollout Rate:",Ntp_sc,"(per second)")
         print("Rollout Data:",Ndc,"(per sample)")
@@ -136,13 +145,15 @@ def generate_rollout_data(cohort_name:str,course_names:List[str],
             Perturbations  = generate_perturbations(Tsp,Tpd,CPd,trajectory_set_config)
 
             # Generate rollout data
-            Trajectories,Images = generate_rollouts(simulator,course_name,Frames,Perturbations,sample_set_config)
+            Trajectories,Images = generate_rollouts(
+                simulator,course_config,policy_config,
+                Frames,Perturbations,dt_ro)
 
             # # Save the rollout data
-            # du.save_rollouts(cohort,course,Trajectories,Images,tXUd,idx)
+            # du.save_rollouts(cohort_path,course,Trajectories,Images,tXUd,idx)
 
-            # # Update the data count
-            # Ndata += sum([trajectory["Ndata"] for trajectory in Trajectories])
+            # Update the data count
+            Ndata += sum([trajectory["Ndata"] for trajectory in Trajectories])
 
         # Print some diagnostics
         print("--------------------------------------------------------------------------")
@@ -261,9 +272,11 @@ def generate_perturbations(Tsps:np.ndarray,
 
 def generate_rollouts(
         simulator:Simulator,
+        course_config:Dict[str,Union[np.ndarray,List[np.ndarray]]],
+        policy_config:Dict[str,Union[int,float,List[float]]],
         Frames:Dict[str,Union[np.ndarray,str,int,float]],
         Perturbations:Dict[str,Union[float,np.ndarray]],
-        sample_set_config:Dict[str,Union[int,bool]],
+        dt_ro:float,
         ) -> Tuple[List[Dict[str,Union[np.ndarray,np.ndarray,np.ndarray]]],List[torch.Tensor]]:
     """
     Generates rollout data for the quadcopter given a list of drones and initial states (perturbations).
@@ -283,40 +296,28 @@ def generate_rollouts(
         Trajectories:           List of trajectory rollouts.
         Images:                 List of image rollouts.
     """
-
-    # Unpack sample set config
-    mu_md = np.array(sample_set_config["model_noise"]["mean"])
-    std_md = np.array(sample_set_config["model_noise"]["std"])
-    mu_sn = np.array(sample_set_config["sensor_noise"]["mean"])
-    std_sn = np.array(sample_set_config["sensor_noise"]["std"])
-    hz_ctl = sample_set_config["simulation"]["hz_ctl"]
-    hz_sim = sample_set_config["simulation"]["hz_sim"]
-    t_dly = sample_set_config["simulation"]["delay"]
-    dt_ro = sample_set_config["rollout_duration"]
     
     # Unpack the trajectory
     Tpi,CPi = ms.solve(course_config)
-    obj = th.ts_to_obj(Tpi,CPi)
+    obj = sh.ts_to_obj(Tpi,CPi)
 
     # Initialize rollout variables
     Trajectories,Images = [],[]
 
     # Rollout the trajectories
-    for idx,(drone,perturbation) in enumerate(zip(Frames,Perturbations)):
+    for idx,(frame_config,perturbation) in enumerate(zip(Frames,Perturbations)):
         # Unpack rollout variables
         t0,x0 = perturbation["t0"],perturbation["x0"]
         tf = t0 + dt_ro
 
         # Some useful intermediate variables
-        policy = VehicleRateMPC(course_config,drone,hz_ctl)
-        simulator = policy.generate_simulator(hz_sim)
-
+        simulator.load_frame(frame_config)
+        policy = VehicleRateMPC(course_config,policy_config,frame_config)
+        
         # Simulate the flight
-        Tro,Xro,Uro,Imgs,Tsol,Adv = qs.simulate_flight(policy,simulator,
-                                                       t0,tf,x0,obj,nerf,hz_sim,
-                                                       mu_md=mu_md,std_md=std_md,
-                                                       mu_sn=mu_sn,std_sn=std_sn,
-                                                       t_dly=t_dly)
+        print(t0,tf)
+        print(x0)
+        Tro,Xro,Uro,Imgs,Tsol,Adv = simulator.simulate(policy,t0,tf,x0)
         
         # TODO: either make Xid from Tpi,CPi or maybe it's ok to leave it blank?
         trajectory = {
@@ -324,7 +325,7 @@ def generate_rollouts(
             "Xid":None,"obj":obj,"Ndata":Uro.shape[1],"Tsol":Tsol,"Adv":Adv,
             "rollout_id":str(idx).zfill(5),
             "course":course_config["name"],
-            "drone":drone}
+            "frame":frame_config}
 
         images = {
             "images":Imgs,
@@ -335,8 +336,8 @@ def generate_rollouts(
         Trajectories.append(trajectory)
         Images.append(images)
 
-        # Delete the generated code
-        policy.clear_generated_code()
+        # Clear policy
+        del policy
 
     return Trajectories,Images
 
