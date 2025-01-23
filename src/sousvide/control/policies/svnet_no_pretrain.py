@@ -1,21 +1,20 @@
 import torch
-import numpy as np
 from torch import nn
-from controller.policies.ComponentNetworks import *
-from typing import Dict,Tuple,Union,List,Any,Callable
+from sousvide.control.policies.ComponentNetworks import *
+from typing import Dict,Tuple,Any,Callable
 
-class SousVide_v1b(nn.Module):    
+class SVNetNoPreTrain(nn.Module):    
     def __init__(self,
                  config:Dict[str,Any],
-                 name:str="SousVide_v1"):
+                 name:str="SVNetNoPreTrain"):
         
         """
         Defines a pilot's neural network model.
 
         Network Description:
-        Uses two separately trained networks.
-        - Parameter: History Data -> Drone Parameters Decoder
-        - Commander: Vision Data + Drone Parameters Encoder + Current Data + Objective Data -> Command
+        SV-Net with no pre-training. This policies is identical to SV-Net but skips
+        the history network pre-training. Instead it trains everything together
+        (under Commander).
 
         Args:
             config:         Configuration dictionary for the model.
@@ -30,7 +29,7 @@ class SousVide_v1b(nn.Module):
         """
 
         # Initial Parent Call
-        super(SousVide_v1b,self).__init__()
+        super(SVNetNoPreTrain,self).__init__()
 
         # ----------------------------------------------------------------------------------------------
         # Class Intermediate Variables
@@ -40,11 +39,12 @@ class SousVide_v1b(nn.Module):
         vision_mlp_cfg = config["networks"][1]
         command_sv_cfg = config["networks"][2]
 
-        history_enc_network = DirectHistoryEncoder(
+        history_enc_network = HistoryEncoder(
                 history_enc_cfg["delta"],
                 history_enc_cfg["frames"],
                 history_enc_cfg["hidden_sizes"],
-                history_enc_cfg["output_size"]
+                history_enc_cfg["encoder_size"],
+                history_enc_cfg["decoder_size"]
             )
         vision_mlp_network = VisionMLP(
                 vision_mlp_cfg["state"],
@@ -56,7 +56,7 @@ class SousVide_v1b(nn.Module):
         commander_sv_network = CommandSV(
                 command_sv_cfg["state"],
                 command_sv_cfg["objective"],
-                history_enc_cfg["output_size"],
+                history_enc_cfg["encoder_size"],
                 vision_mlp_cfg["output_size"],
                 command_sv_cfg["hidden_sizes"],
                 command_sv_cfg["output_size"]
@@ -79,19 +79,14 @@ class SousVide_v1b(nn.Module):
 
         # Network Callers [Parameter,Odometry,Commander]
         self.get_data:Dict[str,Callable] = {                         
-            "Parameter": self.get_parameter_data,
             "Commander": self.get_commander_data,
             "Images": self.get_image_data
         }
 
         self.get_network:Dict[str,Dict[str,nn.Module]] = {
-            "Parameter": {
-                "Train" : self.network["HistoryEncoder"],
-                "Unlock": self.network["HistoryEncoder"]
-            },
             "Commander": {
                 "Train" :self,
-                "Unlock":nn.ModuleList([self.network["CommanderSV"],self.network["VisionMLP"]])
+                "Unlock":self
             }
         }
 
@@ -137,9 +132,6 @@ class SousVide_v1b(nn.Module):
     def get_commander_inputs(self,xnn: Dict[str,torch.Tensor]) -> Tuple[torch.Tensor,...]:
         return (xnn["tx_com"],xnn["obj_com"],xnn["dxu_par"],xnn["img_vis"],xnn["tx_vis"])
     
-    def get_parameter_data(self,xnn:Dict[str,torch.Tensor],ynn:Dict[str,torch.Tensor]) -> Tuple[Tuple[torch.Tensor],torch.Tensor]:
-        return (xnn["dxu_par"],),ynn["mfn"]
-    
     def get_commander_data(self,xnn: Dict[str,torch.Tensor],ynn: Dict[str,torch.Tensor]) -> Tuple[Tuple[torch.Tensor,...],torch.Tensor]:
         return self.get_commander_inputs(xnn),ynn["unn"]
 
@@ -165,10 +157,10 @@ class SousVide_v1b(nn.Module):
         """
 
         # Parameter Network
-        y_par,_ = self.network["HistoryEncoder"](dxu_par)
+        _,z_par = self.network["HistoryEncoder"](dxu_par)
 
         # Command Network
         y_vis,_ = self.network["VisionMLP"](img_vis,tx_vis)
-        y_com,_ = self.network["CommanderSV"](tx_com,obj_com,y_par,y_vis)
+        y_com,_ = self.network["CommanderSV"](tx_com,obj_com,z_par,y_vis)
 
         return y_com,None

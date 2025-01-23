@@ -6,10 +6,11 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader,Dataset
 from tqdm.notebook import trange
-from controller.pilot import Pilot
-from instruct.synthesized_data import *
+from sousvide.control.pilot import Pilot
+from sousvide.instruct.synthesized_data import *
 from typing import List,Tuple,Literal
 from enum import Enum
+
 def train_roster(cohort_name:str,roster:List[str],
                  mode:Literal["Parameter","Odometry","Commander"],
                  Neps:int,lim_sv:int,

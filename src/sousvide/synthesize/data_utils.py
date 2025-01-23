@@ -4,7 +4,6 @@ import os
 import torch
 from typing import Dict,Union,Tuple,List
 
-import sousvide.dynamics.quadcopter_config as qc
 import sousvide.synthesize.synthesize_helper as sh
 
 from PIL import Image
@@ -75,7 +74,7 @@ def save_rollouts(cohort_path:str,course_name:str,
     ease of comprehension and loading (at a cost of storage space).
     
     Args:
-        cohort_name:    Name of the cohort.
+        cohort_path:    Cohort path.
         course_name:    Name of the course.
         Trajectories:   Rollout data.
         Images:         Image data.
@@ -109,7 +108,7 @@ def save_rollouts(cohort_path:str,course_name:str,
     torch.save(trajectory_data_set,trajectory_data_set_path)
     torch.save(image_data_set,image_data_set_path)
 
-def save_observations(cohort_name:str,course_name:str,
+def save_observations(cohort_path:str,course_name:str,
                       pilot_name:str,
                       observations:Dict[str,Union[np.ndarray,int,str]]) -> None:
     
@@ -118,7 +117,7 @@ def save_observations(cohort_name:str,course_name:str,
     directory within the cohort directory.
 
     Args:
-        cohort_name:    Name of the cohort.
+        cohort_path:    Cohort path.
         course_name:    Name of the course.
         pilot_name:     Name of the pilot.
         observations:   Observation data.
@@ -127,14 +126,15 @@ def save_observations(cohort_name:str,course_name:str,
         None:           (observation data saved to cohort directory)
     """
 
-    # Some useful path(s)
-    workspace_path = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    # Create observation course directory (if it does not exist)
+    observation_pilot_path = os.path.join(cohort_path,"observation_data",pilot_name)
+    if not os.path.exists(observation_pilot_path):
+        os.makedirs(observation_pilot_path)
 
     # Save the observations
     observations_data_path = os.path.join(
-        workspace_path,"cohorts",cohort_name,"rollout_data",course_name,
-        pilot_name+str(observations["set"])+".pt")
+        observation_pilot_path,"observations_"+
+        course_name+str(observations["set"])+".pt")
 
     torch.save(observations,observations_data_path)
 

@@ -1,15 +1,11 @@
 {   
     "sample_set": {
-        "rollout_duration": 2.0,
-        "rollout_reps": 2,
-        "rollout_rate": 1,
-        "rollout_type": "baseline",
-        "policy_name": "vrmpc_fr",
-        "frame_name": "carl",
-        "history_epochs": 100,
-        "command_epochs": 300,
-        "visual_pipeline": "default",
-        "outdoors": false
+        "duration": 2.0,
+        "reps": 5,
+        "rate": 5,
+        "rollout": "baseline",
+        "frame": "carl",
+        "policy": "vrmpc_fr"
     },
     "trajectory_set":{
         "initial": [

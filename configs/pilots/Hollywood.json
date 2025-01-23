@@ -1,5 +1,5 @@
 {
-    "type": "SousVide_v1",
+    "type": "SVNetNoPreTrain",
     "networks": [
         {
             "type": "HistoryEncoder",
@@ -29,7 +29,7 @@
             "output_size": 128
         },
         {
-            "type": "CommandSV1",
+            "type": "CommandSV",
             "state":[
                 3,
                 4,  5,  6,

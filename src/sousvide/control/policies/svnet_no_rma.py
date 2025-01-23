@@ -1,20 +1,19 @@
 import torch
-import numpy as np
 from torch import nn
-from controller.policies.ComponentNetworks import *
-from typing import Dict,Tuple,Union,List,Any,Callable
+from sousvide.control.policies.ComponentNetworks import *
+from typing import Dict,Tuple,Any,Callable
 
-class SousVide_v2(nn.Module):    
-    def __init__(self,config:Dict[str,Any],
-                 name:str="SousVide_v2"):
+class SVNetNoRMA(nn.Module):    
+    def __init__(self,
+                 config:Dict[str,Any],
+                 name:str="SVNetNoRMA"):
+        
         """
         Defines a pilot's neural network model.
 
         Network Description:
-        Uses three separately trained networks.
-        - Parameter: History Data -> Drone Parameters Decoder
-        - Odometry:  Vision Data -> Odometry Data
-        - Commander: Odometry Data + Drone Parameters Encoder + Current Data + Objective Data -> Command
+        SV-Net with no RMA. This policies comprises of just the feature network and
+        the command network which we train together (under Commander).
 
         Args:
             config:         Configuration dictionary for the model.
@@ -29,23 +28,15 @@ class SousVide_v2(nn.Module):
         """
 
         # Initial Parent Call
-        super(SousVide_v2,self).__init__()
+        super(SVNetNoRMA,self).__init__()
 
         # ----------------------------------------------------------------------------------------------
         # Class Intermediate Variables
         # ----------------------------------------------------------------------------------------------
 
-        history_enc_cfg = config["networks"][0]
-        vision_mlp_cfg  = config["networks"][1]
-        command_sv2_cfg = config["networks"][2]
+        vision_mlp_cfg = config["networks"][0]
+        command_df_cfg = config["networks"][1]
 
-        history_enc_network = HistoryEncoder(
-                history_enc_cfg["delta"],
-                history_enc_cfg["frames"],
-                history_enc_cfg["hidden_sizes"],
-                history_enc_cfg["encoder_size"],
-                history_enc_cfg["decoder_size"]
-            )
         vision_mlp_network = VisionMLP(
                 vision_mlp_cfg["state"],
                 vision_mlp_cfg["state_layer"],
@@ -53,54 +44,41 @@ class SousVide_v2(nn.Module):
                 vision_mlp_cfg["output_size"],
                 vision_mlp_cfg["CNN"]
             )
-        commander_sv2_network = CommandSV2(
-                command_sv2_cfg["state"],
-                command_sv2_cfg["feature"],
-                command_sv2_cfg["frames"],
-                command_sv2_cfg["objective"],
-                history_enc_cfg["encoder_size"],
-                command_sv2_cfg["hidden_sizes"],
-                command_sv2_cfg["output_size"]
+        commander_df_network = CommandSVNoRMA(
+                command_df_cfg["state"],
+                command_df_cfg["objective"],
+                vision_mlp_cfg["output_size"],
+                command_df_cfg["hidden_sizes"],
+                command_df_cfg["output_size"]
             )
-
+        
         # ----------------------------------------------------------------------------------------------
         # Class Name Variables
         # ----------------------------------------------------------------------------------------------
 
         # Network ID
         self.name = name
-        self.Nz = 2
+        self.Nz = 0
 
-        # Network Components
+        # Network Components           
         self.network = nn.ModuleDict({
-            "HistoryEncoder": history_enc_network,
             "VisionMLP": vision_mlp_network,
-            "CommanderSV2": commander_sv2_network
+            "CommanderDF": commander_df_network
         })
 
         # Network Callers [Parameter,Odometry,Commander]
         self.get_data:Dict[str,Callable] = {                         
-            "Parameter": self.get_parameter_data,
-            "Odometry" : self.get_odometry_data,
             "Commander": self.get_commander_data,
             "Images": self.get_image_data
         }
 
         self.get_network:Dict[str,Dict[str,nn.Module]] = {
-            "Parameter": {
-                "Train" : self.network["HistoryEncoder"],
-                "Unlock": self.network["HistoryEncoder"]
-            },
-            "Odometry": {
-                "Train" : self.network["VisionMLP"],
-                "Unlock": self.network["VisionMLP"]
-            },
             "Commander": {
                 "Train" :self,
-                "Unlock":self.network["CommanderSV2"]
+                "Unlock":self
             }
         }
-    
+
     def extract_inputs(self,tx:torch.Tensor,Obj:torch.Tensor,
                        Img:torch.Tensor,DxU:torch.Tensor,Znn:torch.Tensor,hy_idx:int) -> Dict[str,torch.Tensor]:
         """
@@ -121,53 +99,40 @@ class SousVide_v2(nn.Module):
         """
 
         # Unused Variables
-        _ = Znn
+        _ = Znn,DxU,hy_idx
 
         # Extract Indices
-        ix_DxU_par = self.network["HistoryEncoder"].ix_DxU
         ix_tx_vis  = self.network["VisionMLP"].ix_tx
-        ix_tx_com  = self.network["CommanderSV2"].ix_tx
-        ix_obj_com = self.network["CommanderSV2"].ix_obj
-        ix_z_com   = self.network["CommanderSV2"].ix_z
+        ix_tx_com  = self.network["CommanderDF"].ix_tx
+        ix_obj_com = self.network["CommanderDF"].ix_obj
 
         # Extract Data
         xnn = {
             "tx_com" : tx[ix_tx_com].flatten(),
             "obj_com": Obj[ix_obj_com].flatten(),
-            "z_com"  : Znn[ix_z_com[0],hy_idx+ix_z_com[1]].flatten(),
-            "dxu_par": DxU[ix_DxU_par[0],hy_idx+ix_DxU_par[1]].flatten(),
-            "img_odo": Img.clone(),
-            "tx_odo" : tx[ix_tx_vis].flatten(),
+            "img_vis": Img.clone(),
+            "tx_vis" : tx[ix_tx_vis].flatten()
         }
 
         return xnn
-    
+
     def get_commander_inputs(self,xnn: Dict[str,torch.Tensor]) -> Tuple[torch.Tensor,...]:
-        return (xnn["tx_com"],xnn["obj_com"],xnn["z_com"],xnn["dxu_par"],xnn["img_odo"],xnn["tx_odo"])
-    
-    def get_odometry_data(self,xnn:Dict[str,torch.Tensor],ynn:Dict[str,torch.Tensor]) -> Tuple[Tuple[torch.Tensor,...],torch.Tensor]:
-        ix_onn = np.array([0,1])
-        return (xnn["img_odo"],xnn["tx_odo"]),ynn["onn"][ix_onn]
-    
-    def get_parameter_data(self,xnn:Dict[str,torch.Tensor],ynn:Dict[str,torch.Tensor]) -> Tuple[Tuple[torch.Tensor],torch.Tensor]:
-        return (xnn["dxu_par"],),ynn["mfn"]
+        return (xnn["tx_com"],xnn["obj_com"],xnn["img_vis"],xnn["tx_vis"])
     
     def get_commander_data(self,xnn: Dict[str,torch.Tensor],ynn: Dict[str,torch.Tensor]) -> Tuple[Tuple[torch.Tensor,...],torch.Tensor]:
         return self.get_commander_inputs(xnn),ynn["unn"]
 
     def get_image_data(self,xnn: Dict[str,torch.Tensor]) -> torch.Tensor:
-        return xnn["img_odo"]
+        return xnn["img_vis"]
     
-    def forward(self,tx_com:torch.Tensor,obj_com:torch.Tensor,z_com:torch.Tensor,
-                dxu_par:torch.Tensor,
-                img_odo:torch.Tensor,tx_odo:torch.Tensor) -> Tuple[torch.Tensor,None]:
+    def forward(self,tx_com:torch.Tensor,obj_com:torch.Tensor,
+                img_vis:torch.Tensor,tx_vis:torch.Tensor) -> Tuple[torch.Tensor,None]:
         """
         Defines the forward pass of the neural network model.
 
         Args:
             tx_com:     Current state for commander network.
             obj_com:    Objective for commander network.
-            dxu_par:    History deltas for parameter network.
             img_vis:    Image for vision network.
             tx_vis:     Current state for vision network.
 
@@ -176,13 +141,8 @@ class SousVide_v2(nn.Module):
             zcm: Empty.
         """
 
-        # Parameter Network
-        _,z_par = self.network["HistoryEncoder"](dxu_par)
-
-        # Odometry Network
-        y_odo,_ = self.network["VisionMLP"](img_odo,tx_odo)
-
         # Command Network
-        y_com,_ = self.network["CommanderSV2"](tx_com,obj_com,z_par,y_odo,z_com)
+        y_vis,_ = self.network["VisionMLP"](img_vis,tx_vis)
+        y_com,_ = self.network["CommanderDF"](tx_com,obj_com,y_vis)
 
-        return y_com,y_odo
+        return y_com,None

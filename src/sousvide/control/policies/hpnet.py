@@ -1,21 +1,21 @@
 import torch
-import numpy as np
 from torch import nn
-from controller.policies.ComponentNetworks import *
-from typing import Dict,Tuple,Union,List,Any,Callable
+from sousvide.control.policies.ComponentNetworks import HistoryEncoder,CommandHP
+from typing import Dict,Tuple,Any,Callable
 
-class SousVide_v1(nn.Module):    
+class HPNet(nn.Module):
     def __init__(self,
                  config:Dict[str,Any],
-                 name:str="SousVide_v1"):
-        
+                 name:str="HPNet"):
         """
         Defines a pilot's neural network model.
 
         Network Description:
-        Uses two separately trained networks.
-        - Parameter: History Data -> Drone Parameters Decoder
-        - Commander: Vision Data + Drone Parameters Encoder + Current Data + Objective Data -> Command
+        HotPot-Net is SV-Net without vision. This serves as a sanity check for learned
+        policies by swapping out the image input with a full state input. The policy is
+        trained in a manner similar to SV-Net where the history network is pre-trained
+        (under Parameter) and then locked during training of the command network (under
+        Commander).
 
         Args:
             config:         Configuration dictionary for the model.
@@ -30,15 +30,15 @@ class SousVide_v1(nn.Module):
         """
 
         # Initial Parent Call
-        super(SousVide_v1,self).__init__()
+        super(HPNet,self).__init__()
 
         # ----------------------------------------------------------------------------------------------
         # Class Intermediate Variables
         # ----------------------------------------------------------------------------------------------
 
+        # Network Configs
         history_enc_cfg = config["networks"][0]
-        vision_mlp_cfg = config["networks"][1]
-        command_sv_cfg = config["networks"][2]
+        command_hp0_cfg = config["networks"][1]
 
         history_enc_network = HistoryEncoder(
                 history_enc_cfg["delta"],
@@ -47,42 +47,32 @@ class SousVide_v1(nn.Module):
                 history_enc_cfg["encoder_size"],
                 history_enc_cfg["decoder_size"]
             )
-        vision_mlp_network = VisionMLP(
-                vision_mlp_cfg["state"],
-                vision_mlp_cfg["state_layer"],
-                vision_mlp_cfg["hidden_sizes"],
-                vision_mlp_cfg["output_size"],
-                vision_mlp_cfg["CNN"]
-            )
-        commander_sv_network = CommandSV(
-                command_sv_cfg["state"],
-                command_sv_cfg["objective"],
+        command_hp0_network = CommandHP(
+                command_hp0_cfg["state"],
+                command_hp0_cfg["objective"],
                 history_enc_cfg["encoder_size"],
-                vision_mlp_cfg["output_size"],
-                command_sv_cfg["hidden_sizes"],
-                command_sv_cfg["output_size"]
+                command_hp0_cfg["hidden_sizes"],
+                command_hp0_cfg["output_size"],
             )
-        
+            
         # ----------------------------------------------------------------------------------------------
         # Class Name Variables
         # ----------------------------------------------------------------------------------------------
 
         # Network ID
-        self.name = name
-        self.Nz = 0
+        self.name = name                            
+        self.Nz = 0 
 
         # Network Components           
-        self.network = nn.ModuleDict({
+        self.network = nn.ModuleDict({              
             "HistoryEncoder": history_enc_network,
-            "VisionMLP": vision_mlp_network,
-            "CommanderSV": commander_sv_network
+            "CommandHP0": command_hp0_network
         })
 
         # Network Callers [Parameter,Odometry,Commander]
         self.get_data:Dict[str,Callable] = {                         
             "Parameter": self.get_parameter_data,
-            "Commander": self.get_commander_data,
-            "Images": self.get_image_data
+            "Commander": self.get_commander_data
         }
 
         self.get_network:Dict[str,Dict[str,nn.Module]] = {
@@ -92,7 +82,7 @@ class SousVide_v1(nn.Module):
             },
             "Commander": {
                 "Train" :self,
-                "Unlock":nn.ModuleList([self.network["CommanderSV"],self.network["VisionMLP"]])
+                "Unlock":self.network["CommandHP0"]
             }
         }
 
@@ -112,31 +102,26 @@ class SousVide_v1(nn.Module):
 
         Returns:
             xnn:    Extracted inputs for the model
-
         """
-
         # Unused Variables
-        _ = Znn
+        _ = Img,Znn
 
         # Extract Indices
+        ix_tx_com  = self.network["CommandHP0"].ix_tx
+        ix_obj_com = self.network["CommandHP0"].ix_obj
         ix_DxU_par = self.network["HistoryEncoder"].ix_DxU
-        ix_tx_vis  = self.network["VisionMLP"].ix_tx
-        ix_tx_com  = self.network["CommanderSV"].ix_tx
-        ix_obj_com = self.network["CommanderSV"].ix_obj
 
-        # Extract Data
+        # xnn Variables
         xnn = {
             "tx_com" : tx[ix_tx_com].flatten(),
             "obj_com": Obj[ix_obj_com].flatten(),
-            "dxu_par": DxU[ix_DxU_par[0],hy_idx+ix_DxU_par[1]].flatten(),
-            "img_vis": Img.clone(),
-            "tx_vis" : tx[ix_tx_vis].flatten()
+            "dxu_par": DxU[ix_DxU_par[0],hy_idx+ix_DxU_par[1]].flatten()
         }
 
         return xnn
 
     def get_commander_inputs(self,xnn: Dict[str,torch.Tensor]) -> Tuple[torch.Tensor,...]:
-        return (xnn["tx_com"],xnn["obj_com"],xnn["dxu_par"],xnn["img_vis"],xnn["tx_vis"])
+        return (xnn["tx_com"],xnn["obj_com"],xnn["dxu_par"])
     
     def get_parameter_data(self,xnn:Dict[str,torch.Tensor],ynn:Dict[str,torch.Tensor]) -> Tuple[Tuple[torch.Tensor],torch.Tensor]:
         return (xnn["dxu_par"],),ynn["mfn"]
@@ -144,21 +129,15 @@ class SousVide_v1(nn.Module):
     def get_commander_data(self,xnn: Dict[str,torch.Tensor],ynn: Dict[str,torch.Tensor]) -> Tuple[Tuple[torch.Tensor,...],torch.Tensor]:
         return self.get_commander_inputs(xnn),ynn["unn"]
 
-    def get_image_data(self,xnn: Dict[str,torch.Tensor]) -> torch.Tensor:
-        return xnn["img_vis"]
-    
     def forward(self,tx_com:torch.Tensor,obj_com:torch.Tensor,
-                dxu_par:torch.Tensor,
-                img_vis:torch.Tensor,tx_vis:torch.Tensor) -> Tuple[torch.Tensor,None]:
+                dxu_par:torch.Tensor) -> Tuple[torch.Tensor,None]:
         """
         Defines the forward pass of the neural network model.
 
         Args:
             tx_com:     Current state for commander network.
-            obj_com:    Objective for commander network.
+            obj_com:    Objective for commander network
             dxu_par:    History deltas for parameter network.
-            img_vis:    Image for vision network.
-            tx_vis:     Current state for vision network.
 
         Returns:
             ycm: Command network output.
@@ -168,8 +147,7 @@ class SousVide_v1(nn.Module):
         # Parameter Network
         _,z_par = self.network["HistoryEncoder"](dxu_par)
 
-        # Command Network
-        y_vis,_ = self.network["VisionMLP"](img_vis,tx_vis)
-        y_com,_ = self.network["CommanderSV"](tx_com,obj_com,z_par,y_vis)
+        # Commander Network
+        y_com,_ = self.network["CommandHP0"](tx_com,obj_com,z_par)
 
         return y_com,None

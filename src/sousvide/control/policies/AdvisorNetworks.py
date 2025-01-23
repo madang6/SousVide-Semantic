@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from controller.policies.BaseNetworks import *
+from sousvide.control.policies.BaseNetworks import *
 from typing import List
 
 class SimpleAdvisor(nn.Module):

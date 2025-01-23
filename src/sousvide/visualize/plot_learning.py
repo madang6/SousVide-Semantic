@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from typing import List, Literal
 import os
 import torch
-import visualize.plot_synthesize as ps
+import sousvide.visualize.plot_synthesize as ps
 from tabulate import tabulate
 
 def plot_losses(cohort_name:str,roster:List[str],network:Literal["Parameter","Odometry","Commander"]):

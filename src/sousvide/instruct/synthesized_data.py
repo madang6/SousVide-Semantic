@@ -5,7 +5,7 @@ import torch
 from torch import NoneType, nn
 from torch.utils.data import DataLoader,Dataset
 from tqdm.notebook import trange
-from controller.pilot import Pilot
+from sousvide.control.pilot import Pilot
 from typing import List,Tuple,Literal,Union,Dict,Callable
 from enum import Enum
 

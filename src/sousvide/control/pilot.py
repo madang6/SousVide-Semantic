@@ -9,7 +9,7 @@ from scipy.spatial.transform import Rotation
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
-import controller.policies.generate_networks as gn
+import sousvide.control.policies.generate_networks as gn
 
 class Pilot():
     def __init__(self,cohort_name:str,pilot_name:str,

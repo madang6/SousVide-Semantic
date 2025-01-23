@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import numpy as np
 from typing import List,Tuple
-import controller.policies.BaseNetworks as bn
+import sousvide.control.policies.BaseNetworks as bn
 
 class HistoryEncoder(nn.Module):
     def __init__(self,
@@ -95,7 +95,7 @@ class DirectHistoryEncoder(nn.Module):
 
         return ynn,znn
     
-class CommandHP0(nn.Module):
+class CommandHP(nn.Module):
     def __init__(self, 
                  state:List[int],
                  objective:List[int],
@@ -120,7 +120,7 @@ class CommandHP0(nn.Module):
         """
 
         # Initialize the parent class
-        super(CommandHP0, self).__init__()
+        super(CommandHP, self).__init__()
 
         # Some useful intermediate variables
         input_size = len(state) + len(objective) + fparam_size
@@ -149,7 +149,7 @@ class CommandHP0(nn.Module):
 
         return ycm,None
 
-class CommandDF(nn.Module):
+class CommandSVNoRMA(nn.Module):
     def __init__(self,
                  state:List[int],
                  objective:List[int],
@@ -174,7 +174,7 @@ class CommandDF(nn.Module):
         """
 
         # Initialize the parent class
-        super(CommandDF, self).__init__()
+        super(CommandSVNoRMA, self).__init__()
 
         # Some useful intermediate variables
         input_size = len(state) + len(objective) + fimage_size
@@ -260,67 +260,6 @@ class CommandSV(nn.Module):
 
         # Command MLP
         xcm = torch.cat((tx,obj,zpar,zimg),-1)
-        ycm = self.network(xcm)
-
-        return ycm,None
-    
-class CommandSV2(nn.Module):
-    def __init__(self,
-                 state:List[int],
-                 fimage:List[int],
-                 frames:List[int],
-                 objective:List[int],
-                 fparam_size:int,
-                 hidden_sizes:List[int],
-                 output_size:int,
-                 active_end:bool=False,dropout:float=0.2):
-        """
-        Initialize a command MLP model.
-
-        Args:
-            state:          List of state indices.
-            objective:      List of objective indices.
-            fparam_size:    Size of the parameter feature vector.
-            fimage_size:    Size of the image feature vector.
-            hidden_sizes:   List of hidden layer sizes.
-            output_size:    Output size.
-            active_end:     Activation function at the end.
-            dropout:        Dropout rate
-
-        Variables:
-            network:       List of neural networks.
-        """
-
-        # Initialize the parent class
-        super(CommandSV2, self).__init__()
-
-        # Some useful intermediate variables
-        input_size = len(state) + len(objective) + len(fimage)*(len(frames)+1) + fparam_size
-
-        # Define the model
-        self.ix_tx   = np.array(state)
-        self.ix_obj  = np.array(objective)
-        self.ix_z    = np.ix_(np.array(fimage),-1-np.array(frames))
-        self.network = bn.SimpleMLP(input_size, hidden_sizes, output_size,
-                                    active_end=active_end,dropout=dropout)
-
-    def forward(self, tx:torch.Tensor,obj:torch.Tensor,zpar:torch.Tensor,zimg1:torch.Tensor,zimg2:torch.Tensor) -> Tuple[torch.Tensor,None]:
-        """
-        Forward pass of the model.
-
-        Args:
-            tx:     Time+State tensor.
-            obj:    Objective tensor.
-            zpar:   Parameter tensor.
-            zimg:   Image tensor.
-
-        Returns:
-            ycm:  Output tensor.
-            zcm:  None.
-        """
-
-        # Command MLP
-        xcm = torch.cat((tx,obj,zpar,zimg1,zimg2),-1)
         ycm = self.network(xcm)
 
         return ycm,None

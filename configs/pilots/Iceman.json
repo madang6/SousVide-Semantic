@@ -1,8 +1,8 @@
 {
-    "type": "SousVide_v1",
+    "type": "SVNetDirect",
     "networks": [
         {
-            "type": "HistoryEncoder",
+            "type": "DirectHistoryEncoder",
             "delta": [
                 0,
                 1,  2,  3,
@@ -13,22 +13,22 @@
             "frames": [
                 0,  1,  2,  3,  4
             ],
-            "hidden_sizes": [ 32, 16],
-            "encoder_size": 8,
-            "decoder_size": 2
+            "hidden_sizes": [ 64, 32, 8],
+            "output_size": 2
         },
         {
             "type": "VisionMLP",
             "CNN": "SqueezeNet1_1",
             "state": [
+                3,
                 7,  8,  9, 10
             ],
-            "state_layer": 1,
+            "state_layer": 0,
             "hidden_sizes": [512,256],
             "output_size": 128
         },
         {
-            "type": "CommandSV1",
+            "type": "CommandSV",
             "state":[
                 3,
                 4,  5,  6,

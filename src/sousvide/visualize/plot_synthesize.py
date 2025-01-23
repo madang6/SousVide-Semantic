@@ -5,10 +5,10 @@ import pickle
 from scipy.spatial.transform import Rotation as R
 import matplotlib.pyplot as plt
 from typing import List,Tuple
-import synthesize.trajectory_helper as th
+import figs.utilities.trajectory_helper as th
 from typing import Dict,Union,Tuple,List
 
-def CP_to_3D(Tp:List[np.ndarray],CP:List[np.ndarray],
+def CP_to_spatial(Tp:List[np.ndarray],CP:List[np.ndarray],
                 hz:int=20,n:int=500,plot_last:bool=False):
     # # Clear all plots
     # plt.close('all')
@@ -70,7 +70,7 @@ def CP_to_3D(Tp:List[np.ndarray],CP:List[np.ndarray],
             ax.scatter(CPk[i,0,0],CPk[i,1,0],CPk[i,2,0],color=traj_colors[idx%len(traj_colors)],marker='x')
     plt.show(block=False)
 
-def CP_to_xv(Tp:np.ndarray,CP:np.ndarray,hz:int=30):
+def CP_to_time(Tp:np.ndarray,CP:np.ndarray,hz:int=30):
     # # Clear all plots
     # plt.close('all')
     
@@ -91,7 +91,7 @@ def CP_to_xv(Tp:np.ndarray,CP:np.ndarray,hz:int=30):
     xmax,xmin = np.ceil(np.max(Xmax)),np.floor(np.min(Xmin))
     ymax,ymin = np.ceil(np.max(Ymax)),np.floor(np.min(Ymin))
 
-    xv_lim = np.array([
+    xlim = np.array([
         [ xmin, xmax],
         [ ymin, ymax],
         [  1.0, -3.0],
@@ -116,7 +116,7 @@ def CP_to_xv(Tp:np.ndarray,CP:np.ndarray,hz:int=30):
             for idx,X in enumerate(XX):
                 axs[j,i].plot(TT[idx],X[idd,:],alpha=0.5)
 
-            axs[j,i].set_ylim(xv_lim[idd,:])
+            axs[j,i].set_ylim(xlim[idd,:])
             axs[j,i].set_ylabel(ylabels[i][j])
 
     axs[0, 0].set_title('Position')
@@ -136,7 +136,7 @@ def CP_to_xv(Tp:np.ndarray,CP:np.ndarray,hz:int=30):
                 for idx,X in enumerate(XX):
                     axs[j,i].plot(TT[idx],X[idd,:],alpha=0.5)
                 
-                axs[j,i].set_ylim(xv_lim[idd,:])
+                axs[j,i].set_ylim(xlim[idd,:])
                 axs[j,i].set_ylabel(ylabels[i][j])
 
     axs[0, 0].set_title('Orientation')
@@ -187,7 +187,7 @@ def CP_to_fo(Tp:np.ndarray,CP:np.ndarray,hz:int=30):
     plt.tight_layout()
     plt.show()
 
-def tXU_to_3D(tXU_list:List[np.ndarray],
+def tXU_to_spatial(tXU_list:List[np.ndarray],
               n:int=None):
     
     # # Clear all plots
@@ -234,7 +234,7 @@ def tXU_to_3D(tXU_list:List[np.ndarray],
 
     plt.show(block=False)
 
-def RO_to_3D(RO:List[Dict[str,Union[np.ndarray,int]]],
+def RO_to_spatial(RO:List[Dict[str,Union[np.ndarray,int]]],
               n:int=None,scale=1.0,plot_last:bool=False,
               tXUi:Union[None,np.ndarray]=None):
 
@@ -304,7 +304,7 @@ def RO_to_3D(RO:List[Dict[str,Union[np.ndarray,int]]],
     plt.tight_layout()
     plt.show(block=False)
 
-def RO_to_xu(RO:List[Dict[str,Union[np.ndarray,int]]],tXUi:Union[None,np.ndarray]=None):
+def RO_to_time(RO:List[Dict[str,Union[np.ndarray,int]]],tXUi:Union[None,np.ndarray]=None):
     # # Clear all plots
     # plt.close('all')
 
@@ -373,19 +373,15 @@ def RO_to_xu(RO:List[Dict[str,Union[np.ndarray,int]]],tXUi:Union[None,np.ndarray
             axs[i,0].set_xlim([0.0,tXUi[0,-1]])
         # axs[j].set_ylim(qlim[j,:])
 
-    print("TODO: The f_th is plotted flipped for more intuitive understanding. Find a standardization for this...")
     for i in range(4):
         for ro in RO:
             Tro,Uro = ro["Tro"],ro["Uro"]
-            Uro[0,:] = -Uro[0,:]
+            Uro[0,:] = Uro[0,:]
 
             axs[i,1].plot(Tro[0:-1],Uro[i,:],alpha=0.5)
 
         if tXUi is not None:
-            if i == 0:
-                pass
-            else:
-                axs[i,1].plot(tXUi[0,:],tXUi[10+i,:],color='k', linestyle='--',linewidth=0.8)
+            axs[i,1].plot(tXUi[0,:],tXUi[11+i,:],color='k', linestyle='--',linewidth=0.8)
         
         axs[i,1].set_ylabel(ylabels[1][i])
 
@@ -402,7 +398,7 @@ def RO_to_xu(RO:List[Dict[str,Union[np.ndarray,int]]],tXUi:Union[None,np.ndarray
     plt.subplots_adjust(bottom=0.15)  # Adjust the subplot layout to make room for the legend
     plt.show(block=False)
 
-def tXU_to_xv(tXU_list:List[np.ndarray],q_clean:bool=True):
+def tXU_to_time(tXU_list:List[np.ndarray],q_clean:bool=True):
     # # Clear all plots
     # plt.close('all')
 
@@ -503,7 +499,7 @@ def quad_frame(x:np.ndarray,ax:plt.Axes,scale:float=1.0):
         ax.plot(frame[0,:],frame[1,:],frame[2,:], frame_labels[j],label='_nolegend_')
 
 def unpack_trajectory(Tp:np.ndarray,CP:np.ndarray,hz:int,
-                      mode:str='xv',trim:bool=True) -> Tuple[np.ndarray,np.ndarray]:
+                      mode:str='time',trim:bool=True) -> Tuple[np.ndarray,np.ndarray]:
     """
     Unpack the trajectory from the control points.
     """
@@ -512,7 +508,7 @@ def unpack_trajectory(Tp:np.ndarray,CP:np.ndarray,hz:int,
     Nt = int(Tp[-1]*hz+1)
     T = np.zeros(Nt)
 
-    if mode == 'xv':
+    if mode == 'time':
         X = np.zeros((13,Nt))
     else:
         X = np.zeros((Nt,4,12))
@@ -530,13 +526,13 @@ def unpack_trajectory(Tp:np.ndarray,CP:np.ndarray,hz:int,
         fo = th.ts_to_fo(tk-t0,tf-t0,CP[idx,:,:])
 
         T[k] = tk
-        if mode == 'xv':
+        if mode == 'time':
             X[:,k] = th.fo_to_xu(fo)[0:13]
         else:
             X[k,:,:] = fo
 
     # Ensure continuity of the quaternion
-    if mode == 'xv':
+    if mode == 'time':
         qr = np.array([0.0,0.0,0.0,1.0])
         for k in range(Nt):
             q = X[6:10,k]
@@ -569,12 +565,12 @@ def plot_data(cohort:str):
 
     # Plot the data
     print("Plotting the training data")
-    tXU_to_3D(tXU_tn,plot_last=True)
-    tXU_to_xv(tXU_tn)
+    tXU_to_spatial(tXU_tn,plot_last=True)
+    tXU_to_time(tXU_tn)
 
     print("Plotting the testing data")
-    tXU_to_3D(tXU_tt,plot_last=True)
-    tXU_to_xv(tXU_tt)
+    tXU_to_spatial(tXU_tt,plot_last=True)
+    tXU_to_time(tXU_tt)
 
 def plot_samples(cohort:str,Nsamples:int=50,random:bool=True):
     """"
@@ -625,5 +621,5 @@ def plot_samples(cohort:str,Nsamples:int=50,random:bool=True):
             trajectories['data'] = trajectories['data'][0:Nsamples]
 
             # Plot the data
-            RO_to_3D(trajectories['data'],scale=0.5,tXUi=trajectories['tXUi'])
-            RO_to_xu(trajectories['data'],tXUi=trajectories['tXUi'])
+            RO_to_spatial(trajectories['data'],scale=0.5,tXUi=trajectories['tXUi'])
+            RO_to_time(trajectories['data'],tXUi=trajectories['tXUi'])
