@@ -138,7 +138,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
             Tsp = TTsp[idx]
             
             # Generate sample frames
-            Frames = generate_frames(len(Tsp),base_frame_config,frame_set_config)
+            Frames = generate_frames(Tsp,base_frame_config,frame_set_config)
 
             # Generate sample perturbations
             Perturbations  = generate_perturbations(Tsp,Tpd,CPd,trajectory_set_config)
