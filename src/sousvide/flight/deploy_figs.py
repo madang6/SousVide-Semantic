@@ -83,7 +83,7 @@ def simulate_roster(cohort_name:str,method_name:str,
     for pilot_name in roster:
         # Load Pilot
         if pilot_name == "expert":
-            policy = VehicleRateMPC(course_name,base_policy_name,base_frame_name)
+            policy = VehicleRateMPC(course_name,base_policy_name,base_frame_name,pilot_name)
         else:
             policy = Pilot(cohort_name,pilot_name)
             policy.set_mode('deploy')

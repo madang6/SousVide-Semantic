@@ -103,13 +103,10 @@ def review_simulations(cohort_name:str,course_name:str,roster:List[str],plot_sho
     output_path = os.path.join(workspace_path,"cohorts",cohort_name,"output")
 
     # Get expert data ==============================================================================================
-    trajectories_expert = torch.load(os.path.join(output_path,"sim_data_"+course_name+"_expert.pt"))
+    trajectories_expert = torch.load(os.path.join(output_path,"sim_"+course_name+"_expert.pt"))
     Ebnd_expert = np.zeros((len(trajectories_expert),trajectories_expert[0]["Ndata"]))
     Tsol_expert = np.zeros((len(trajectories_expert),trajectories_expert[0]["Ndata"]))
-    methods = []
     for idx,trajectory in enumerate(trajectories_expert):
-        if trajectory["method"] not in methods:
-            methods.append(trajectory["method"])
         
         # Error Bounds
         for i in range(trajectory["Ndata"]):
@@ -134,7 +131,7 @@ def review_simulations(cohort_name:str,course_name:str,roster:List[str],plot_sho
     print("Visualization ------------------------------------------------------------------------------------------")
     if plot_show:
         print("Pilot Name : Expert")
-        ps.RO_to_3D(trajectories_expert,plot_last=True)
+        ps.RO_to_spatial(trajectories_expert,plot_last=True)
     
     # Get student data ==============================================================================================
 
@@ -144,10 +141,9 @@ def review_simulations(cohort_name:str,course_name:str,roster:List[str],plot_sho
     print("Course Name:",course_name)
 
     print("Roster:",roster)
-    print("Methods:",methods)
     for pilot_name in roster:
         # Load Simulation Data
-        trajectories = torch.load(os.path.join(output_path,"sim_data_"+course_name+"_"+pilot_name+".pt"))
+        trajectories = torch.load(os.path.join(output_path,"sim_"+course_name+"_"+pilot_name+".pt"))
         
         Ebnd = np.zeros((len(trajectories),trajectories[0]["Ndata"]))
         Tsol = np.zeros((len(trajectories),trajectories[0]["Ndata"]))
@@ -175,7 +171,7 @@ def review_simulations(cohort_name:str,course_name:str,roster:List[str],plot_sho
             print("========================================================================================================")
             print("Visualization ------------------------------------------------------------------------------------------")
             print("Pilot Name :",pilot_name)
-            ps.RO_to_3D(trajectories,plot_last=True)
+            ps.RO_to_spatial(trajectories,plot_last=True)
 
     print("========================================================================================================")
     print("Performance --------------------------------------------------------------------------------------------")
