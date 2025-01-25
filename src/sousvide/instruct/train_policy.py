@@ -57,18 +57,20 @@ def train_student(cohort_name:str,student:Pilot,
     print("Training Student: ",student.name)
     
     # Setup Loss Variables (load if exists)
+    losses: Dict[str, List] = {}
     if os.path.exists(losses_path):
         losses = torch.load(losses_path)
-        
-        Neps_p = losses["Neps"]
-        Loss_train_p,Loss_tests_p = losses["train"],losses["tests"]
-        t_train_prev = losses["t_train"]
+
         print("Re-training existing network.")
-        print("Previous Epochs: ",Neps_p)
+        print("Previous Epochs: ", sum(losses["Neps"]), losses["Neps"])
+
+        losses["train"].append([]),losses["test"].append([])
+        losses["Neps"].append(0),losses["Nspl"].append(0),losses["t_train"].append(0)
     else:
-        Neps_p = 0
-        Loss_train_p,Loss_tests_p = np.zeros(0),np.zeros(0)
-        t_train_prev = 0
+        losses = {
+            "train": [None], "test": [None],
+            "Neps": [None], "Nspl": [None], "t_train": [None]
+        }
         print("Training new network.")
 
     Loss_train,Loss_tests = [],[]
@@ -83,20 +85,17 @@ def train_student(cohort_name:str,student:Pilot,
             unlock_networks(student,mode)
 
             # Get Observation Data Files (Paths)
-            od_train_files,od_test_file = get_data_paths(cohort_name,student.name)
+            od_train_files,od_test_files = get_data_paths(cohort_name,student.name)
 
-            # Load test set
-            tt_dset = generate_dataset(od_test_file,student,mode,device)
-            dtests = DataLoader(tt_dset, batch_size=batch_size, shuffle=True, drop_last = False)
-
-            loss_log_tn,log_log_tt = [],[]
+            # Training
+            loss_log_tn =[]
             for od_train_file in od_train_files:
                 # Load Datasets
-                tn_dset = generate_dataset(od_train_file,student,mode,device)
-                dtrain = DataLoader(tn_dset, batch_size=batch_size, shuffle=True, drop_last = False)
+                dataset = generate_dataset(od_train_file,student,mode,device)
+                dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last = False)
 
                 # Training
-                for input,label in dtrain:
+                for input,label in dataloader:
                     # Move to GPU
                     input,label = tuple(tensor.to(device) for tensor in input),label.to(device)
 
@@ -112,8 +111,15 @@ def train_student(cohort_name:str,student:Pilot,
                     # Save loss logs
                     loss_log_tn.append((label.shape[0],loss.item()))
 
+            # Testing
+            log_log_tt = []
+            for od_test_file in od_test_files:
+                # Load Datasets
+                dataset = generate_dataset(od_test_file,student,mode,device)
+                dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last = False)
+
                 # Testing
-                for input,label in dtests:
+                for input,label in dataloader:
                     # Move to GPU
                     input,label = tuple(tensor.to(device) for tensor in input),label.to(device)
 
@@ -141,15 +147,15 @@ def train_student(cohort_name:str,student:Pilot,
 
                 # Record the end time
                 end_time = time.time()
-                t_train = t_train_prev + end_time - start_time
+                t_train = end_time - start_time
 
                 torch.save(student.model,model_path)
 
-                losses = {
-                    "train": np.hstack((Loss_train_p,np.array(Loss_train))),
-                    "tests": np.hstack((Loss_tests_p,np.array(Loss_tests))),
-                    "Neps":Neps_p+ep+1,
-                    "Nspl":Ntn,"t_train":t_train}
+                losses["train"][-1] = Loss_train
+                losses["test"][-1] = Loss_tests
+                losses["Neps"][-1] = ep+1
+                losses["Nspl"][-1] = Ntn
+                losses["t_train"][-1] = t_train
 
                 # Save Loss
                 torch.save(losses,losses_path)

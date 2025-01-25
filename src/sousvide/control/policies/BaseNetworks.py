@@ -214,10 +214,13 @@ class DirectEncoder(nn.Module):
         for size in hidden_sizes:
             layers.append(nn.Linear(prev_size, size))
             layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout))
+
+            if size != hidden_sizes[-1]:
+                layers.append(nn.Dropout(dropout))
+                
             prev_size = size
+
         layers.append(nn.Linear(prev_size, encoder_output_size))
-        layers.append(nn.ReLU())
 
         # Add final activation function if required
         if active_end:

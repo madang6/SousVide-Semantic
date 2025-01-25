@@ -1,19 +1,20 @@
 import numpy as np
 import json
 import os
-from typing import Dict,Union,Tuple,List
-from tqdm.notebook import trange
 import copy
 import torch
 
+from typing import Dict,Union,Tuple,List
+from tqdm.notebook import trange
+
 import figs.utilities.trajectory_helper as th
 import figs.tsplines.min_snap as ms
+import sousvide.synthesize.synthesize_helper as sh
+import sousvide.synthesize.data_utils as du
+
 from figs.simulator import Simulator
 from figs.control.vehicle_rate_mpc import VehicleRateMPC
 from figs.dynamics.model_specifications import generate_specifications
-
-import sousvide.synthesize.synthesize_helper as sh
-import sousvide.synthesize.data_utils as du
 
 def generate_rollout_data(cohort_name:str,method_name:str,
                           flights:List[Tuple[str,str]],
@@ -52,6 +53,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
     Tdt_ro = sample_set_config["duration"]
     Nro_tp = sample_set_config["reps"]
     Ntp_sc = sample_set_config["rate"]
+    err_tol = sample_set_config["tolerance"]
     rollout_name = sample_set_config["rollout"]
     policy_name = sample_set_config["policy"]
     frame_name = sample_set_config["frame"]
@@ -144,10 +146,10 @@ def generate_rollout_data(cohort_name:str,method_name:str,
             # Generate rollout data
             Trajectories,Images = generate_rollouts(
                 simulator,course_config,policy_config,
-                Frames,Perturbations,Tdt_ro)
+                Frames,Perturbations,Tdt_ro,err_tol)
 
             # Save the rollout data
-            du.save_rollouts(cohort_path,course_name,Trajectories,Images,tXUd,idx)
+            save_rollouts(cohort_path,course_name,Trajectories,Images,tXUd,idx)
 
             # Update the data count
             Ndata += sum([trajectory["Ndata"] for trajectory in Trajectories])
@@ -157,7 +159,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
         print("Generated ",Ndata," points of data.")
         print("--------------------------------------------------------------------------")
 
-def generate_frames(Nsps:int,
+def generate_frames(Tsps:np.ndarray,
                     base_frame_config:Dict[str,Union[int,float,List[float]]],
                     frame_set_config:Dict[str,Union[float,List[float]]],
                     rng_seed:Union[int,None]=None) -> List[Dict[str,Union[np.ndarray,str,int,float]]]:
@@ -168,7 +170,7 @@ def generate_frames(Nsps:int,
     configurations generated is determined by the sample set config dictionary.
 
     Args:
-        Nsps:                   Number of drones to generate.
+        Tsps:                   Sample times.
         base_frame_config:      Base frame configuration dictionary.
         frame_set_config:       Frame sample set config dictionary.
         rng_seed:               Random number generator seed.
@@ -176,6 +178,9 @@ def generate_frames(Nsps:int,
     Returns:
         Drones:                 List of drone configurations (dictionary format).
     """
+
+    # Sample Count
+    Nsps = len(Tsps)
 
     # Set random number generator seed
     if rng_seed is not None:
@@ -229,7 +234,7 @@ def generate_perturbations(Tsps:np.ndarray,
         Perturbations:          List of perturbations (dictionary format).
     """
 
-    # Unpack the trajectory
+    # Sample Count
     Nsps = len(Tsps)
 
     # Set random number generator seed
@@ -273,7 +278,7 @@ def generate_rollouts(
         policy_config:Dict[str,Union[int,float,List[float]]],
         Frames:Dict[str,Union[np.ndarray,str,int,float]],
         Perturbations:Dict[str,Union[float,np.ndarray]],
-        Tdt_ro:float,
+        Tdt_ro:float,err_tol:float
         ) -> Tuple[List[Dict[str,Union[np.ndarray,np.ndarray,np.ndarray]]],List[torch.Tensor]]:
     """
     Generates rollout data for the quadcopter given a list of drones and initial states (perturbations).
@@ -285,9 +290,11 @@ def generate_rollouts(
 
     Args:
         simulator:          Simulator object.
+        course_config:      Course configuration dictionary.
+        policy_config:      Policy configuration dictionary.
         Frames:             List of drone configurations.
         Perturbations:      List of perturbed initial states.
-        sample_set_config:  Sample set config dictionary.
+        Tdt_ro:             Rollout duration.
 
     Returns:
         Trajectories:           List of trajectory rollouts.
@@ -297,7 +304,8 @@ def generate_rollouts(
     # Unpack the trajectory
     Tpi,CPi = ms.solve(course_config)
     obj = sh.ts_to_obj(Tpi,CPi)
-
+    tXUi = th.TS_to_tXU(Tpi,CPi,None,10)
+    
     # Initialize rollout variables
     Trajectories,Images = [],[]
 
@@ -307,31 +315,79 @@ def generate_rollouts(
         t0,x0 = perturbation["t0"],perturbation["x0"]
         tf = t0 + Tdt_ro
 
-        # Some useful intermediate variables
+        # Load the simulation variables
         sim.load_frame(frame_config)
         ctl = VehicleRateMPC(course_config,policy_config,frame_config)
         
         # Simulate the flight
         Tro,Xro,Uro,Imgs,Tsol,Adv = sim.simulate(ctl,t0,tf,x0)
         
-        # TODO: either make Xid from Tpi,CPi or maybe it's ok to leave it blank?
-        trajectory = {
-            "Tro":Tro,"Xro":Xro,"Uro":Uro,
-            "Xid":None,"obj":obj,"Ndata":Uro.shape[1],"Tsol":Tsol,"Adv":Adv,
-            "rollout_id":str(idx).zfill(5),
-            "course":course_config["name"],
-            "frame":frame_config}
+        # Check if the rollout data is useful
+        err = np.min(np.linalg.norm(tXUi[1:4,:]-Xro[0:3,-1].reshape(-1,1),axis=0))
+        if err < err_tol:
+            # Package the rollout data
+            trajectory = {
+                "Tro":Tro,"Xro":Xro,"Uro":Uro,
+                "Xid":tXUi[1:11,:],"obj":obj,"Ndata":Uro.shape[1],"Tsol":Tsol,"Adv":Adv,
+                "rollout_id":str(idx).zfill(5),
+                "course":course_config["name"],
+                "frame":frame_config}
 
-        images = {
-            "images":Imgs,
-            "rollout_id":str(idx).zfill(5),"course":course_config["name"]
-        }
+            images = {
+                "images":Imgs,
+                "rollout_id":str(idx).zfill(5),"course":course_config["name"]
+            }
 
-        # Store rollout data
-        Trajectories.append(trajectory)
-        Images.append(images)
+            # Store rollout data
+            Trajectories.append(trajectory)
+            Images.append(images)
 
         # Clear policy
         del ctl
 
     return Trajectories,Images
+
+def save_rollouts(cohort_path:str,course_name:str,
+                  Trajectories:List[Tuple[np.ndarray,np.ndarray,np.ndarray]],
+                  Images:List[torch.Tensor],
+                  tXUi:np.ndarray,
+                  stack_id:Union[str,int]) -> None:
+    """
+    Saves the rollout data to a .pt file in folders corresponding to coursename within the cohort 
+    directory. The rollout data is stored as a list of rollout dictionaries of size stack_size for
+    ease of comprehension and loading (at a cost of storage space).
+    
+    Args:
+        cohort_path:    Cohort path.
+        course_name:    Name of the course.
+        Trajectories:   Rollout data.
+        Images:         Image data.
+        tXUi:           Ideal trajectory data.
+        stack_id:       Stack id.
+
+    Returns:
+        None:           (rollout data saved to cohort directory)
+    """
+
+    # Create rollout course directory (if it does not exist)
+    rollout_course_path = os.path.join(cohort_path,"rollout_data",course_name)
+    if not os.path.exists(rollout_course_path):
+        os.makedirs(rollout_course_path)
+    
+    # Save the stacks
+    Ndata = sum([trajectory["Ndata"] for trajectory in Trajectories])
+    data_set_name = str(stack_id).zfill(3) if type(stack_id) == int else str(stack_id)
+    trajectory_data_set_path = os.path.join(rollout_course_path,"trajectories"+data_set_name+".pt")
+    image_data_set_path = os.path.join(rollout_course_path,"images"+data_set_name+".pt")
+
+    # Compress the image data
+    Images = du.compress_data(Images)
+
+    trajectory_data_set = {"data":Trajectories,
+                           "tXUi":tXUi,
+                            "set":data_set_name,"Ndata":Ndata,"course":course_name}
+    image_data_set = {"data":Images,
+                        "set":data_set_name,"Ndata":Ndata,"course":course_name}
+
+    torch.save(trajectory_data_set,trajectory_data_set_path)
+    torch.save(image_data_set,image_data_set_path)

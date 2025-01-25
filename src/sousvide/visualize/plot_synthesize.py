@@ -388,6 +388,7 @@ def RO_to_time(RO:List[Dict[str,Union[np.ndarray,int]]],tXUi:Union[None,np.ndarr
         if tXUi is not None:
             axs[i,1].set_xlim([0.0,tXUi[0,-1]])
 
+    axs[0, 1].invert_yaxis()
     axs[0,0].set_title('Orientation')
     axs[0,1].set_title('Control Inputs')
 

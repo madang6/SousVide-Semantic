@@ -3,10 +3,11 @@ import torch
 import time
 import os
 import json
-from typing import List,Dict,Union,Tuple,Literal
 import numpy.typing as npt
-from scipy.spatial.transform import Rotation
 import albumentations as A
+
+from typing import Dict,Union,Tuple,Literal
+from scipy.spatial.transform import Rotation
 from albumentations.pytorch import ToTensorV2
 
 import sousvide.control.policies.generate_networks as gn
@@ -69,7 +70,7 @@ class Pilot():
         default_config_path = os.path.join(
             workspace_path,"configs","pilots",pilot_name+".json")
         pilot_path = os.path.join(
-            workspace_path,"cohorts",cohort_name,pilot_name)
+            workspace_path,"cohorts",cohort_name,'roster',pilot_name)
         pilot_config_path = os.path.join(
             pilot_path,"config.json")
         
@@ -97,8 +98,11 @@ class Pilot():
         # Pilot Identifier Variables
         # ---------------------------------------------------------------------
 
+        # Necessary Variables for Base Controller -----------------------------
         self.name = pilot_name
         self.hz = hz
+        self.nzcr = None
+
         self.path = pilot_path
         self.policy_type = "None" if profile["type"] is None else profile["type"]
 
@@ -346,8 +350,8 @@ class Pilot():
         return unn,znn,adv,xnn,tsol
     
     def control(self,
-                upr:np.ndarray,
                 tcr:float,xcr:np.ndarray,
+                upr:np.ndarray,
                 obj:np.ndarray,
                 icr:Union[npt.NDArray[np.uint8],None],zcr:Union[torch.Tensor,None]) -> Tuple[
                     np.ndarray,
@@ -358,9 +362,9 @@ class Pilot():
         Name mask for the OODA control loop. Variable position swap to match generic controllers.
         
         Args:
-            upr:    Previous control input.
             tcr:    Current flight time.
             xcr:    Current state in world frame (observed).
+            upr:    Previous control input.
             obj:    Objective vector.
             icr:    Current image frame.
             zcr:    Input feature vector.

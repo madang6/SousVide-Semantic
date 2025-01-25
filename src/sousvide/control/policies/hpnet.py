@@ -38,7 +38,7 @@ class HPNet(nn.Module):
 
         # Network Configs
         history_enc_cfg = config["networks"][0]
-        command_hp0_cfg = config["networks"][1]
+        command_hp_cfg = config["networks"][1]
 
         history_enc_network = HistoryEncoder(
                 history_enc_cfg["delta"],
@@ -47,12 +47,12 @@ class HPNet(nn.Module):
                 history_enc_cfg["encoder_size"],
                 history_enc_cfg["decoder_size"]
             )
-        command_hp0_network = CommandHP(
-                command_hp0_cfg["state"],
-                command_hp0_cfg["objective"],
+        command_hp_network = CommandHP(
+                command_hp_cfg["state"],
+                command_hp_cfg["objective"],
                 history_enc_cfg["encoder_size"],
-                command_hp0_cfg["hidden_sizes"],
-                command_hp0_cfg["output_size"],
+                command_hp_cfg["hidden_sizes"],
+                command_hp_cfg["output_size"],
             )
             
         # ----------------------------------------------------------------------------------------------
@@ -66,7 +66,7 @@ class HPNet(nn.Module):
         # Network Components           
         self.network = nn.ModuleDict({              
             "HistoryEncoder": history_enc_network,
-            "CommandHP0": command_hp0_network
+            "CommandHP": command_hp_network
         })
 
         # Network Callers [Parameter,Odometry,Commander]
@@ -82,7 +82,7 @@ class HPNet(nn.Module):
             },
             "Commander": {
                 "Train" :self,
-                "Unlock":self.network["CommandHP0"]
+                "Unlock":self.network["CommandHP"]
             }
         }
 
@@ -107,8 +107,8 @@ class HPNet(nn.Module):
         _ = Img,Znn
 
         # Extract Indices
-        ix_tx_com  = self.network["CommandHP0"].ix_tx
-        ix_obj_com = self.network["CommandHP0"].ix_obj
+        ix_tx_com  = self.network["CommandHP"].ix_tx
+        ix_obj_com = self.network["CommandHP"].ix_obj
         ix_DxU_par = self.network["HistoryEncoder"].ix_DxU
 
         # xnn Variables
@@ -148,6 +148,6 @@ class HPNet(nn.Module):
         _,z_par = self.network["HistoryEncoder"](dxu_par)
 
         # Commander Network
-        y_com,_ = self.network["CommandHP0"](tx_com,obj_com,z_par)
+        y_com,_ = self.network["CommandHP"](tx_com,obj_com,z_par)
 
         return y_com,None

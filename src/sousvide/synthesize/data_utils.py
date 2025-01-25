@@ -1,13 +1,11 @@
 import numpy as np
-import json
-import os
-import torch
-from typing import Dict,Union,Tuple,List
-
-import sousvide.synthesize.synthesize_helper as sh
 
 from PIL import Image
 from io import BytesIO
+from typing import Dict,Union
+
+import sousvide.synthesize.synthesize_helper as sh
+
 def decompress_data(image_dict:Dict[str,Union[str,np.ndarray]]) -> Dict[str,Union[str,np.ndarray]]:
     """
     We apply a compression if the images are too large to be saved in the .pt file. This function
@@ -63,80 +61,6 @@ def compress_data(Images):
     
     return Images
 
-def save_rollouts(cohort_path:str,course_name:str,
-                  Trajectories:List[Tuple[np.ndarray,np.ndarray,np.ndarray]],
-                  Images:List[torch.Tensor],
-                  tXUi:np.ndarray,
-                  stack_id:Union[str,int]) -> None:
-    """
-    Saves the rollout data to a .pt file in folders corresponding to coursename within the cohort 
-    directory. The rollout data is stored as a list of rollout dictionaries of size stack_size for
-    ease of comprehension and loading (at a cost of storage space).
-    
-    Args:
-        cohort_path:    Cohort path.
-        course_name:    Name of the course.
-        Trajectories:   Rollout data.
-        Images:         Image data.
-        tXUi:           Ideal trajectory data.
-        stack_id:       Stack id.
-
-    Returns:
-        None:           (rollout data saved to cohort directory)
-    """
-
-    # Create rollout course directory (if it does not exist)
-    rollout_course_path = os.path.join(cohort_path,"rollout_data",course_name)
-    if not os.path.exists(rollout_course_path):
-        os.makedirs(rollout_course_path)
-    
-    # Save the stacks
-    Ndata = sum([trajectory["Ndata"] for trajectory in Trajectories])
-    data_set_name = str(stack_id).zfill(3) if type(stack_id) == int else str(stack_id)
-    trajectory_data_set_path = os.path.join(rollout_course_path,"trajectories"+data_set_name+".pt")
-    image_data_set_path = os.path.join(rollout_course_path,"images"+data_set_name+".pt")
-
-    # Compress the image data
-    Images = compress_data(Images)
-
-    trajectory_data_set = {"data":Trajectories,
-                           "tXUi":tXUi,
-                            "set":data_set_name,"Ndata":Ndata,"course":course_name}
-    image_data_set = {"data":Images,
-                        "set":data_set_name,"Ndata":Ndata,"course":course_name}
-
-    torch.save(trajectory_data_set,trajectory_data_set_path)
-    torch.save(image_data_set,image_data_set_path)
-
-def save_observations(cohort_path:str,course_name:str,
-                      pilot_name:str,
-                      observations:Dict[str,Union[np.ndarray,int,str]]) -> None:
-    
-    """
-    Saves the observation data to a .pt file in folders corresponding to pilot name within the course
-    directory within the cohort directory.
-
-    Args:
-        cohort_path:    Cohort path.
-        course_name:    Name of the course.
-        pilot_name:     Name of the pilot.
-        observations:   Observation data.
-
-    Returns:
-        None:           (observation data saved to cohort directory)
-    """
-
-    # Create observation course directory (if it does not exist)
-    observation_pilot_path = os.path.join(cohort_path,"observation_data",pilot_name)
-    if not os.path.exists(observation_pilot_path):
-        os.makedirs(observation_pilot_path)
-
-    # Save the observations
-    observations_data_path = os.path.join(
-        observation_pilot_path,"observations_"+
-        course_name+str(observations["set"])+".pt")
-
-    torch.save(observations,observations_data_path)
 
 # def flight2rollout_data(cohort_name:str,drone_name:str):
 #     # Some useful path(s)

@@ -31,7 +31,7 @@ def plot_losses(cohort_name:str,roster:List[str],network:Literal["Parameter","Od
     labels = []
     for student_name in roster:
         try:
-            student_path = os.path.join(cohort_path,student_name)
+            student_path = os.path.join(cohort_path,"roster",student_name)
             losses_path = os.path.join(student_path,"losses_"+network+".pt")
 
             losses = torch.load(losses_path)
@@ -44,20 +44,26 @@ def plot_losses(cohort_name:str,roster:List[str],network:Literal["Parameter","Od
         
         if "Neps" in losses.keys():
             print("-----------------------------------------------------")
-            print("Student: ",student_name)
-            print("Epochs:  ",losses["Neps"])
-            print("Samples: ",losses["Nspl"])
+            print("Student:",student_name)
+            print("Epochs :",sum(losses["Neps"]))
 
-            hours = losses["t_train"] // 3600
-            minutes = (losses["t_train"] % 3600) // 60
-            seconds = losses["t_train"] % 60
-            (f"t_train: {hours} hour(s), {minutes} minute(s), {seconds} second(s)")
-            print("t_train: ",losses["t_train"])
+            if len(set(losses["Nspl"])) == 1:
+                print("Samples:", losses["Nspl"][0])
+            else:
+                print("Samples:", losses["Nspl"])
 
-        axs[0].plot(losses["train"])
+            hours = sum(losses["t_train"]) // 3600
+            minutes = (sum(losses["t_train"]) % 3600) // 60
+            seconds = np.around(sum(losses["t_train"]) % 60,1)
+            print(f"t_train: {hours} hour(s), {minutes} minute(s), {seconds} second(s)")
+            # print("t_train: ",losses["t_train"])
+
+        loss_train = np.hstack(losses["train"])
+        loss_test = np.hstack(losses["test"])
+        axs[0].plot(loss_train)
         axs[0].set_title('Training Loss')
 
-        axs[1].plot(losses["tests"])
+        axs[1].plot(loss_test)
         axs[1].set_title('Testing Loss')
 
     # Set common labels

@@ -1,18 +1,12 @@
 import numpy as np
-import json
 import os
-from typing import Dict,Union,Tuple,List
-from tqdm.notebook import trange
-import copy
 import torch
 
-import sousvide.synthesize.synthesize_helper as sh
-from sousvide.control.pilot import Pilot
-# import dynamics.quadcopter_config as qc
-# import dynamics.quadcopter_simulate as qs
-# import synthesize.trajectory_helper as th
-# import synthesize.nerf_utils as nf
+from typing import Dict,Union,List
+
 import sousvide.synthesize.data_utils as du
+
+from sousvide.control.pilot import Pilot
 
 def generate_observation_data(cohort:str,roster:List[str],subsample:float=1.0):
     """
@@ -67,7 +61,7 @@ def generate_observation_data(cohort:str,roster:List[str],subsample:float=1.0):
                 Nobs += observations["Nobs"]
 
                 # # Save the observations
-                du.save_observations(cohort_path,course,pilot.name,observations)
+                save_observations(cohort_path,course,pilot.name,observations)
 
         print("Data Counts ------------------------------------------------------------------------------")
         print("Extracted",Nobs,"observations from",len(courses),"course(s).")
@@ -157,3 +151,37 @@ def generate_observations(pilot:Pilot,
                     "course":trajectory_data_set["course"]}
 
     return observations_data_set
+
+
+def save_observations(cohort_path:str,course_name:str,
+                      pilot_name:str,
+                      observations:Dict[str,Union[np.ndarray,int,str]]) -> None:
+    
+    """
+    Saves the observation data to a .pt file in folders corresponding to pilot name within the course
+    directory within the cohort directory.
+
+    Args:
+        cohort_path:    Cohort path.
+        course_name:    Name of the course.
+        pilot_name:     Name of the pilot.
+        observations:   Observation data.
+
+    Returns:
+        None:           (observation data saved to cohort directory)
+    """
+
+    # Create observation course directory (if it does not exist)
+    observation_pilot_path = os.path.join(cohort_path,"observation_data",pilot_name)
+    if not os.path.exists(observation_pilot_path):
+        os.makedirs(observation_pilot_path)
+
+    observation_course_path = os.path.join(observation_pilot_path,course_name)
+    if not os.path.exists(observation_course_path):
+        os.makedirs(observation_course_path)
+
+    # Save the observations
+    observations_data_path = os.path.join(
+        observation_course_path,"observations"+str(observations["set"])+".pt")
+
+    torch.save(observations,observations_data_path)

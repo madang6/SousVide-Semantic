@@ -3,11 +3,9 @@ Helper functions for trajectory data.
 """
 
 import numpy as np
-import math
 import figs.utilities.trajectory_helper as th
 
 from scipy.spatial.transform import Rotation
-from typing import Dict,Union
 
 def ts_to_obj(Tp:np.ndarray,CP:np.ndarray) -> np.ndarray:
     """

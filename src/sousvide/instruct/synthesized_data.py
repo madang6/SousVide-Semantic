@@ -170,37 +170,36 @@ def get_data_paths(cohort_name:str,
         test_data:   The list of testing data paths.
     """
 
-    # Get relevant data paths
+    # Some useful path(s)
     workspace_path = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    rollout_data_path = os.path.join(workspace_path,"cohorts",cohort_name,"rollout_data")
+    observation_data_path = os.path.join(
+        workspace_path,"cohorts",cohort_name,"observation_data",student_name)
 
+    # Get course paths
     if course_name is None:
-        course_paths = [course.path for course in os.scandir(rollout_data_path) if course.is_dir()]
+        course_paths = [course.path for course in os.scandir(observation_data_path) if course.is_dir()]
     else:
-        course_paths = [os.path.join(rollout_data_path,course_name)]
+        course_paths = [os.path.join(observation_data_path,course_name)]
 
-    traj_paths = []
+    # Split into training and testing data
+    train_data,test_data = [],[]
     for course_path in course_paths:
+        # Get data files for the course
+        data_paths = []
         for file in os.scandir(course_path):
-            if file.name.startswith(student_name):
-                traj_paths.append(file.path)
-    
-    traj_paths = sorted(traj_paths)
-    
-    observation_data_paths = []
-    for traj_path in traj_paths:
-        observation_data_paths.append(traj_path)
+            data_paths.append(file.path)
 
-    if len(observation_data_paths)==1:
-        train_data = observation_data_paths
-        test_data = observation_data_paths[0]
-        # print("Not enough data to partition. Using same set for training and test.")
-    elif len(observation_data_paths)>=1:
-        train_data = observation_data_paths[:-1]
-        test_data = observation_data_paths[-1]
-    else:
-        raise ValueError("No data found.")
+        data_paths.sort()
+
+        if len(data_paths) == 1:
+            train_data.append(data_paths[0])
+            test_data.append(data_paths[0])
+        elif len(data_paths) > 1:
+            train_data.extend(data_paths[:-1])
+            test_data.append(data_paths[-1])
+        else:
+            raise ValueError("No data found.")
 
     return train_data,test_data
 
