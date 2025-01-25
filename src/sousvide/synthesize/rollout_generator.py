@@ -128,8 +128,9 @@ def generate_rollout_data(cohort_name:str,method_name:str,
         print("Rollout Reps:",Nro_tp,"(per time point)")
         print("Rollout Rate:",Ntp_sc,"(per second)")
         print("Rollout Data:",Ndc,"(per sample)")
-        print("Sample Size :",Nsp,"(total)")
+        print("Total Rollouts:",Nsp)
         print("Batch Sizes :", len(TTsp)-1, "x", Nro_sv,"+ 1 x", len(TTsp[-1]),"(samples)")
+        print("Total Data:",Nsp*Ndc)
 
         # Generate Sample Set Batches
         Ndata = 0
