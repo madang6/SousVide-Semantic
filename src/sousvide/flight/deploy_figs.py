@@ -93,7 +93,7 @@ def simulate_roster(cohort_name:str,method_name:str,
         video_path = os.path.join(output_path, "sim_"+course_name+"_"+policy.name+".mp4")
 
         # Compute ideal trajectory variables
-        tXUi = th.TS_to_tXU(Tpi,CPi,base_frame_specs,policy.hz)
+        tXUd = th.TS_to_tXU(Tpi,CPi,base_frame_specs,policy.hz)
         obj = sh.ts_to_obj(Tpi,CPi)
 
         # Simulate trajectory across samples
@@ -104,12 +104,12 @@ def simulate_roster(cohort_name:str,method_name:str,
 
             # Simulate Trajectory
             Tro,Xro,Uro,Iro,Tsol,Adv = sim.simulate(
-                policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],obj)
+                policy,perturbation["t0"],tXUd[0,-1],perturbation["x0"],obj)
 
             # Save Trajectory
             trajectory = {
                 "Tro":Tro,"Xro":Xro,"Uro":Uro,
-                "Xid":tXUi[1:11,:],"obj":obj,"Ndata":Uro.shape[1],"Tsol":Tsol,"Adv":Adv,
+                "tXUd":tXUd,"obj":obj,"Ndata":Uro.shape[1],"Tsol":Tsol,"Adv":Adv,
                 "rollout_id":str(idx).zfill(5),
                 "course":course_name,
                 "frame":frame}
@@ -124,8 +124,8 @@ def simulate_roster(cohort_name:str,method_name:str,
             # Save Flight Recorder class to mirror real-world deployment
             flight_record = rf.FlightRecorder(
                 Xro.shape[0],Uro.shape[0],
-                20,tXUi[0,-1],[360,640,3],obj,cohort_name,course_name,policy.name)
-            flight_record.simulation_import(Iro,Tro,Xro,Uro,tXUi,Tsol,Adv)
+                20,tXUd[0,-1],[360,640,3],obj,cohort_name,course_name,policy.name)
+            flight_record.simulation_import(Iro,Tro,Xro,Uro,tXUd,Tsol,Adv)
             flight_record.save()
         else:
 

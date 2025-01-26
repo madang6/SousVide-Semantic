@@ -94,7 +94,7 @@ def review_simulations(cohort_name:str,course_name:str,roster:List[str],plot_sho
 
     # Initialize Table for plotting and visualization
     headers=["Mean Solve (Hz)","Worst Solve (Hz)",
-             "Pos RSME (m)","Best Pos RSME (m)"]
+             "Pos TTE (m)","Best Pos TTE (m)"]
     table = []
 
     # Some useful paths
@@ -110,7 +110,7 @@ def review_simulations(cohort_name:str,course_name:str,roster:List[str],plot_sho
         
         # Error Bounds
         for i in range(trajectory["Ndata"]):
-            Ebnd_expert[idx,i] = np.min(np.linalg.norm(trajectory["Xro"][0:3,i].reshape(-1,1)-trajectory["Xid"][0:3,:],axis=0))
+            Ebnd_expert[idx,i] = np.min(np.linalg.norm(trajectory["Xro"][0:3,i].reshape(-1,1)-trajectory["tXUd"][1:4,:],axis=0))
 
         # Total Solve Time
         Tsol_expert[idx,:] = np.sum(trajectory["Tsol"],axis=0)
@@ -150,7 +150,7 @@ def review_simulations(cohort_name:str,course_name:str,roster:List[str],plot_sho
         for idx,trajectory in enumerate(trajectories):
             # Error Bounds
             for i in range(trajectory["Ndata"]):
-                Ebnd[idx,i] = np.min(np.linalg.norm(trajectory["Xro"][:,i].reshape(-1,1)-trajectory["Xid"],axis=0))
+                Ebnd[idx,i] = np.min(np.linalg.norm(trajectory["Xro"][:,i].reshape(-1,1)-trajectory["tXUd"][1:11,:],axis=0))
 
             # Total Solve Time
             Tsol[idx,:] = np.sum(trajectory["Tsol"],axis=0)
@@ -171,7 +171,7 @@ def review_simulations(cohort_name:str,course_name:str,roster:List[str],plot_sho
             print("========================================================================================================")
             print("Visualization ------------------------------------------------------------------------------------------")
             print("Pilot Name :",pilot_name)
-            ps.RO_to_spatial(trajectories,plot_last=True)
+            ps.RO_to_spatial(trajectories,plot_last=True,tXUd=trajectories[0]["tXUd"])
 
     print("========================================================================================================")
     print("Performance --------------------------------------------------------------------------------------------")

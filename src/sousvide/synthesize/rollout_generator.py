@@ -307,7 +307,7 @@ def generate_rollouts(
     # Unpack the trajectory
     Tpi,CPi = ms.solve(course_config)
     obj = sh.ts_to_obj(Tpi,CPi)
-    tXUi = th.TS_to_tXU(Tpi,CPi,None,10)
+    tXUd = th.TS_to_tXU(Tpi,CPi,None,10)
     
     # Initialize rollout variables
     Trajectories,Images = [],[]
@@ -326,12 +326,12 @@ def generate_rollouts(
         Tro,Xro,Uro,Imgs,Tsol,Adv = sim.simulate(ctl,t0,tf,x0)
         
         # Check if the rollout data is useful
-        err = np.min(np.linalg.norm(tXUi[1:4,:]-Xro[0:3,-1].reshape(-1,1),axis=0))
+        err = np.min(np.linalg.norm(tXUd[1:4,:]-Xro[0:3,-1].reshape(-1,1),axis=0))
         if err < err_tol:
             # Package the rollout data
             trajectory = {
                 "Tro":Tro,"Xro":Xro,"Uro":Uro,
-                "Xid":tXUi[1:11,:],"obj":obj,"Ndata":Uro.shape[1],"Tsol":Tsol,"Adv":Adv,
+                "tXUd":tXUd,"obj":obj,"Ndata":Uro.shape[1],"Tsol":Tsol,"Adv":Adv,
                 "rollout_id":str(idx).zfill(5),
                 "course":course_config["name"],
                 "frame":frame_config}
@@ -353,7 +353,7 @@ def generate_rollouts(
 def save_rollouts(cohort_path:str,course_name:str,
                   Trajectories:List[Tuple[np.ndarray,np.ndarray,np.ndarray]],
                   Images:List[torch.Tensor],
-                  tXUi:np.ndarray,
+                  tXUd:np.ndarray,
                   stack_id:Union[str,int]) -> None:
     """
     Saves the rollout data to a .pt file in folders corresponding to coursename within the cohort 
@@ -365,7 +365,7 @@ def save_rollouts(cohort_path:str,course_name:str,
         course_name:    Name of the course.
         Trajectories:   Rollout data.
         Images:         Image data.
-        tXUi:           Ideal trajectory data.
+        tXUd:           Ideal trajectory data.
         stack_id:       Stack id.
 
     Returns:
@@ -387,7 +387,7 @@ def save_rollouts(cohort_path:str,course_name:str,
     Images = du.compress_data(Images)
 
     trajectory_data_set = {"data":Trajectories,
-                           "tXUi":tXUi,
+                           "tXUd":tXUd,
                             "set":data_set_name,"Ndata":Ndata,"course":course_name}
     image_data_set = {"data":Images,
                         "set":data_set_name,"Ndata":Ndata,"course":course_name}

@@ -236,7 +236,7 @@ def tXU_to_spatial(tXU_list:List[np.ndarray],
 
 def RO_to_spatial(RO:List[Dict[str,Union[np.ndarray,int]]],
               n:int=None,scale=1.0,plot_last:bool=False,
-              tXUi:Union[None,np.ndarray]=None):
+              tXUd:Union[None,np.ndarray]=None):
 
     # # Clear all plots
     # plt.close('all')
@@ -294,8 +294,8 @@ def RO_to_spatial(RO:List[Dict[str,Union[np.ndarray,int]]],
             for i in range(n,Xro.shape[1],n):
                 quad_frame(Xro[:,i],ax,scale=scale)
 
-    if tXUi is not None:
-        ax.plot(tXUi[1,:], tXUi[2,:], tXUi[3,:],color='k', linestyle='--',linewidth=0.8)             # spline
+    if tXUd is not None:
+        ax.plot(tXUd[1,:], tXUd[2,:], tXUd[3,:],color='k', linestyle='--',linewidth=0.8)             # spline
     
     
     ref, = ax.plot([], [], 'k--', label='reference')
@@ -304,7 +304,7 @@ def RO_to_spatial(RO:List[Dict[str,Union[np.ndarray,int]]],
     plt.tight_layout()
     plt.show(block=False)
 
-def RO_to_time(RO:List[Dict[str,Union[np.ndarray,int]]],tXUi:Union[None,np.ndarray]=None):
+def RO_to_time(RO:List[Dict[str,Union[np.ndarray,int]]],tXUd:Union[None,np.ndarray]=None):
     # # Clear all plots
     # plt.close('all')
 
@@ -333,13 +333,13 @@ def RO_to_time(RO:List[Dict[str,Union[np.ndarray,int]]],tXUi:Union[None,np.ndarr
                 Tro,Xro = ro["Tro"],ro["Xro"]  
                 axs[j,i].plot(Tro,Xro[idd,:],alpha=0.5)
 
-            if tXUi is not None:
-                axs[j,i].plot(tXUi[0,:],tXUi[1+idd,:],color='k', linestyle='--',linewidth=0.8)
+            if tXUd is not None:
+                axs[j,i].plot(tXUd[0,:],tXUd[1+idd,:],color='k', linestyle='--',linewidth=0.8)
         
             axs[j,i].set_ylabel(ylabels[i][j])
 
-            if tXUi is not None:
-                axs[j,i].set_xlim([0.0,tXUi[0,-1]])
+            if tXUd is not None:
+                axs[j,i].set_xlim([0.0,tXUd[0,-1]])
             # if i == 0:
             #     axs[j,i].set_ylim(plim[j,:])
             # else:
@@ -365,12 +365,12 @@ def RO_to_time(RO:List[Dict[str,Union[np.ndarray,int]]],tXUi:Union[None,np.ndarr
             Tro,Xro = ro["Tro"],ro["Xro"]
             axs[i,0].plot(Tro,Xro[idd,:],alpha=0.5)
 
-        if tXUi is not None:
-            axs[i,0].plot(tXUi[0,:],tXUi[7+i,:],color='k', linestyle='--',linewidth=0.8)
+        if tXUd is not None:
+            axs[i,0].plot(tXUd[0,:],tXUd[7+i,:],color='k', linestyle='--',linewidth=0.8)
 
         axs[i,0].set_ylabel(ylabels[0][i])
-        if tXUi is not None:
-            axs[i,0].set_xlim([0.0,tXUi[0,-1]])
+        if tXUd is not None:
+            axs[i,0].set_xlim([0.0,tXUd[0,-1]])
         # axs[j].set_ylim(qlim[j,:])
 
     for i in range(4):
@@ -380,13 +380,13 @@ def RO_to_time(RO:List[Dict[str,Union[np.ndarray,int]]],tXUi:Union[None,np.ndarr
 
             axs[i,1].plot(Tro[0:-1],Uro[i,:],alpha=0.5)
 
-        if tXUi is not None:
-            axs[i,1].plot(tXUi[0,:],tXUi[11+i,:],color='k', linestyle='--',linewidth=0.8)
+        if tXUd is not None:
+            axs[i,1].plot(tXUd[0,:],tXUd[11+i,:],color='k', linestyle='--',linewidth=0.8)
         
         axs[i,1].set_ylabel(ylabels[1][i])
 
-        if tXUi is not None:
-            axs[i,1].set_xlim([0.0,tXUi[0,-1]])
+        if tXUd is not None:
+            axs[i,1].set_xlim([0.0,tXUd[0,-1]])
 
     axs[0, 1].invert_yaxis()
     axs[0,0].set_title('Orientation')
@@ -622,5 +622,5 @@ def plot_samples(cohort:str,Nsamples:int=50,random:bool=True):
             trajectories['data'] = trajectories['data'][0:Nsamples]
 
             # Plot the data
-            RO_to_spatial(trajectories['data'],scale=0.5,tXUi=trajectories['tXUi'])
-            RO_to_time(trajectories['data'],tXUi=trajectories['tXUi'])
+            RO_to_spatial(trajectories['data'],scale=0.5,tXUd=trajectories['tXUd'])
+            RO_to_time(trajectories['data'],tXUd=trajectories['tXUd'])
