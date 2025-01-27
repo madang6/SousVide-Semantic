@@ -89,8 +89,8 @@ def review_simulations(cohort_name:str,course_name:str,roster:List[str],plot_sho
 
     """
     
-    # # Clear all plots
-    # plt.close('all')
+    # Add Expert to Roster
+    roster = ["expert"]+roster
 
     # Initialize Table for plotting and visualization
     headers=["Mean Solve (Hz)","Worst Solve (Hz)",
@@ -101,39 +101,6 @@ def review_simulations(cohort_name:str,course_name:str,roster:List[str],plot_sho
     workspace_path = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
     output_path = os.path.join(workspace_path,"cohorts",cohort_name,"output")
-
-    # Get expert data ==============================================================================================
-    trajectories_expert = torch.load(os.path.join(output_path,"sim_"+course_name+"_expert.pt"))
-    Ebnd_expert = np.zeros((len(trajectories_expert),trajectories_expert[0]["Ndata"]))
-    Tsol_expert = np.zeros((len(trajectories_expert),trajectories_expert[0]["Ndata"]))
-    for idx,trajectory in enumerate(trajectories_expert):
-        
-        # Error Bounds
-        for i in range(trajectory["Ndata"]):
-            Ebnd_expert[idx,i] = np.min(np.linalg.norm(trajectory["Xro"][0:3,i].reshape(-1,1)-trajectory["tXUd"][1:4,:],axis=0))
-
-        # Total Solve Time
-        Tsol_expert[idx,:] = np.sum(trajectory["Tsol"],axis=0)
-
-    # Trajectory Data
-    pilot_name = "expert"
-    mean_solve = 1/np.mean(Tsol_expert)
-    worst_solve = 1/np.max(Tsol_expert)
-    mean_error = np.mean(Ebnd_expert)
-    mean_error_traj = np.mean(Ebnd_expert,axis=1)
-    best_error_idx = np.argmin(mean_error_traj)
-    best_error = mean_error_traj[best_error_idx]
-    
-    # Append Data
-    table.append([pilot_name,mean_solve,worst_solve,mean_error,best_error])
-
-    print("========================================================================================================")
-    print("Visualization ------------------------------------------------------------------------------------------")
-    if plot_show:
-        print("Pilot Name : Expert")
-        ps.RO_to_spatial(trajectories_expert,plot_last=True)
-    
-    # Get student data ==============================================================================================
 
     # Print some overall stuff
     print("========================================================================================================")
@@ -147,7 +114,13 @@ def review_simulations(cohort_name:str,course_name:str,roster:List[str],plot_sho
         
         Ebnd = np.zeros((len(trajectories),trajectories[0]["Ndata"]))
         Tsol = np.zeros((len(trajectories),trajectories[0]["Ndata"]))
+        methods = []
         for idx,trajectory in enumerate(trajectories):
+            # Extract Method Name
+            method_name = trajectory["rollout_id"].split("_")[0]
+            if method_name not in methods:
+                methods.append(method_name)
+
             # Error Bounds
             for i in range(trajectory["Ndata"]):
                 Ebnd[idx,i] = np.min(np.linalg.norm(trajectory["Xro"][:,i].reshape(-1,1)-trajectory["tXUd"][1:11,:],axis=0))
@@ -170,7 +143,8 @@ def review_simulations(cohort_name:str,course_name:str,roster:List[str],plot_sho
         if plot_show:
             print("========================================================================================================")
             print("Visualization ------------------------------------------------------------------------------------------")
-            print("Pilot Name :",pilot_name)
+            print("Pilot Name    :",pilot_name)
+            print("Test Method(s):",methods)
             ps.RO_to_spatial(trajectories,plot_last=True,tXUd=trajectories[0]["tXUd"])
 
     print("========================================================================================================")

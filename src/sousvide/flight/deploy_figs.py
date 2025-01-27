@@ -110,7 +110,7 @@ def simulate_roster(cohort_name:str,method_name:str,
             trajectory = {
                 "Tro":Tro,"Xro":Xro,"Uro":Uro,
                 "tXUd":tXUd,"obj":obj,"Ndata":Uro.shape[1],"Tsol":Tsol,"Adv":Adv,
-                "rollout_id":str(idx).zfill(5),
+                "rollout_id":method_name+"_"+str(idx).zfill(5),
                 "course":course_name,
                 "frame":frame}
             trajectories.append(trajectory)
@@ -120,6 +120,11 @@ def simulate_roster(cohort_name:str,method_name:str,
 
         # Save simulations
         print("Saving simulation data...")
+
+        # Save all trajectory data
+        torch.save(trajectories,trajectories_path)
+        
+        # Save last trajectory as video/flight recorder
         if use_flight_recorder:
             # Save Flight Recorder class to mirror real-world deployment
             flight_record = rf.FlightRecorder(
@@ -128,9 +133,5 @@ def simulate_roster(cohort_name:str,method_name:str,
             flight_record.simulation_import(Iro,Tro,Xro,Uro,tXUd,Tsol,Adv)
             flight_record.save()
         else:
-
-            # Save Trajectories
-            torch.save(trajectories,trajectories_path)
-
             # Save video on last trajectory
             gv.images_to_mp4(Iro,video_path+'.mp4', policy.hz)       # Save the video

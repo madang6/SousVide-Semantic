@@ -24,19 +24,16 @@ def generate_observation_data(cohort:str,roster:List[str],subsample:float=1.0):
 
     # Initialize Pilots
     Pilots = [Pilot(cohort,name) for name in roster]
+    
+    print("==========================================================================================")
 
     for pilot in Pilots:
         # Print some useful information
-        print("==========================================================================================")
-        print("------------------------------------------------------------------------------------------")
         print(f"Pilot Name  : {pilot.name}")
         print(f"Augmentation: {pilot.da_cfg['mean']}")
         print( "            :                        +/-")
         print(f"            : {pilot.da_cfg['std']}")
         print(f"Subsample   : 1 in {int(1/subsample)}")
-        print("Model ------------------------------------------------------------------------------------")
-        print(f"Name        : {pilot.model.name}")
-        print( "Components  :", ','.join(pilot.model.network.keys()))
         print("------------------------------------------------------------------------------------------")
 
         # Get Course Folders
@@ -94,7 +91,6 @@ def generate_observations(pilot:Pilot,
         frame = trajectory_data["frame"]
 
         # Decompress and extract the image data
-        test = du.decompress_data(image_data)
         Imgs = du.decompress_data(image_data)["images"]
 
         # Check if images are raw or processed. Raw images are in (N,H,W,C) format while

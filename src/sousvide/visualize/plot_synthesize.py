@@ -1,17 +1,15 @@
 import numpy as np
 import torch
 import os
-import pickle
-from scipy.spatial.transform import Rotation as R
 import matplotlib.pyplot as plt
-from typing import List,Tuple
 import figs.utilities.trajectory_helper as th
+
 from typing import Dict,Union,Tuple,List
+from scipy.spatial.transform import Rotation as R
+from sousvide.control.pilot import Pilot
 
 def CP_to_spatial(Tp:List[np.ndarray],CP:List[np.ndarray],
                 hz:int=20,n:int=500,plot_last:bool=False):
-    # # Clear all plots
-    # plt.close('all')
 
     # Unpack the trajectory
     XX:List[np.ndarray] = []
@@ -71,8 +69,6 @@ def CP_to_spatial(Tp:List[np.ndarray],CP:List[np.ndarray],
     plt.show(block=False)
 
 def CP_to_time(Tp:np.ndarray,CP:np.ndarray,hz:int=30):
-    # # Clear all plots
-    # plt.close('all')
     
     # Unpack the trajectory
     TT:List[np.ndarray] = []
@@ -190,9 +186,6 @@ def CP_to_fo(Tp:np.ndarray,CP:np.ndarray,hz:int=30):
 def tXU_to_spatial(tXU_list:List[np.ndarray],
               n:int=None):
     
-    # # Clear all plots
-    # plt.close('all')
-
     # Initialize World Frame Plot
     traj_colors = ["red","green","blue","orange","purple","brown","pink","gray","olive","cyan"]
 
@@ -237,9 +230,6 @@ def tXU_to_spatial(tXU_list:List[np.ndarray],
 def RO_to_spatial(RO:List[Dict[str,Union[np.ndarray,int]]],
               n:int=None,scale=1.0,plot_last:bool=False,
               tXUd:Union[None,np.ndarray]=None):
-
-    # # Clear all plots
-    # plt.close('all')
 
     # Initialize World Frame Plot
     traj_colors = ["red","green","blue","orange","purple","brown","pink","gray","olive","cyan"]
@@ -305,9 +295,6 @@ def RO_to_spatial(RO:List[Dict[str,Union[np.ndarray,int]]],
     plt.show(block=False)
 
 def RO_to_time(RO:List[Dict[str,Union[np.ndarray,int]]],tXUd:Union[None,np.ndarray]=None):
-    # # Clear all plots
-    # plt.close('all')
-
     # # State plot limits
     # plim = np.array([
     #     [ -6.0,  6.0],
@@ -544,42 +531,10 @@ def unpack_trajectory(Tp:np.ndarray,CP:np.ndarray,hz:int,
         
     return T,X
 
-def plot_data(cohort:str):
+def plot_rollout_data(cohort:str,Nsamples:int=50,random:bool=True):
     """"
-    Plot the training and testing data for a cohort.
+    Plot the rollout data for a cohort.
     """
-    
-    # # Clear all plots
-    # plt.close('all')
-
-    # Generate some useful paths
-    workspace_path = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    cohort_path = os.path.join(workspace_path,"cohorts",cohort)
-
-    # Load Flight Data
-    with open(os.path.join(cohort_path,"data.pkl"),'rb') as file:
-        flight_data = pickle.load(file)
-
-    tXU_tn = flight_data["train"]
-    tXU_tt = flight_data["test"]
-
-    # Plot the data
-    print("Plotting the training data")
-    tXU_to_spatial(tXU_tn,plot_last=True)
-    tXU_to_time(tXU_tn)
-
-    print("Plotting the testing data")
-    tXU_to_spatial(tXU_tt,plot_last=True)
-    tXU_to_time(tXU_tt)
-
-def plot_samples(cohort:str,Nsamples:int=50,random:bool=True):
-    """"
-    Plot the training and testing data for a cohort.
-    """
-    
-    # # Clear all plots
-    # plt.close('all')
 
     # Generate some useful paths
     workspace_path = os.path.dirname(
@@ -624,3 +579,48 @@ def plot_samples(cohort:str,Nsamples:int=50,random:bool=True):
             # Plot the data
             RO_to_spatial(trajectories['data'],scale=0.5,tXUd=trajectories['tXUd'])
             RO_to_time(trajectories['data'],tXUd=trajectories['tXUd'])
+
+def plot_observation_data(cohort:str,roster:List[str],random:bool=True):
+    """"
+    Plot the observation data for a cohort.
+    """
+
+    # Generate some useful paths
+    workspace_path = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    cohort_path = os.path.join(workspace_path,"cohorts",cohort)
+    observation_data_path = os.path.join(cohort_path,"observation_data")
+
+    print("==========================================================================================")
+    print("Observation Data Summary")
+    print("==========================================================================================")
+
+    print("Cohort Name :",cohort)
+
+    # Review the observation data
+    for pilot_name in roster:
+        # Get number of observation files
+        observation_files = []
+        pilot_path = os.path.join(observation_data_path,pilot_name)
+        for root, _, files in os.walk(pilot_path):
+            for file in files:
+                observation_files.append(os.path.join(root, file))
+
+        Nobsf = len(observation_files)
+
+        # Get some data insights
+        observation_files = sorted(observation_files)
+
+        # Get approximate number of observations
+        observations = torch.load(observation_files[0])
+        Ndata = (Nobsf-1)*observations['Nobs']
+        
+        # Load pilot
+        pilot = Pilot(cohort,pilot_name)
+
+        print("------------------------------------------------------------------------------------------")
+        print(f"Pilot Name        : {pilot.name}")
+        print(f"Neural Network(s) : {pilot.model.name} [{', '.join(pilot.model.network.keys())}]")
+        print(f"Approx. Data Count: {Ndata}")
+
+    print("==========================================================================================")
