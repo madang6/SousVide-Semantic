@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sousvide"
+version = "0.1.0"
+description = "Scene Understanding via Synthesized Visual Inertial Data from Experts"
+authors = [{ name = "JunEn Low", email = "lowjunen@gmail.com.com" }]
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "numpy",
+    "scipy",
+    "qpsolvers",
+    "albumentations",
+    "imageio[ffmpeg]",
+    "ninja",
+    "gdown",
+    "ipykernel",
+    "ipympl",
+    "matplotlib",
+    "cython",
+    "torch",
+    "torchvision",
+    "nerfstudio",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
