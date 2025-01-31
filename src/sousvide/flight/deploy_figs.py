@@ -134,4 +134,4 @@ def simulate_roster(cohort_name:str,method_name:str,
             flight_record.save()
         else:
             # Save video on last trajectory
-            gv.images_to_mp4(Iro,video_path+'.mp4', policy.hz)       # Save the video
+            gv.images_to_mp4(Iro,video_path, policy.hz)       # Save the video
