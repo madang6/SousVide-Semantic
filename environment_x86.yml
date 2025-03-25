@@ -1,16 +1,16 @@
-name: sv-env
+name: semantic-sousvide
 channels:
-  - pytorch      # Specific channel for PyTorch packages
-  - nvidia/label/cuda-11.8.0  # For NVIDIA-specific CUDA tools
+  # - pytorch      # Specific channel for PyTorch packages
+  # - nvidia/label/cuda-11.8.0  # For NVIDIA-specific CUDA tools
   - conda-forge  # Prefer community-maintained packages first
-  - fastai       # Added for opencv-python-headless (if necessary)
+  # - fastai       # Added for opencv-python-headless (if necessary)
   - defaults     # Default channel as fallback
 dependencies:
   - python=3.10
-  - numpy=1.26.4
+  - numpy=1.26.3
   - scipy
   - qpsolvers
-  - albumentations
+  # - albumentations
   - imageio[ffmpeg]
   - ninja
   - gdown
@@ -22,16 +22,16 @@ dependencies:
   - cython
   - conda-forge::colmap
   - conda-forge::captum
-  - fastai::opencv-python-headless=4.10.0.84
-  - pytorch=2.1.2
-  - torchvision=0.16.2
-  - pytorch-cuda=11.8
-  - nvidia/label/cuda-11.8.0::cuda-toolkit
-  - nvidia/label/cuda-11.8.0::cuda-nvcc
+  # - fastai::opencv-python-headless=4.10.0.84
+  # - pytorch=2.1.2
+  # - torchvision=0.16.2
+  # - pytorch-cuda=11.8
+  # - nvidia/label/cuda-11.8.0::cuda-toolkit
+  # - nvidia/label/cuda-11.8.0::cuda-nvcc
   - pip
   - pip:
-    - git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
-    - nerfstudio==1.1.4
+    # - git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
+    # - nerfstudio==1.1.1
     - pyrealsense2
     - -e ./FiGS/
     - -e ./FiGS/acados/interfaces/acados_template/

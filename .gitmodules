@@ -1,3 +1,7 @@
 [submodule "FiGS"]
 	path = FiGS
 	url = https://github.com/StanfordMSL/FiGS.git
+[submodule "gemsplat"]
+	path = gemsplat
+	url = https://github.com/StanfordMSL/gemsplat.git
+	branch = semantic_field_v1
