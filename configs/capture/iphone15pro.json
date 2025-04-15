@@ -20,5 +20,6 @@
         "num_marked": 20,
         "marker_length": 0.341,
         "marker_id": 0
-    }
+    },
+    "mode": "no_ransac"
 }
