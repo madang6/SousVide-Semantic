@@ -1,6 +1,6 @@
-[submodule "FiGS"]
-	path = FiGS
-	url = https://github.com/StanfordMSL/FiGS.git
+[submodule "FiGS-Semantic"]
+	path = FiGS-Semantic
+	url = https://github.com/madang6/FiGS-Semantic.git
 [submodule "gemsplat"]
 	path = gemsplat
 	url = https://github.com/StanfordMSL/gemsplat.git
