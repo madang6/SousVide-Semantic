@@ -16,8 +16,8 @@
             ]
     },
     "extractor": {
-        "num_images": 300, 
-        "num_marked": 20,
+        "num_images": 180, 
+        "num_marked": 14,
         "marker_length": 0.341,
         "marker_id": 0
     },
