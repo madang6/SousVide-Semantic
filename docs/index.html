@@ -157,7 +157,8 @@
       </div>
 
       <h2 class="subtitle has-text-centered">
-        SOUS VIDE creates end-to-end, zero-shot visual drone navigation policies that are robust to scene changes.
+        SOUS VIDE creates end-to-end, zero-shot transfer visual drone navigation policies that are
+        robust to scene changes.
       </h2>
     </div>
   </div>
@@ -171,25 +172,20 @@
         <h2 class="title is-3">Abstract</h2>
         <div class="content has-text-justified">
           <p>
-            We propose a new simulator, training approach, and policy architecture,
-            collectively called SOUS VIDE, for end-to-end visual drone navigation.
-            Our trained policies exhibit zero-shot sim-to-real transfer with robust
-            real-world performance using only on-board perception and computation.
-            Our simulator, called FiGS, couples a computationally simple drone dynamics
-            model with a high visual fidelity Gaussian Splatting scene reconstruction.
-            FiGS can quickly simulate drone flights producing photorealistic images
-            at up to 130 fps. We use FiGS to collect 100k-300k observation-action pairs
-            from an expert MPC with privileged state and dynamics information, randomized
-            over dynamics parameters and spatial disturbances. We then distill this
-            expert MPC into an end-to-end visuomotor policy with a lightweight neural
-            architecture, called SV-Net. SV-Net processes color image, optical flow
-            and IMU data streams into low-level body rate and thrust commands at 20Hz
-            onboard a drone. Crucially, SV-Net includes a Rapid Motor Adaptation (RMA)
-            module that adapts at runtime to variations in drone dynamics. In a campaign
-            of 105 hardware experiments, we show SOUS VIDE policies to be robust to 30%
-            mass variations, 40 m/s wind gusts, 60% changes in ambient brightness, shifting
-            or removing objects from the scene, and people moving aggressively through
-            the drone’s visual field. Code, data, and videos can be found in the links above.
+            We propose a new simulator, training approach, and policy architecture, collectively called SOUS VIDE,
+            for end-to-end visual drone navigation. Our trained policies exhibit zero-shot sim-to-real transfer with
+            robust real-world performance using only onboard perception and computation. Our simulator, called FiGS,
+            couples a computationally simple drone dynamics model with a high visual fidelity Gaussian Splatting scene
+            reconstruction. FiGS can quickly simulate drone flights producing photorealistic images at up to 130 fps.
+            We use FiGS to collect 100k-300k image/state-action pairs from an expert MPC with privileged state and
+            dynamics information, randomized over dynamics parameters and spatial disturbances. We then distill this
+            expert MPC into an end-to-end visuomotor policy with a lightweight neural architecture, called SV-Net.
+            SV-Net processes color image, optical flow and IMU data streams into low-level thrust and body rate
+            commands at 20 Hz onboard a drone. Crucially, SV-Net includes a learned module for low-level control that
+            adapts at runtime to variations in drone dynamics. In a campaign of 105 hardware experiments, we show SOUS
+            VIDE policies to be robust to 30% mass variations, 40 m/s wind gusts, 60% changes in ambient brightness,
+            shifting or removing objects from the scene, and people moving aggressively through the drone's visual
+            field. Code, data, and videos can be found in the links above.
           </p>
           <img id="pipeline-image", src="./static/images/PipelineDiagram_jy.png"
           alt="SOUS VIDE Pipeline."/>
@@ -205,7 +201,7 @@
 
     <div class="columns is-centered">
 
-      <div class="column">
+      <div class="column is-four-fifths">
         <div class="content">
           <h2 class="title is-3">FiGS</h2>
           <p>
@@ -228,7 +224,7 @@
   <div class="container is-max-desktop">
 
     <div class="columns is-centered">
-      <div class="column">
+      <div class="column is-four-fifths">
         <div class="content">
           <h2 class="title is-3">SV-Net</h2>
           <p>
