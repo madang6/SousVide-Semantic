@@ -1,5 +1,8 @@
-# queries: ["man", "ladder", "microwave"]
-queries: ["ladder"]
+queries: ["guy in jacket", "computer", "bicycle"]
+# queries: ["guy in jacket"]
+# queries: ["computer"]
+# queries: ["bicycle"]
+# queries: ["ladder"]
 # semantic_target: "mannequin"
 
 hoverMode: False
@@ -18,16 +21,17 @@ exact_step: 'n'
 bounded_step: 'y'
 
 #Set the parameters for the semantic objective
-minbound: [-3, -6, -2]
-maxbound: [3, 6, 0]
+# minbound: [-3, -6, -2]
+# maxbound: [3, 6, 0]
+minbound: [-4, -6, -2]
+maxbound: [4, 6, 0]
 # minbound: [-4.5, -2.0, -2.0]
 # maxbound: [4.5, 2.0, 0.0]
 # minpbound: [2.0, 2.0, 2.0]
 # maxpbound: [2.0, 2.0, 2.0]
 
 r1: 1.5
-r2: 0.5
+r2: 0.4
+altitude: -1.0
 
-altitude: -1.1
-
-gif: False
+gif: True

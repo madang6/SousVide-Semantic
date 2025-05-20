@@ -17,6 +17,8 @@ exact_step: 'n'
 bounded_step: 'y'
 
 #Set the parameters for the semantic objective
+minbound: [-1, -1, -2.5]
+maxbound: [0, 0, 0]
 # minbound: [-4.5, -2.0, -2.0]
 # maxbound: [4.5, 2.0, 0.0]
 # minpbound: [2.0, 2.0, 2.0]
@@ -24,3 +26,8 @@ bounded_step: 'y'
 
 r1: 1.5
 r2: 0.5
+
+altitude: -2.0
+
+# Visualization parameters
+gif: False

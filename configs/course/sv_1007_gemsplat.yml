@@ -1,4 +1,3 @@
-# queries: ["man", "ladder", "microwave"]
 queries: ["ladder"]
 # semantic_target: "mannequin"
 
@@ -18,8 +17,8 @@ exact_step: 'n'
 bounded_step: 'y'
 
 #Set the parameters for the semantic objective
-minbound: [-3, -6, -2]
-maxbound: [3, 6, 0]
+minbound: [-5, -2.8, -2]
+maxbound: [6, 2.5, 0]
 # minbound: [-4.5, -2.0, -2.0]
 # maxbound: [4.5, 2.0, 0.0]
 # minpbound: [2.0, 2.0, 2.0]
@@ -27,7 +26,3 @@ maxbound: [3, 6, 0]
 
 r1: 1.5
 r2: 0.5
-
-altitude: -1.1
-
-gif: False

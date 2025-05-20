@@ -1,3 +1,4 @@
+import os
 import numpy as np
 
 from PIL import Image
@@ -5,6 +6,21 @@ from io import BytesIO
 from typing import Dict,Union
 
 import sousvide.synthesize.synthesize_helper as sh
+
+import cv2
+
+def save_images_as_video(frames, video_path, fps=20):
+    """ Writes 'frames' to a single video file. """
+    if not frames:
+        return
+    os.makedirs(os.path.dirname(video_path), exist_ok=True)
+    height, width, _ = frames[0].shape
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(video_path, fourcc, fps, (width, height))
+    for f in frames:
+        bgr_frame = cv2.cvtColor(f, cv2.COLOR_RGB2BGR)
+        writer.write(bgr_frame)
+    writer.release()
 
 def decompress_data(image_dict:Dict[str,Union[str,np.ndarray]]) -> Dict[str,Union[str,np.ndarray]]:
     """
