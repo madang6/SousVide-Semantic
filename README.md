@@ -22,26 +22,42 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:"<acados_root>/lib"
 export ACADOS_SOURCE_DIR="<acados_root>"
 ```
 3) Set up conda environment (in the main directory)
-```
-# Navigate to environment config location
-cd <repository-path>/SousVide/
+ ```
+cd <repository-path>/SousVide-Semantic/
 
-# Create and activate
-conda env create -f environment_x86.yml
-conda activate sv-env
-```
-4) Download Example GSplats
-```
-# Navigate to gsplats parent folder
-cd <repository-path>/SousVide/
+conda create --name <env-name> -y python=3.10
 
-# Use gdown to download
-gdown --folder https://drive.google.com/drive/folders/1Q3Jxt08MUev_jWzHjpdltze7X4VArsvA?usp=drive_link --remaining-ok
+conda env config vars set PYTHONNOUSERSITE=1
+conda deactivate
+conda activate <env-name>
 
-# Alternatively, you can download the zip-ed file below and unpack the contents (capture and workspace) into the gsplats folder
-https://drive.google.com/file/d/1kW5dzsfD3rbRA3RIQDyJPG6_UJaO9ALP/view
+python -m pip install --upgrade pip
+
+pip install numpy==1.26.3
+
+conda env update <env-name> environment_x86.yml
+
+pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+
+conda install -c "nvidia/label/cuda-11.8.0" cuda-toolkit
+
+CC=/usr/bin/gcc-11 CXX=/usr/bin/g++-11 pip install ninja git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
+
+pip install nerfstudio==1.1.1
+pip uninstall gsplat
+CC=/usr/bin/gcc-11 CXX=/usr/bin/g++-11 pip install git+https://github.com/nerfstudio-project/gsplat.git@c7b0a383657307a13dff56cb2f832e3ab7f029fd
+
+cd ~/StanfordMSL/SousVide-Semantic
+
+git submodule add -b semantic_field_v1 https://github.com/StanfordMSL/gemsplat.git ~/data/StanfordMSL/SousVide-Semantic/gemsplat
+
+cd gemsplat
+pip install -e .
+
+conda install conda-forge::albumentations==2.0.5 --freeze-installed
+
+ns-install-cli (this might fail)
 ```
-
 ## Run SOUS VIDE Examples
 Check out the notebook examples in the notebooks folder:
   1. <b>figs_examples</b>: Example code for generating GSplats and executing trajectories within them (using FiGS).
@@ -50,5 +66,5 @@ Check out the notebook examples in the notebooks folder:
   4. <b>sv_extended</b>: Produces the policy for the extended trajectory in Section VI.C.
   5. <b>sv_cluttered</b>: Produces the policy for the cluttered environment trajectory in Section VI.C.
 
-## [COMING SOON: 04/25] Deploy SOUS VIDE in the Real World
+## [COMING SOON (2025)] Deploy SOUS VIDE in the Real World
 Deploy SOUS VIDE policies on an [MSL Drone](https://github.com/StanfordMSL/TrajBridge/wiki/3.-Drone-Hardware). Tutorial and code coming soon!
