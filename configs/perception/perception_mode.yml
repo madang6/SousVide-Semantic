@@ -1,2 +1,5 @@
 visual_mode: "semantic_depth"
 perception_mode: "similarity"
+
+# visual_mode: "rgb"
+# perception_mode: "similarity"
