@@ -2,7 +2,7 @@ import os
 import json
 import yaml
 import pickle
-from typing import List, Union, Literal
+from typing import List, Union, Literal, Tuple
 from re import T, X
 
 import numpy as np
@@ -11,21 +11,158 @@ from torchvision.io import write_video
 from torchvision.transforms import Resize
 from acados_template import AcadosSimSolver
 
-from controller.pilot import Pilot
-from controller.vr_mpc import VehicleRateMPC
+# from synthesize.solvers import min_snap as ms
+# import synthesize.nerf_utils as nf
+# import synthesize.trajectory_helper as th
+# import synthesize.generate_data as gd
+# from synthesize.build_rrt_dataset import get_objectives, generate_rrt_paths
 
-import dynamics.quadcopter_config as qc
+from sousvide.control.pilot import Pilot
+from figs.control.vehicle_rate_mpc import VehicleRateMPC
+# from figs.tsplines import min_snap as ms
+# import sousvide.synthesize.synthesize_helper as sh
+import sousvide.synthesize.rollout_generator as gd
+import sousvide.visualize.record_flight as rf
+from torchvision.io import write_video
+from torchvision.transforms import Resize
+from figs.simulator import Simulator
+import figs.utilities.trajectory_helper as th
+from figs.dynamics.model_specifications import generate_specifications
+# import figs.visualize.generate_videos as gv
 
-from synthesize.solvers import min_snap as ms
-import synthesize.nerf_utils as nf
-import synthesize.trajectory_helper as th
-import synthesize.generate_data as gd
-from synthesize.build_rrt_dataset import get_objectives, generate_rrt_paths
+import figs.tsampling.build_rrt_dataset as bd
 
-import visualize.plot_synthesize as ps
-import visualize.record_flight as rf
+# import visualize.plot_synthesize as ps
+# import visualize.record_flight as rf
 
-import flight.vision_preprocess as vp
+# import flight.vision_preprocess as vp
+
+
+def simulate_roster(cohort_name:str,method_name:str,
+                    flights:List[Tuple[str,str]],
+                    Nro_sv:int=50):
+    
+    # Some useful path(s)
+    workspace_path = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    
+    # Extract method configs
+    method_path = os.path.join(workspace_path,"configs","method",method_name+".json")
+
+    # Extract scene configs
+    scenes_cfg_dir  = os.path.join(workspace_path, "configs", "scenes")
+        
+    with open(method_path) as json_file:
+        method_config = json.load(json_file)
+    
+    sample_set_config = method_config["sample_set"]
+    trajectory_set_config = method_config["trajectory_set"]
+    frame_set_config = method_config["frame_set"]
+
+    rrt_mode = sample_set_config["rrt_mode"]
+    Tdt_ro = sample_set_config["duration"]
+    Nro_tp = sample_set_config["reps"]
+    Ntp_sc = sample_set_config["rate"]
+    err_tol = sample_set_config["tolerance"]
+    rollout_name = sample_set_config["rollout"]
+    policy_name = sample_set_config["policy"]
+    frame_name = sample_set_config["frame"]
+
+    # Extract policy and frame
+    policy_path = os.path.join(workspace_path,"configs","policy",policy_name+".json")
+    frame_path  = os.path.join(workspace_path,"configs","frame",frame_name+".json")
+    
+    with open(policy_path) as json_file:
+        policy_config = json.load(json_file)
+
+    with open(frame_path) as json_file:
+        base_frame_config = json.load(json_file)   
+
+    hz_ctl = policy_config["hz"]
+
+    # Create cohort folder
+    cohort_path = os.path.join(workspace_path,"cohorts",cohort_name)
+
+    if not os.path.exists(cohort_path):
+        os.makedirs(cohort_path)
+
+    # Generate base drone specifications
+    base_frame_specs = generate_specifications(base_frame_config)
+
+    # Print some useful information
+    print("==========================================================================")
+    print("Cohort         :",cohort_name)
+    print("Method         :",method_name)
+    print("Policy         :",policy_name)
+    print("Frame          :",frame_name)
+    print("Flights        :",flights)
+
+    if rrt_mode:
+        for scene_name,course_name in flights:
+            scene_cfg_file = os.path.join(scenes_cfg_dir, f"{scene_name}.yml")
+            with open(scene_cfg_file) as f:
+                scene_cfg = yaml.safe_load(f)
+
+            objectives      = scene_cfg["queries"]
+            radii           = scene_cfg["radii"]
+            hover_mode      = scene_cfg["hoverMode"]
+            visualize_flag = scene_cfg["visualize"]
+            altitudes       = scene_cfg["altitudes"]
+            num_trajectories = scene_cfg.get("numTraj", "all")
+            n_iter_rrt = scene_cfg["N"]
+            env_bounds      = {}
+            if "minbound" in scene_cfg and "maxbound" in scene_cfg:
+                env_bounds["minbound"] = np.array(scene_cfg["minbound"])
+                env_bounds["maxbound"] = np.array(scene_cfg["maxbound"])
+
+            # Generate simulator
+            simulator = Simulator(scene_name,rollout_name)
+
+            # RRT-based trajectories
+            obj_targets, _, epcds_list, epcds_arr = bd.get_objectives(
+                simulator.gsplat, objectives, visualize_flag
+            )
+
+            # Goal poses and centroids
+            goal_poses, obj_centroids = th.process_RRT_objectives(
+                obj_targets, epcds_arr, env_bounds, radii, altitudes
+            )
+
+            # Generate RRT paths
+            raw_rrt_paths = bd.generate_rrt_paths(
+                scene_cfg_file, epcds_list, epcds_arr, objectives,
+                goal_poses, obj_centroids, env_bounds, n_iter_rrt
+            )
+
+            # Filter and parameterize trajectories
+            all_trajectories = {}
+            for idx, obj_name in enumerate(objectives):
+                branches = raw_rrt_paths[obj_name]
+                alt_set  = th.set_RRT_altitude(branches, altitudes[idx])
+                filtered = th.filter_branches(alt_set, hover_mode)
+                print(f"{obj_name}: {len(filtered)} branches")
+
+                idx = np.random.randint(len(filtered))
+                print(f"Selected branch index for {obj_name}: {idx}")
+
+                traj_list, node_list, debug_info = th.parameterize_RRT_trajectories(
+                    filtered, obj_centroid[idx], 1.0, 20, idx
+                )
+                print(f"Parameterized: {len(traj_list)} trajectories")
+
+                chosen_traj  = traj_list[idx]
+                chosen_nodes = node_list[idx]
+                combined_data = {
+                    "tXUi": chosen_traj,
+                    "nodes": chosen_nodes,
+                    **debug_info
+                }
+
+                combined_file = f"{combined_prefix}_{obj_name}.pkl"
+                with open(combined_file, "wb") as f:
+                    pickle.dump(combined_data, f)
+            
+
 
 
 def simulate_roster(cohort: str,

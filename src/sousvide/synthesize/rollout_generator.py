@@ -31,7 +31,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
     Args:
         cohort_name:    Cohort name.
         method_name:    Sous Vide config.
-#FIXME  flights:        List of flights ??(scene,frame,course)??.
+#FIXME  flights:        List of flights ??(scene,frame,course)??. (scene, course)
         Nro_sv:         Number of rollouts per save.
 
     Returns:
