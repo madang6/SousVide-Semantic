@@ -282,7 +282,7 @@ def generate_rollout_data_ssv_sfti(
     course_list: List[str],
     drone_name: str,
     method_name: str,
-    nerf_model: nf.NeRF,
+    # nerf_model: nf.NeRF,
     rollouts_per_time_point: int,
     rollouts_per_save: int = 25,
     time_points_per_second: int = 4,
