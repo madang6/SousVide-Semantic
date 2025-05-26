@@ -57,7 +57,9 @@ def simulate_roster(cohort_name:str,method_name:str,
         method_config = json.load(json_file)
 
     test_set_config = method_config["test_set"]
-    # sample_set_config = method_config["sample_set"]
+    sample_set_config = method_config["sample_set"]
+    trajectory_set_config = method_config["trajectory_set"]
+    frame_set_config = method_config["frame_set"]
 
     base_policy_name = sample_set_config["policy"]
     base_frame_name = sample_set_config["frame"]
@@ -70,9 +72,7 @@ def simulate_roster(cohort_name:str,method_name:str,
     # Compute simulation variables
     Trep = np.zeros(Nrep)
     
-    sample_set_config = method_config["sample_set"]
-    trajectory_set_config = method_config["trajectory_set"]
-    frame_set_config = method_config["frame_set"]
+    # sample_set_config = method_config["sample_set"]
 
     rrt_mode = sample_set_config["rrt_mode"]
     Tdt_ro = sample_set_config["duration"]
@@ -189,22 +189,22 @@ def simulate_roster(cohort_name:str,method_name:str,
     Frames = gd.generate_frames(
     Trep, base_frame_config, frame_set_config
     )
-    Perturbations  = gd.generate_perturbations(
-        Trep,tXUi,trajectory_set_config
-    )
 
     # === 10) Simulation Loop: for each objective, for each pilot ===
     for obj_name, data in trajectory_dataset.items():
         tXUi   = data["tXUi"]
         t0, tf = tXUi[0, 0], tXUi[0, -1]
         x0     = tXUi[1:11, 0]
-
-        # initialize expert
-        mpc_expert = VehicleRateMPC(tXUi, base_cfg, hz_ctl)  # dummy init
-        mpc_expert.clear_generated_code()
         
         # prepend expert to pilots
-        pilot_list = ["expert"] + pilot_list
+        pilot_list = ["expert"] + roster
+
+        # apply any perturbations
+        Perturbations  = gd.generate_perturbations(
+            Tsps=Trep,
+            tXUi=tXUi,
+            trajectory_set_config=trajectory_set_config
+        )
 
         for pilot_name in pilot_list:
             print("-" * 70)
@@ -218,7 +218,7 @@ def simulate_roster(cohort_name:str,method_name:str,
             )
 
             if pilot_name == "expert":
-                policy = VehicleRateMPC(course_name,base_policy_name,base_frame_name,pilot_name)
+                policy = VehicleRateMPC(tXUi,base_policy_name,base_frame_name,pilot_name)
             else:
                 policy = Pilot(cohort_name,pilot_name)
                 policy.set_mode('deploy')
@@ -243,12 +243,12 @@ def simulate_roster(cohort_name:str,method_name:str,
 
                 # Simulate Trajectory
                 Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
-                    policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],obj_name)
+                    policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),obj_name)
 
                 # Save Trajectory
                 trajectory = {
                     "Tro":Tro,"Xro":Xro,"Uro":Uro,
-                    "tXUd":tXUi,"obj":obj_name,"Ndata":Uro.shape[1],"Tsol":Tsol,"Adv":Adv,
+                    "tXUd":tXUi,"obj":np.zeros((18,1)),"Ndata":Uro.shape[1],"Tsol":Tsol,"Adv":Adv,
                     "rollout_id":method_name+"_"+str(idx).zfill(5),
                     "course":course_name,
                     "frame":frame}
@@ -269,7 +269,7 @@ def simulate_roster(cohort_name:str,method_name:str,
                 # results.append(rollout)
                 # mpc_expert.clear_generated_code()
 
-            semantic_imgs = Iro["semantic"]
+            # semantic_imgs = Iro["semantic"]
 
             if use_flight_recorder:
                 fr = rf.FlightRecorder(
@@ -280,7 +280,7 @@ def simulate_roster(cohort_name:str,method_name:str,
                     cohort_name, scene_name, pilot_name
                 )
                 fr.simulation_import(
-                    semantic_imgs, Tro, Xro, Uro, tXUi, Tsol, Adv
+                    Iro, Tro, Xro, Uro, tXUi, Tsol, Adv
                 )
                 fr.save()
             else:
@@ -289,15 +289,15 @@ def simulate_roster(cohort_name:str,method_name:str,
 
                 # prepare and write video
                 frames = torch.zeros(
-                    (semantic_imgs.shape[0], 720, 1280, 3)
+                    (Iro.shape[0], 720, 1280, 3)
                 )
-                imgs_t = torch.from_numpy(semantic_imgs)
+                imgs_t = torch.from_numpy(Iro)
                 for i in range(imgs_t.shape[0] - 1):
                     img = imgs_t[i].permute(2, 0, 1)
                     img = transform(img)
                     frames[i] = img.permute(1, 2, 0)
 
-                write_video(vid_file, frames, fps=mpc_expert.hz)
+                write_video(vid_file, frames, fps=20)
             
 def simulate_roster_old(cohort: str,
                     scene_name: str,

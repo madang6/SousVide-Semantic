@@ -699,8 +699,8 @@ def generate_frames(Tsps:np.ndarray,
 
     return Frames
 
-def generate_perturbations(Tsps:np.ndarray,
-                           Tpd:np.ndarray,
+def generate_perturbations(Tsps:np.ndarray|None=None,
+                           Tpd:np.ndarray|None=None,
                            tXUi:np.ndarray|None=None,
                            CPd:np.ndarray|None=None,
                            trajectory_set_config:Dict[str,Union[int,bool]]|None=None,
@@ -734,10 +734,11 @@ def generate_perturbations(Tsps:np.ndarray,
     w_x0 = np.array(trajectory_set_config["initial"],dtype=float)
     
     # Get ideal trajectory for quaternion checking
-    if tXUi is not None:
+    if Tpd is not None:
         tXUd = th.TS_to_tXU(Tpd,CPd,None,10)
-    else:
+    elif tXUi is not None:
         tXUd = copy.deepcopy(tXUi)
+        Tpd = tXUd[0]
 
     # Generate perturbed starting points    
     Perturbations = []
