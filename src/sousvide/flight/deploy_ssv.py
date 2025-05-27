@@ -42,6 +42,7 @@ def simulate_roster(cohort_name:str,method_name:str,
                     flights:List[Tuple[str,str]],
                     roster:List[str],
                     use_flight_recorder:bool=False):
+                    # visualize_rrt:bool=False):
     
     # Some useful path(s)
     workspace_path = os.path.dirname(
@@ -271,6 +272,12 @@ def simulate_roster(cohort_name:str,method_name:str,
 
             # semantic_imgs = Iro["semantic"]
 
+            # if visualize_rrt:
+            #     combined_file_path = os.path.join(f"{combined_prefix}_{obj_name}.pkl")#f"{combined_prefix}_{obj_name}.pkl"
+            #     with open(combined_file_path, 'rb') as f:
+            #         trajectory_data = pickle.load(f)
+            #         th.debug_figures_RRT(trajectory_data["obj_loc"],trajectory_data["positions"],trajectory_data["trajectory"],
+            #                             trajectory_data["smooth_trajectory"],trajectory_data["times"])
             if use_flight_recorder:
                 fr = rf.FlightRecorder(
                     Xro.shape[0], Uro.shape[0],
