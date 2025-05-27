@@ -6,7 +6,7 @@
         "tolerance": 0.07,
         "rollout": "baseline",
         "frame": "carl",
-        "policy": "vrmpc_fr",
+        "policy": "vrmpc_rrt",
         "rrt_mode": true
     },
     "trajectory_set":{
