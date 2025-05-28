@@ -126,6 +126,7 @@ def simulate_roster(cohort_name:str,method_name:str,
             hover_mode      = scene_cfg["hoverMode"]
             visualize_flag = scene_cfg["visualize"]
             altitudes       = scene_cfg["altitudes"]
+            similarities    = scene_cfg.get("similarities", None)
             num_trajectories = scene_cfg.get("numTraj", "all")
             n_iter_rrt = scene_cfg["N"]
             env_bounds      = {}
@@ -138,7 +139,7 @@ def simulate_roster(cohort_name:str,method_name:str,
 
             # RRT-based trajectories
             obj_targets, _, epcds_list, epcds_arr = bd.get_objectives(
-                simulator.gsplat, objectives, visualize_flag
+                simulator.gsplat, objectives, similarities, visualize_flag
             )
 
             # Goal poses and centroids
@@ -155,6 +156,7 @@ def simulate_roster(cohort_name:str,method_name:str,
             # Filter and parameterize trajectories
             all_trajectories = {}
             for i, obj_name in enumerate(objectives):
+                print(f"Processing objective: {obj_name}")
                 branches = raw_rrt_paths[obj_name]
                 alt_set  = th.set_RRT_altitude(branches, altitudes[i])
                 filtered = th.filter_branches(alt_set, hover_mode)
