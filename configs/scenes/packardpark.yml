@@ -12,6 +12,11 @@ altitudes:
   # - -0.9            # flight height for "ladder”
   # - -1.1            # flight height for "armchair"
 
+similarities:
+  - [ 0.90, 0.025 ]  # threshold, filter radius
+  # - [ 0.90, 0.025 ]
+  # - [ 0.90, 0.025 ]
+
 hoverMode: False
 numTraj: all
 

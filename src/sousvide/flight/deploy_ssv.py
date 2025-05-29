@@ -35,7 +35,7 @@ import figs.tsampling.build_rrt_dataset as bd
 # import visualize.plot_synthesize as ps
 # import visualize.record_flight as rf
 
-import flight.vision_preprocess as vp
+import sousvide.flight.vision_preprocess as vp
 
 
 def simulate_roster(cohort_name:str,method_name:str,
@@ -290,33 +290,76 @@ def simulate_roster(cohort_name:str,method_name:str,
             #         trajectory_data = pickle.load(f)
             #         th.debug_figures_RRT(trajectory_data["obj_loc"],trajectory_data["positions"],trajectory_data["trajectory"],
             #                             trajectory_data["smooth_trajectory"],trajectory_data["times"])
-            if use_flight_recorder:
-                fr = rf.FlightRecorder(
-                    Xro.shape[0], Uro.shape[0],
-                    20, tXUi[0, -1],
-                    [224, 398, 3],
-                    np.zeros((18, 1)),
-                    cohort_name, scene_name, pilot_name
-                )
-                fr.simulation_import(
-                    Iro, Tro, Xro, Uro, tXUi, Tsol, Adv
-                )
-                fr.save()
+
+            if vision_processor is not None:
+                imgs = {
+                    "semantic": Iro["semantic"],
+                    "rgb": Iro["rgb"]
+                }
             else:
-                # print(f"Simulated {len(drone_instances)} rollouts.")
-                torch.save(results, traj_file)
+                imgs = {
+                    "semantic": Iro["semantic"]
+                }
 
-                # prepare and write video
-                frames = torch.zeros(
-                    (Iro.shape[0], 720, 1280, 3)
-                )
-                imgs_t = torch.from_numpy(Iro)
-                for i in range(imgs_t.shape[0] - 1):
-                    img = imgs_t[i].permute(2, 0, 1)
-                    img = transform(img)
-                    frames[i] = img.permute(1, 2, 0)
+            # run for each key in imgs
+            for key in imgs:
+                if use_flight_recorder:
+                    fr = rf.FlightRecorder(
+                        Xro.shape[0], Uro.shape[0],
+                        20, tXUi[0, -1],
+                        [224, 398, 3],
+                        np.zeros((18, 1)),
+                        cohort_name, scene_name, pilot_name
+                    )
+                    fr.simulation_import(
+                        imgs[key], Tro, Xro, Uro, tXUi, Tsol, Adv
+                    )
+                    fr.save()
+                else:
+                    # print(f"Simulated {len(drone_instances)} rollouts.")
+                    torch.save(results, traj_file)
 
-                write_video(vid_file, frames, fps=20)
+                    # prepare and write video
+                    frames = torch.zeros(
+                        (imgs[key].shape[0], 720, 1280, 3)
+                    )
+                    imgs_t = torch.from_numpy(imgs[key])
+                    for i in range(imgs_t.shape[0] - 1):
+                        img = imgs_t[i].permute(2, 0, 1)
+                        img = transform(img)
+                        frames[i] = img.permute(1, 2, 0)
+
+                    # save video with key in filename
+                    key_vid_file = vid_file.replace('.mp4', f'_{key}.mp4')
+                    write_video(key_vid_file, frames, fps=20)
+
+            # if use_flight_recorder:
+            #     fr = rf.FlightRecorder(
+            #         Xro.shape[0], Uro.shape[0],
+            #         20, tXUi[0, -1],
+            #         [224, 398, 3],
+            #         np.zeros((18, 1)),
+            #         cohort_name, scene_name, pilot_name
+            #     )
+            #     fr.simulation_import(
+            #         Iro, Tro, Xro, Uro, tXUi, Tsol, Adv
+            #     )
+            #     fr.save()
+            # else:
+            #     # print(f"Simulated {len(drone_instances)} rollouts.")
+            #     torch.save(results, traj_file)
+
+            #     # prepare and write video
+            #     frames = torch.zeros(
+            #         (Iro.shape[0], 720, 1280, 3)
+            #     )
+            #     imgs_t = torch.from_numpy(Iro)
+            #     for i in range(imgs_t.shape[0] - 1):
+            #         img = imgs_t[i].permute(2, 0, 1)
+            #         img = transform(img)
+            #         frames[i] = img.permute(1, 2, 0)
+
+            #     write_video(vid_file, frames, fps=20)
             
 def simulate_roster_old(cohort: str,
                     scene_name: str,
