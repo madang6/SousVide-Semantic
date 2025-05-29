@@ -1,0 +1,15 @@
+# Test Campaign Settings and Identifiers
+cohort: "ssv_multi3DGS_861000Gb"
+method: "rrt"
+
+# Number of episodes for history/command training
+Nep_his: 100
+Nep_com: 250
+
+# Each entry is a (scene, course) pair
+flights:
+  - ["sv_917_3_left_gemsplat", "sv_917_3_left_gemsplat"]
+
+# List of policy identifiers
+roster:
+  - "InstinctJester"

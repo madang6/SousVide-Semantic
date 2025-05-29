@@ -8,4 +8,5 @@
 **/rollout_data/
 **/test_data/
 **/test_space/
+**/wandb/
 /outputs/
