@@ -35,7 +35,7 @@ import figs.tsampling.build_rrt_dataset as bd
 # import visualize.plot_synthesize as ps
 # import visualize.record_flight as rf
 
-# import flight.vision_preprocess as vp
+import flight.vision_preprocess as vp
 
 
 def simulate_roster(cohort_name:str,method_name:str,
@@ -83,6 +83,8 @@ def simulate_roster(cohort_name:str,method_name:str,
     rollout_name = sample_set_config["rollout"]
     policy_name = sample_set_config["policy"]
     frame_name = sample_set_config["frame"]
+    use_clip   = sample_set_config["clipseg"]
+
 
     # Extract policy and frame
     policy_path = os.path.join(workspace_path,"configs","policy",policy_name+".json")
@@ -104,6 +106,14 @@ def simulate_roster(cohort_name:str,method_name:str,
 
     # Generate base drone specifications
     base_cfg = generate_specifications(base_frame_config)
+
+    if use_clip:
+        print("Using CLIPSeg for semantic segmentation.")
+        vision_processor = vp.CLIPSegHFModel(
+            hf_model="CIDAS/clipseg-rd64-refined"
+        )
+    else:
+        vision_processor = None
 
     # Print some useful information
     print("==========================================================================")
@@ -246,7 +256,7 @@ def simulate_roster(cohort_name:str,method_name:str,
 
                 # Simulate Trajectory
                 Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
-                    policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),obj_name)
+                    policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),query=obj_name,clipseg=vision_processor)
 
                 # Save Trajectory
                 trajectory = {

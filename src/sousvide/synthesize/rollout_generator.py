@@ -777,7 +777,8 @@ def generate_rollouts(
         policy_config:Dict[str,Union[int,float,List[float]]]|None=None,
         Frames:Dict[str,Union[np.ndarray,str,int,float]]|None=None,
         Perturbations:Dict[str,Union[float,np.ndarray]]|None=None,
-        Tdt_ro:float|None=None,err_tol:float|None=None
+        Tdt_ro:float|None=None,err_tol:float|None=None,
+        vision_processor:bool=False
         ) -> Tuple[List[Dict[str,Union[np.ndarray,np.ndarray,np.ndarray]]],List[torch.Tensor]]:
     """
     Generates rollout data for the quadcopter given a list of drones and initial states (perturbations).
@@ -835,7 +836,7 @@ def generate_rollouts(
             ctl = VehicleRateMPC(tXUd,policy_config,frame_config)
 
             # Simulate the flight
-            Tro,Xro,Uro,Imgs,Tsol,Adv = sim.simulate(ctl,t0,tf,x0,objective)
+            Tro,Xro,Uro,Imgs,Tsol,Adv = sim.simulate(ctl,t0,tf,x0,query=objective,clipseg=vision_processor)
 
             # # Simulate the flight
             # Tro,Xro,Uro,Imgs,Tsol,Adv = qs.simulate_flight(policy,simulator,

@@ -7,7 +7,9 @@
         "rollout": "baseline",
         "frame": "carl",
         "policy": "vrmpc_rrt",
-        "rrt_mode": true
+        "rrt_mode": true,
+        "clipseg": true,
+        "videoMode": true
     },
     "trajectory_set":{
         "initial": [
