@@ -157,10 +157,16 @@ def simulate_roster(cohort_name:str,method_name:str,
                 obj_targets, epcds_arr, env_bounds, radii, altitudes
             )
 
+            # Obstacle centroids and rings
+            rings, obstacles = th.process_obstacle_clusters_and_sample(
+                epcds_arr, env_bounds)
+            
+            print(f"obstacles poses : {obstacles}")
+
             # Generate RRT paths
             raw_rrt_paths = bd.generate_rrt_paths(
                 scene_cfg_file, simulator, epcds_list, epcds_arr, objectives,
-                goal_poses, obj_centroids, env_bounds, n_iter_rrt
+                goal_poses, obj_centroids, env_bounds, rings, obstacles, n_iter_rrt
             )
 
             # Filter and parameterize trajectories

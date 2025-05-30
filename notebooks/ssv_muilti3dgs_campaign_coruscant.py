@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Callable, List, Optional
 import wandb
 
+from io import BytesIO
+from PIL import Image
+
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 
@@ -145,22 +148,26 @@ def simulate(
     wandb_project: Optional[str] = typer.Option(None),
     wandb_run_name: Optional[str] = typer.Option(None),
 ):
-    cfg = common_options(  # type: ignore
+    cfg = common_options(
         config_file, False, use_wandb, wandb_project, wandb_run_name
     )
     init_wandb(cfg, "simulate")
     df.simulate_roster(
         cfg["cohort"], cfg["method"], cfg["flights"], cfg["roster"]
     )
+
     if cfg.get("use_wandb"):
         logs = {}
-        # log Matplotlib figures
         for i, num in enumerate(plt.get_fignums(), start=1):
-            fig = plt.figure(num)
-            logs[f"simulate_mpl_fig_{i}"] = wandb.Image(fig)
-        # log Plotly figures
+            fig_mpl = plt.figure(num)
+            logs[f"simulate_mpl_fig_{i}"] = wandb.Image(fig_mpl)
+
         for i, fig in enumerate(_all_plotly_figs, start=1):
-            logs[f"simulate_plotly_fig_{i}"] = fig
+            img_bytes = fig.to_image(format="png", width=1200, height=1200)
+            buf = BytesIO(img_bytes)
+            pil_img = Image.open(buf)
+            logs[f"simulate_plotly_png_{i}"] = wandb.Image(pil_img)
+
         wandb.log(logs)
         plt.close("all")
         _all_plotly_figs.clear()
