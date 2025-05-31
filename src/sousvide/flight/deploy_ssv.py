@@ -162,6 +162,7 @@ def simulate_roster(cohort_name:str,method_name:str,
                 epcds_arr, env_bounds)
             
             print(f"obstacles poses : {obstacles}")
+            print(f"rings poses shape: {len(rings)}")
 
             # Generate RRT paths
             raw_rrt_paths = bd.generate_rrt_paths(
@@ -199,6 +200,23 @@ def simulate_roster(cohort_name:str,method_name:str,
                     pickle.dump(combined_data, f)
                 
                 trajectory_dataset[obj_name] = combined_data
+            
+            loiter_trajectories = {}
+            idx = np.random.randint(len(obstacles))
+            print(f"Selected loiter index for obstacles: {idx}")
+            traj_list, node_list, debug_info = th.parameterize_RRT_trajectories(
+                rings, obstacles[idx], 1.0, 20, idx, loiter=True)
+            print(f"Parameterized: {len(traj_list)} loiter trajectories for obstacle {idx}")
+            combined_data = {
+                "tXUi": traj_list[idx],
+                "nodes": node_list[idx],
+                **debug_info
+            }
+            combined_file = f"{combined_prefix}_loiter_{i}.pkl"
+            with open(combined_file, "wb") as f:
+                pickle.dump(combined_data, f)
+            trajectory_dataset[f"loiter_{idx}"] = combined_data
+
             
     # === 8) Initialize Drone Config & Transform ===
     # base_cfg   = generate_specifications(base_frame_config)
