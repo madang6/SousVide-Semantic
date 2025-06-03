@@ -181,12 +181,14 @@ def simulate_roster(cohort_name:str,method_name:str,
 
                 idx = np.random.randint(len(filtered))
                 print(f"Selected branch index for {obj_name}: {idx}")
+                # print(f"Length of filtered: {len(filtered)}")
+                # print(f"Shape of filtered[idx]: {filtered[0].shape}")
 
                 traj_list, node_list, debug_info = th.parameterize_RRT_trajectories(
-                    filtered, obj_centroids[i], 1.0, 20, idx
+                    filtered, obj_centroids[i], 1.0, 20, randint=idx
                 )
                 print(f"Parameterized: {len(traj_list)} trajectories")
-
+                print(f"chosen_traj.shape: {traj_list[idx].shape}")
                 chosen_traj  = traj_list[idx]
                 chosen_nodes = node_list[idx]
                 combined_data = {
@@ -204,15 +206,21 @@ def simulate_roster(cohort_name:str,method_name:str,
             loiter_trajectories = {}
             idx = np.random.randint(len(obstacles))
             print(f"Selected loiter index for obstacles: {idx}")
+            # print(f"Length of rings[idx]: {len(rings[idx])}")
+            # print(f"Shape of rings[idx]: {rings[idx].shape}")
+            # Take the first element of rings and create a new list with just that element
+            rings_idx = [rings[idx]]
+            print(f"Rings for loiter: {rings_idx}")
             traj_list, node_list, debug_info = th.parameterize_RRT_trajectories(
-                rings, obstacles[idx], 1.0, 20, idx, loiter=True)
+                rings_idx, obstacles[idx], 1.0, 20, randint=idx, loiter=True)
             print(f"Parameterized: {len(traj_list)} loiter trajectories for obstacle {idx}")
+            print(f"chosen_traj.shape: {traj_list[0].shape}")
             combined_data = {
-                "tXUi": traj_list[idx],
-                "nodes": node_list[idx],
+                "tXUi": traj_list[0],
+                "nodes": node_list[0],
                 **debug_info
             }
-            combined_file = f"{combined_prefix}_loiter_{i}.pkl"
+            combined_file = f"{combined_prefix}_loiter_{idx}.pkl"
             with open(combined_file, "wb") as f:
                 pickle.dump(combined_data, f)
             trajectory_dataset[f"loiter_{idx}"] = combined_data

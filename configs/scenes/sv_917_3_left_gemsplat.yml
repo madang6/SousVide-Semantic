@@ -1,6 +1,7 @@
 # queries: ["microwave","ladder","armchair"]
 # queries: ["microwave", "armchair"]
-queries: ["ladder"]
+queries: ["microwave"]
+# queries: ["ladder"]
 # queries: ["armchair"]
 # semantic_target: "mannequin"
 
@@ -9,18 +10,18 @@ queries: ["ladder"]
 # r2: 0.2 # collision check distance from point at end of r1 vector
 
 radii:
-  # - [ 1.75,  0.4]   # for "microwave"
-  - [ 1.75,  0.4]   # for "ladder"
+  - [ 1.75,  0.4]   # for "microwave"
+  # - [ 1.75,  0.4]   # for "ladder"
   # - [ 1.75,  0.4]   # for "armchair"
 
 altitudes:
-  # - -1.0            # flight height for “microwave”
-  - -1.1            # flight height for "ladder”
+  - -1.0            # flight height for “microwave”
+  # - -1.1            # flight height for "ladder”
   # - -1.0            # flight height for "armchair"
 
 similarities:
-  # - [ 0.90, 0.025 ]  # threshold, filter radius
-  - [ 0.90, 0.025 ]
+  - [ 0.90, 0.025 ]  # threshold, filter radius
+  # - [ 0.90, 0.025 ]
   # - [ 0.90, 0.025 ]
 
 hoverMode: False

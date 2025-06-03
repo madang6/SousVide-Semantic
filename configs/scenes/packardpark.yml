@@ -1,5 +1,5 @@
 # queries: ["park bench", "traffic cone", "bicycles"]
-queries: ["park bench"]
+queries: ["parkbench"]
 # semantic_target: "mannequin"
 
 radii:
