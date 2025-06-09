@@ -3,7 +3,7 @@ import numpy as np
 
 from PIL import Image
 from io import BytesIO
-from typing import Dict,Union
+from typing import Dict, List, Union
 
 import sousvide.synthesize.synthesize_helper as sh
 
@@ -21,6 +21,34 @@ def save_images_as_video(frames, video_path, fps=20):
         bgr_frame = cv2.cvtColor(f, cv2.COLOR_RGB2BGR)
         writer.write(bgr_frame)
     writer.release()
+
+def load_video_frames(video_path,image_data_set) -> List[np.ndarray]:
+    """
+    Returns frames [start_idx ... end_idx] from 'video_path'.
+    """
+
+    start_idx = image_data_set["start_id"]
+    end_idx = image_data_set["end_id"]
+
+    frames = []
+    cap = cv2.VideoCapture(video_path)
+    
+    # Move to the start frame
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_idx)
+
+    current_idx = start_idx
+    while current_idx <= end_idx:
+        ret, frame = cap.read()
+        if not ret:
+            break  # No more frames or error
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(frame_rgb)
+        current_idx += 1
+
+    cap.release()
+
+    frames_np = np.stack(frames, axis=0)# Stack into a single array of shape (N, H, W, 3)    
+    return frames_np
 
 def decompress_data(image_dict:Dict[str,Union[str,np.ndarray]]) -> Dict[str,Union[str,np.ndarray]]:
     """

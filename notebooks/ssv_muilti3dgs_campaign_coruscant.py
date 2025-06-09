@@ -78,6 +78,23 @@ def generate_rollouts(
     )
     init_wandb(cfg, "generate_rollouts")
     rg.generate_rollout_data(cfg["cohort"], cfg["method"], cfg["flights"])
+
+    if cfg.get("use_wandb"):
+        logs = {}
+        for i, num in enumerate(plt.get_fignums(), start=1):
+            fig_mpl = plt.figure(num)
+            logs[f"generate_rollout_mpl_fig_{i}"] = wandb.Image(fig_mpl)
+
+        for i, fig in enumerate(_all_plotly_figs, start=1):
+            img_bytes = fig.to_image(format="png", width=1200, height=1200)
+            buf = BytesIO(img_bytes)
+            pil_img = Image.open(buf)
+            logs[f"generate_rollout_plotly_png_{i}"] = wandb.Image(pil_img)
+
+        wandb.log(logs)
+        plt.close("all")
+        _all_plotly_figs.clear()
+
     if cfg["plot"]:
         fig = ps.plot_rollout_data(cfg["cohort"])
         if cfg["use_wandb"]:

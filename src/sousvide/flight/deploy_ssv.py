@@ -133,6 +133,7 @@ def simulate_roster(cohort_name:str,method_name:str,
 
             objectives      = scene_cfg["queries"]
             radii           = scene_cfg["radii"]
+            n_branches      = scene_cfg["nbranches"]
             hover_mode      = scene_cfg["hoverMode"]
             visualize_flag = scene_cfg["visualize"]
             altitudes       = scene_cfg["altitudes"]
@@ -176,7 +177,7 @@ def simulate_roster(cohort_name:str,method_name:str,
                 print(f"Processing objective: {obj_name}")
                 branches = raw_rrt_paths[obj_name]
                 alt_set  = th.set_RRT_altitude(branches, altitudes[i])
-                filtered = th.filter_branches(alt_set, hover_mode)
+                filtered = th.filter_branches(alt_set, n_branches[i], hover_mode)
                 print(f"{obj_name}: {len(filtered)} branches")
 
                 idx = np.random.randint(len(filtered))
@@ -287,8 +288,18 @@ def simulate_roster(cohort_name:str,method_name:str,
                 #     policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],obj)
 
                 # Simulate Trajectory
-                Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
-                    policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),query=obj_name,clipseg=vision_processor)
+                if obj_name.startswith("loiter_"):
+                    # For loiter trajectories, simulate with special loiter parameters
+                    Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
+                        policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),
+                        query="null",clipseg=vision_processor)
+                else:
+                    # Normal simulation for non-loiter trajectories
+                    Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
+                        policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),
+                        query=obj_name,clipseg=vision_processor)
+                # Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
+                #     policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),query=obj_name,clipseg=vision_processor)
 
                 # Save Trajectory
                 trajectory = {

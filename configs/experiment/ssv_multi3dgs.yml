@@ -1,6 +1,6 @@
 # Test Campaign Settings and Identifiers
-cohort: "ssv_multi3DGS_861000Gb"
-method: "rrt_null"
+cohort: "ssv_multi_CLIPSEG_Overlay_coruscant"
+method: "rrt"
 
 # Number of episodes for history/command training
 Nep_his: 100
@@ -13,6 +13,6 @@ flights:
   # - ["packardpark", "packardpark"]
 
 # List of policy identifiers
-roster: []
-  # - "InstinctJester"
+roster: #[]
+  - "InstinctJester"
   

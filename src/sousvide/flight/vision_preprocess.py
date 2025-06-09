@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
 import torch
+import torch.nn.functional as F
 if not hasattr(torch, "get_default_device"):
     torch.get_default_device = lambda: torch.device("cpu")
 # import onnxruntime as ort
@@ -12,6 +13,7 @@ if not hasattr(torch, "get_default_device"):
 import cv2
 import imageio
 from PIL import Image
+import albumentations as A
 
 from typing import Any, List, Optional, Tuple, Type, Union
 
@@ -292,6 +294,8 @@ class CLIPSegHFModel:
             img = image
         else:
             raise TypeError(f"Unsupported image type {type(image)}")
+        
+        skip_norm = isinstance(prompt, str) and prompt.strip().lower() == "null"
 
         # 2) preprocess
         inputs = self.processor(images=img, text=prompt, return_tensors="pt")
@@ -303,16 +307,28 @@ class CLIPSegHFModel:
             logits = outputs.logits  # shape [1,1,H,W]
 
         # 4) postprocess logits to (H,W)
-        arr = logits.cpu().squeeze()  # remove batch and channel dims
-        # arr may now be [H,W]
-        pm = arr.numpy().astype(np.float32)
-        # normalize
-        mn, mx = pm.min(), pm.max()
-        if mx - mn < 1e-9:
-            norm = np.zeros_like(pm)
+        arr = logits.cpu().squeeze().numpy().astype(np.float32)
+        if skip_norm:
+            # apply sigmoid directly
+            prob = 1.0 / (1.0 + np.exp(-arr))
+            mask_u8 = (prob * 255).astype(np.uint8)
         else:
-            norm = (pm - mn) / (mx - mn)
-        mask_u8 = (norm * 255).astype(np.uint8)
+            mn, mx = arr.min(), arr.max()
+            if mx - mn < 1e-9:
+                scaled = np.zeros_like(arr)
+            else:
+                scaled = (arr - mn) / (mx - mn)
+            mask_u8 = (scaled * 255).astype(np.uint8)
+        # arr = logits.cpu().squeeze()  # remove batch and channel dims
+        # # arr may now be [H,W]
+        # pm = arr.numpy().astype(np.float32)
+        # # normalize
+        # mn, mx = pm.min(), pm.max()
+        # if mx - mn < 1e-9:
+        #     norm = np.zeros_like(pm)
+        # else:
+        #     norm = (pm - mn) / (mx - mn)
+        # mask_u8 = (norm * 255).astype(np.uint8)
 
         # 5) resize if needed
         if resize_output_to_input:
@@ -322,7 +338,9 @@ class CLIPSegHFModel:
             )
 
         # 6) colorize
-        return colorize_mask_fast(mask_u8, self.lut)
+        colorized = colorize_mask_fast(mask_u8, self.lut)
+        overlayed = blend_overlay_gpu(image, colorized)
+        return overlayed
 
 # class CLIPSegModel:
 #     def __init__(
@@ -503,3 +521,62 @@ def colorize_mask_fast(mask_np, lut):
     Convert a (H, W) uint8 mask into a (H, W, 3) RGB image using the provided LUT.
     """
     return lut[mask_np]  # Very fast NumPy indexing: shape (H, W, 3)
+
+################################################
+# 3. Utility Functions for Image Processing #
+################################################
+    
+
+def blend_overlay_gpu(base: np.ndarray,
+                      overlay: np.ndarray,
+                      alpha: float = 0.85) -> np.ndarray:
+    """
+    Convert `base`→mono-gray on GPU (if needed), resize `overlay` on GPU,
+    then blend:  result = α·overlay + (1−α)·gray_base.  Entirely on CUDA.
+
+    Parameters:
+        base (np.ndarray): 
+            • If 3-channel: H×W×3 BGR/uint8. 
+            • If single-channel: H×W/uint8. 
+        overlay (np.ndarray): H'×W'×3 BGR/uint8 image to overlay.
+        alpha (float): opacity of overlay in [0,1].
+
+    Returns:
+        np.ndarray: H×W×3 BGR/uint8 blended result (on CPU).
+    """
+    # 1. Upload base to GPU and convert to float
+    if base.ndim == 2:
+        # already gray
+        base_gray = torch.from_numpy(base).float().cuda()             # shape [H, W]
+    elif base.ndim == 3 and base.shape[2] == 3:
+        B = torch.from_numpy(base[:, :, 0]).float().cuda()            # BGR channels
+        G = torch.from_numpy(base[:, :, 1]).float().cuda()
+        R = torch.from_numpy(base[:, :, 2]).float().cuda()
+        # Standard Rec. 601 luma-weights for BGR→gray:
+        base_gray = 0.114 * B + 0.587 * G + 0.299 * R               # shape [H, W]
+    else:
+        raise ValueError(
+            "`base` must be H×W (gray) or H×W×3 (BGR).")
+
+    H, W = base_gray.shape
+
+    # 2. Upload overlay to GPU as a float tensor [3, H', W']
+    if overlay.ndim != 3 or overlay.shape[2] != 3:
+        raise ValueError("`overlay` must be H'×W'×3 (BGR/uint8).")
+    ov = torch.from_numpy(overlay).float().permute(2, 0, 1).cuda()    # [3, H', W']
+    ov = ov.unsqueeze(0)                                             # [1, 3, H', W']
+
+    # 3. Resize overlay to match base’s H×W (bilinear on GPU)
+    ov_resized = F.interpolate(
+        ov, size=(H, W), mode="bilinear", align_corners=False
+    ).squeeze(0)                                                     # [3, H, W]
+
+    # 4. Stack gray→3 channels: [3, H, W]
+    gray3 = base_gray.unsqueeze(0).repeat(3, 1, 1)                    # [3, H, W]
+
+    # 5. Blend on GPU: α·overlay + (1−α)·gray3
+    blended = alpha * ov_resized + (1.0 - alpha) * gray3              # [3, H, W]
+
+    # 6. Clamp to [0,255], cast → uint8, move to CPU, return as H×W×3
+    blended = blended.clamp(0, 255).round().byte()                    # [3, H, W]
+    return blended.permute(1, 2, 0).cpu().numpy()   

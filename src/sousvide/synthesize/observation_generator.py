@@ -48,16 +48,19 @@ def generate_observation_data(cohort:str,roster:List[str],subsample:float=1.0):
                 if file.startswith("trajectories") and file.endswith(".pt")])
             image_data_files = sorted([
                 file for file in os.listdir(rollout_data_path)
-                if file.startswith("images") and file.endswith(".pt")])
+                if file.startswith("img") and file.endswith(".pt")])
+            video_data_files = sorted([
+                os.path.join(rollout_data_path, file) for file in os.listdir(rollout_data_path)
+                if file.startswith("video") and file.endswith(".mp4")])
             
             # Generate Observation Data (sans images)
-            for trajectory_data_file,image_data_file in zip(trajectory_data_files,image_data_files):
+            for trajectory_data_file,image_data_file,video in zip(trajectory_data_files,image_data_files,video_data_files):
                 trajectory_data_set = torch.load(os.path.join(rollout_data_path,trajectory_data_file))
                 image_data_set = torch.load(os.path.join(rollout_data_path,image_data_file))
-                observations = generate_observations(pilot,trajectory_data_set,image_data_set,subsample)
+                observations = generate_observations(pilot,trajectory_data_set,image_data_set,video,subsample)
                 Nobs += observations["Nobs"]
 
-                # # Save the observations
+                # Save the observations
                 save_observations(cohort_path,course,pilot.name,observations)
 
         print("Data Counts ------------------------------------------------------------------------------")
@@ -68,10 +71,11 @@ def generate_observation_data(cohort:str,roster:List[str],subsample:float=1.0):
 def generate_observations(pilot:Pilot,
                             trajectory_data_set:Dict[str,Union[str,int,Dict[str,Union[np.ndarray,float,str]]]],
                             image_data_set:Dict[str,Union[str,int,Dict[str,Union[np.ndarray,float,str]]]],
+                            video,
                             subsample:float=1) -> Dict[str,Union[str,int,Dict[str,Union[np.ndarray,float,str]]]]:
     
     # Initialize the observation data dictionary
-    Observations = []
+    Observations, Img_Obsv = [], []
 
     # Unpack augmenteation variables
     aug_type = np.array(pilot.da_cfg["type"])
@@ -91,7 +95,8 @@ def generate_observations(pilot:Pilot,
         frame = trajectory_data["frame"]
 
         # Decompress and extract the image data
-        Imgs = du.decompress_data(image_data)["images"]
+        # Imgs = du.decompress_data(image_data)["images"]
+        Imgs = du.load_video_frames(video,image_data)
 
         # Check if images are raw or processed. Raw images are in (N,H,W,C) format while
         # processed images are in (N,C,H,W) format.
@@ -101,7 +106,7 @@ def generate_observations(pilot:Pilot,
             Imgs = np.transpose(Imgs, (0, 3, 1, 2))
 
         # Create Rollout Data
-        Xnn,Ynn = [],[]
+        Xnn,Ynn,Obsv = [],[],[]
         upr = np.zeros(4)
         znn_cr = torch.zeros(pilot.model.Nz).to(pilot.device)
         for k in range(Ndata):

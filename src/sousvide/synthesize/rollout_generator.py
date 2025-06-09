@@ -4,15 +4,19 @@ import yaml
 import os
 import copy
 import torch
+import re
 
 from typing import Dict,Union,Tuple,List,Optional
 from tqdm.notebook import trange
+from tqdm import tqdm
 
 import figs.utilities.trajectory_helper as th
 import figs.tsplines.min_snap as ms
 import figs.tsampling.build_rrt_dataset as bd
 import sousvide.synthesize.synthesize_helper as sh
 import sousvide.synthesize.data_utils as du
+import sousvide.flight.vision_preprocess as vp
+
 
 from figs.simulator import Simulator
 from figs.control.vehicle_rate_mpc import VehicleRateMPC
@@ -58,11 +62,13 @@ def generate_rollout_data(cohort_name:str,method_name:str,
     rrt_mode = sample_set_config["rrt_mode"]
     Tdt_ro = sample_set_config["duration"]
     Nro_tp = sample_set_config["reps"]
+    Trep   = np.zeros(Nro_tp)
     Ntp_sc = sample_set_config["rate"]
     err_tol = sample_set_config["tolerance"]
     rollout_name = sample_set_config["rollout"]
     policy_name = sample_set_config["policy"]
     frame_name = sample_set_config["frame"]
+    use_clip   = sample_set_config["clipseg"]
 
     # Extract policy and frame
     policy_path = os.path.join(workspace_path,"configs","policy",policy_name+".json")
@@ -94,6 +100,13 @@ def generate_rollout_data(cohort_name:str,method_name:str,
     print("Flights        :",flights)
     # print("Trajectory Type:","")
 
+    if use_clip:
+        print("Using CLIPSeg for semantic segmentation.")
+        vision_processor = vp.CLIPSegHFModel(
+            hf_model="CIDAS/clipseg-rd64-refined"
+        )
+    else:
+        vision_processor = None
 
     if rrt_mode:
         for scene_name,course_name in flights:
@@ -103,9 +116,11 @@ def generate_rollout_data(cohort_name:str,method_name:str,
 
             objectives      = scene_cfg["queries"]
             radii           = scene_cfg["radii"]
+            n_branches      = scene_cfg["nbranches"]
             hover_mode      = scene_cfg["hoverMode"]
             visualize_flag = scene_cfg["visualize"]
             altitudes       = scene_cfg["altitudes"]
+            similarities    = scene_cfg.get("similarities", None)
             num_trajectories = scene_cfg.get("numTraj", "all")
             n_iter_rrt = scene_cfg["N"]
             env_bounds      = {}
@@ -118,7 +133,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
 
             # RRT-based trajectories
             obj_targets, _, epcds_list, epcds_arr = bd.get_objectives(
-                simulator.gsplat, objectives, visualize_flag
+                simulator.gsplat, objectives, similarities, visualize_flag
             )
 
             # Goal poses and centroids
@@ -126,31 +141,51 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                 obj_targets, epcds_arr, env_bounds, radii, altitudes
             )
 
+            # Obstacle centroids and rings
+            rings, obstacles = th.process_obstacle_clusters_and_sample(
+                epcds_arr, env_bounds)
+            
+            print(f"obstacles poses : {obstacles}")
+            print(f"rings poses shape: {len(rings)}")
+
             # Generate RRT paths
             raw_rrt_paths = bd.generate_rrt_paths(
-                scene_cfg_file, epcds_list, epcds_arr, objectives,
-                goal_poses, obj_centroids, env_bounds, n_iter_rrt
+                scene_cfg_file, simulator, epcds_list, epcds_arr, objectives,
+                goal_poses, obj_centroids, env_bounds, rings, obstacles, n_iter_rrt
             )
+
+            print("==== OBJECTIVES ====")
+            print("objectives:", objectives)
+            print("raw_rrt_paths keys:", list(raw_rrt_paths.keys()))
+            print("====================")
 
             # Filter and parameterize trajectories
             all_trajectories = {}
+            raw_filtered = {}
             for idx, obj_name in enumerate(objectives):
                 branches = raw_rrt_paths[obj_name]
                 alt_set  = th.set_RRT_altitude(branches, altitudes[idx])
-                filtered = th.filter_branches(alt_set, hover_mode)
+                filtered = th.filter_branches(alt_set, n_branches[idx], hover_mode)
+                raw_filtered[obj_name] = filtered
                 print(f"{obj_name}: {len(filtered)} branches")
 
                 all_trajectories[obj_name], _ = th.parameterize_RRT_trajectories(
                     filtered, obj_centroids[idx], 1.0, 20
                 )
-
+            
+            # Plot filtered trajectories
+            bd.visualize_rrt_trajectories(
+                raw_filtered,
+                scene_cfg_file, simulator, epcds_list, epcds_arr, objectives,
+                goal_poses, obj_centroids, env_bounds, rings, obstacles
+            )
             # Simulate and save rollouts
-            for course_idx, course in enumerate(all_trajectories):
+            for course_idx, course in tqdm(enumerate(all_trajectories),desc=f"Objects"):
                 trajectories = all_trajectories[course]
                 total = Nro_tp * len(trajectories)
                 print(f"Preparing {total} samples for course '{course}'")
 
-                for traj_idx, tXUi in enumerate(trajectories):
+                for traj_idx, tXUi in tqdm(enumerate(trajectories),desc=f"Trajectories"):
                     duration = int(tXUi[0][-1])
                     splits = duration // 2
                     n_time = splits
@@ -173,20 +208,26 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                     )
 
                     data_count = 0
-                    for batch_idx, batch_times in enumerate(batches):
+                    for batch_idx, batch_times in tqdm(enumerate(batches),desc="Batches"):
                         Frames = generate_frames(
-                            len(batch_times), base_frame_config, frame_set_config
+                            Tsps=Trep, base_frame_config=base_frame_config, frame_set_config=frame_set_config
                         )
                         Perturbations = generate_perturbations(
-                            batch_times, tXUi, trajectory_set_config
+                            Tsps=Trep, tXUi=tXUi, trajectory_set_config=trajectory_set_config
                         )
                         # Trajectories, images, img_data = generate_rollouts(
                         #     tXUi, course, objectives[course_idx],
                         #     sample_cfg, simulator.gsplat, drones, perturb
                         # )
                         Trajectories,Images,Img_data = generate_rollouts(
-                        simulator,course_config,policy_config,
-                        Frames,Perturbations,Tdt_ro,err_tol
+                        simulator, sample_set_config,
+                        tXUd=tXUi, 
+                        objective=objectives[course_idx],
+                        policy_config=policy_config,
+                        Frames=Frames,
+                        Perturbations=Perturbations,
+                        Tdt_ro=Tdt_ro, err_tol=err_tol,
+                        vision_processor=vision_processor
                         )
                         # save_rollouts(
                         #     cohort_name, course, Trajectories, Images, Img_data,
@@ -195,7 +236,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                         save_rollouts(
                             cohort_path, course_name, 
                             Trajectories, Images, Img_data, 
-                            tXUd, traj_idx
+                            tXUi, traj_idx
                         )
                         data_count += sum(r["Ndata"] for r in Trajectories)
 
@@ -806,13 +847,13 @@ def generate_rollouts(
 
     if rrt_mode:
         # Unpack sample set config
-        mu_md = np.array(sample_config["model_noise"]["mean"])
-        std_md = np.array(sample_config["model_noise"]["std"])
-        mu_sn = np.array(sample_config["sensor_noise"]["mean"])
-        std_sn = np.array(sample_config["sensor_noise"]["std"])
-        hz_ctl = sample_config["simulation"]["hz_ctl"]
-        hz_sim = sample_config["simulation"]["hz_sim"]
-        t_dly = sample_config["simulation"]["delay"]
+        # mu_md = np.array(sample_config["model_noise"]["mean"])
+        # std_md = np.array(sample_config["model_noise"]["std"])
+        # mu_sn = np.array(sample_config["sensor_noise"]["mean"])
+        # std_sn = np.array(sample_config["sensor_noise"]["std"])
+        # hz_ctl = sample_config["simulation"]["hz_ctl"]
+        # hz_sim = sample_config["simulation"]["hz_sim"]
+        # t_dly = sample_config["simulation"]["delay"]
         # dt_ro = sample_config["rollout_duration"]
         videoMode = sample_config["videoMode"]
 
@@ -955,7 +996,7 @@ def save_rollouts(cohort_path:str,course_name:str,
     rollout_course_path = os.path.join(cohort_path,"rollout_data",course_name)
     if not os.path.exists(rollout_course_path):
         os.makedirs(rollout_course_path)
-    
+
     # Save the stacks
     Ndata = sum([trajectory["Ndata"] for trajectory in Trajectories])
     data_set_name = str(stack_id).zfill(3) if type(stack_id) == int else str(stack_id)
