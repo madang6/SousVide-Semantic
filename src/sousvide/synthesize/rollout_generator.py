@@ -252,7 +252,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
 
             objectives      = scene_cfg["queries"]
             radii           = scene_cfg["radii"]
-            n_branches      = scene_cfg["nbranches"] // 10
+            n_branches = [nb // 10 for nb in scene_cfg["nbranches"]]
             hover_mode      = scene_cfg["hoverMode"]
             visualize_flag = scene_cfg["visualize"]
             altitudes       = scene_cfg["altitudes"]
