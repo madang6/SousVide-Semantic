@@ -529,7 +529,7 @@ def colorize_mask_fast(mask_np, lut):
 
 def blend_overlay_gpu(base: np.ndarray,
                       overlay: np.ndarray,
-                      alpha: float = 0.85) -> np.ndarray:
+                      alpha: float = 1.00) -> np.ndarray:
     """
     Convert `base`→mono-gray on GPU (if needed), resize `overlay` on GPU,
     then blend:  result = α·overlay + (1−α)·gray_base.  Entirely on CUDA.

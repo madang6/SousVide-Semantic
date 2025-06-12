@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader,Dataset
 from tqdm.notebook import trange
+import wandb
 from sousvide.control.pilot import Pilot
 from sousvide.instruct.synthesized_data import *
 from typing import List,Tuple,Literal
@@ -139,6 +140,14 @@ def train_student(cohort_name:str,student:Pilot,
             eps.set_description('Loss %f' % loss_train)
             Loss_train.append(loss_train)
             Loss_tests.append(loss_tests)
+
+            # Log losses to wandb
+            wandb.log({
+                "train/epoch_loss": loss_train,
+                "val/epoch_loss": loss_tests,
+                "val/epoch/rollout_loss:": loss_rollouts,
+                "epoch": ep,
+            })
 
             # Save at intermediate steps and at the end
             if ((ep+1) % lim_sv == 0) or (ep+1==Neps):

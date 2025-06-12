@@ -1,23 +1,28 @@
-# queries: ["mannequin", "textbook on stool", "water barrel"]
+queries: ["mannequin", "textbook on stool", "water barrel"]
 # queries: ["mannequin", "water barrel"]
 # queries: ["textbook on stool"]
-queries: ["mannequin"]
+# queries: ["mannequin"]
 # semantic_target: "mannequin"
 
 radii:
   - [ 1.0,  0.4]   # for "mannequin"
-  # - [ 2.0,  0.4]   # for "textbook on stool"
-  # - [ 1.8,  0.4]   # for "water barrel"
+  - [ 2.0,  0.4]   # for "textbook on stool"
+  - [ 1.8,  0.4]   # for "water barrel"
 
 altitudes:
   - -1.0            # flight height for "mannequin"
-  # - -0.9            # flight height for "ladder”
-  # - -1.0            # flight height for "water barrel"
+  - -0.9            # flight height for "ladder”
+  - -1.0            # flight height for "water barrel"
 
 similarities:
   - [ 0.90, 0.025 ]  # threshold, filter radius
-  # - [ 0.90, 0.025 ]
-  # - [ 0.90, 0.025 ]
+  - [ 0.90, 0.025 ]
+  - [ 0.90, 0.025 ]
+
+nbranches:
+  - 120
+  - 120
+  - 120
 
 hoverMode: False
 numTraj: all
@@ -26,7 +31,7 @@ visualize: False
 
 # Set the default parameters for the RRT algorithm
 algorithm: 'RRT*'
-N: 80
+N: 1000
 dimension: '2'
 prevent_edge_overlap: 'y'
 exact_step: 'n'

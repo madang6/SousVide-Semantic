@@ -24,7 +24,8 @@ from figs.dynamics.model_specifications import generate_specifications
 
 def generate_rollout_data(cohort_name:str,method_name:str,
                           flights:List[Tuple[str,str]],
-                          Nro_sv:int=50):
+                          Nro_sv:int=50,
+                          validation_mode:bool=False):
     
     """
     Generates flight data for a given cohort. A cohort comprises a set of courses flown on a specific
@@ -236,12 +237,146 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                         save_rollouts(
                             cohort_path, course_name, 
                             Trajectories, Images, Img_data, 
+                            tXUi, traj_idx, validation_mode
+                        )
+                        data_count += sum(r["Ndata"] for r in Trajectories)
+
+                    print(f"Trajectory {traj_idx} generated {data_count} data points")
+    elif validation_mode:
+        Nro_tp = 1
+        Tdt_ro = None
+        for scene_name,course_name in flights:
+            scene_cfg_file = os.path.join(scenes_cfg_dir, f"{scene_name}.yml")
+            with open(scene_cfg_file) as f:
+                scene_cfg = yaml.safe_load(f)
+
+            objectives      = scene_cfg["queries"]
+            radii           = scene_cfg["radii"]
+            n_branches      = scene_cfg["nbranches"] // 10
+            hover_mode      = scene_cfg["hoverMode"]
+            visualize_flag = scene_cfg["visualize"]
+            altitudes       = scene_cfg["altitudes"]
+            similarities    = scene_cfg.get("similarities", None)
+            num_trajectories = scene_cfg.get("numTraj", "all")
+            n_iter_rrt = scene_cfg["N"]
+            env_bounds      = {}
+            if "minbound" in scene_cfg and "maxbound" in scene_cfg:
+                env_bounds["minbound"] = np.array(scene_cfg["minbound"])
+                env_bounds["maxbound"] = np.array(scene_cfg["maxbound"])
+
+            # Generate simulator
+            simulator = Simulator(scene_name,rollout_name)
+
+            # RRT-based trajectories
+            obj_targets, _, epcds_list, epcds_arr = bd.get_objectives(
+                simulator.gsplat, objectives, similarities, visualize_flag
+            )
+
+            # Goal poses and centroids
+            goal_poses, obj_centroids = th.process_RRT_objectives(
+                obj_targets, epcds_arr, env_bounds, radii, altitudes
+            )
+
+            # Obstacle centroids and rings
+            rings, obstacles = th.process_obstacle_clusters_and_sample(
+                epcds_arr, env_bounds)
+            
+            print(f"obstacles poses : {obstacles}")
+            print(f"rings poses shape: {len(rings)}")
+
+            # Generate RRT paths
+            raw_rrt_paths = bd.generate_rrt_paths(
+                scene_cfg_file, simulator, epcds_list, epcds_arr, objectives,
+                goal_poses, obj_centroids, env_bounds, rings, obstacles, n_iter_rrt
+            )
+
+            print("==== OBJECTIVES ====")
+            print("objectives:", objectives)
+            print("raw_rrt_paths keys:", list(raw_rrt_paths.keys()))
+            print("====================")
+
+            # Filter and parameterize trajectories
+            all_trajectories = {}
+            raw_filtered = {}
+            for idx, obj_name in enumerate(objectives):
+                branches = raw_rrt_paths[obj_name]
+                alt_set  = th.set_RRT_altitude(branches, altitudes[idx])
+                filtered = th.filter_branches(alt_set, n_branches[idx], hover_mode)
+                raw_filtered[obj_name] = filtered
+                print(f"{obj_name}: {len(filtered)} branches")
+
+                all_trajectories[obj_name], _ = th.parameterize_RRT_trajectories(
+                    filtered, obj_centroids[idx], 1.0, 20
+                )
+            
+            # Plot filtered trajectories
+            bd.visualize_rrt_trajectories(
+                raw_filtered,
+                scene_cfg_file, simulator, epcds_list, epcds_arr, objectives,
+                goal_poses, obj_centroids, env_bounds, rings, obstacles
+            )
+            # Simulate and save rollouts
+            for course_idx, course in tqdm(enumerate(all_trajectories),desc=f"Objects"):
+                trajectories = all_trajectories[course]
+                total = Nro_tp * len(trajectories)
+                print(f"Preparing {total} samples for course '{course}'")
+
+                for traj_idx, tXUi in tqdm(enumerate(trajectories),desc=f"Trajectories"):
+                    duration = int(tXUi[0][-1])
+                    splits = duration // 2
+                    n_time = splits
+                    n_samples = Nro_tp * n_time
+
+                    times = np.tile(
+                        np.linspace(tXUi[0][0], tXUi[0][-1], n_time + 1)[:-1],
+                        Nro_tp
+                    )
+                    times += np.random.uniform(
+                        -1 / Ntp_sc,
+                        1 / Ntp_sc,
+                        n_samples
+                    )
+                    times = np.clip(times, tXUi[0][0], tXUi[0][-1])
+                    np.random.shuffle(times)
+                    batches = np.split(
+                        times,
+                        np.arange(Nro_sv, n_samples, Nro_sv)
+                    )
+
+                    data_count = 0
+                    for batch_idx, batch_times in tqdm(enumerate(batches),desc="Batches"):
+                        Frames = generate_frames(
+                            Tsps=Trep, base_frame_config=base_frame_config, frame_set_config=frame_set_config
+                        )
+                        Perturbations = generate_perturbations(
+                            Tsps=Trep, tXUi=tXUi, trajectory_set_config=trajectory_set_config
+                        )
+                        # Trajectories, images, img_data = generate_rollouts(
+                        #     tXUi, course, objectives[course_idx],
+                        #     sample_cfg, simulator.gsplat, drones, perturb
+                        # )
+                        Trajectories,Images,Img_data = generate_rollouts(
+                        simulator, sample_set_config,
+                        tXUd=tXUi, 
+                        objective=objectives[course_idx],
+                        policy_config=policy_config,
+                        Frames=Frames,
+                        Perturbations=Perturbations,
+                        Tdt_ro=Tdt_ro, err_tol=err_tol,
+                        vision_processor=vision_processor
+                        )
+                        # save_rollouts(
+                        #     cohort_name, course, Trajectories, Images, Img_data,
+                        #     tXUi, traj_idx
+                        # )
+                        save_rollouts(
+                            cohort_path, course_name, 
+                            Trajectories, Images, Img_data, 
                             tXUi, traj_idx
                         )
                         data_count += sum(r["Ndata"] for r in Trajectories)
 
                     print(f"Trajectory {traj_idx} generated {data_count} data points")
-
     else:   
         # Generate rollouts for each course
         for scene_name,course_name in flights:
@@ -974,7 +1109,8 @@ def save_rollouts(cohort_path:str,course_name:str,
                   Images:List[torch.Tensor],
                   Image_Data,
                   tXUd:np.ndarray,
-                  stack_id:Union[str,int]) -> None:
+                  stack_id:Union[str,int],
+                  validation_mode:bool=False) -> None:
     """
     Saves the rollout data to a .pt file in folders corresponding to coursename within the cohort 
     directory. The rollout data is stored as a list of rollout dictionaries of size stack_size for
@@ -1017,11 +1153,19 @@ def save_rollouts(cohort_path:str,course_name:str,
 
     # torch.save(trajectory_data_set,trajectory_data_set_path)
     # torch.save(image_data_set,image_data_set_path)
-    trajectory_data_set = {"data":Trajectories,
-                           "tXUd":tXUd,
-                            "set":data_set_name,"Ndata":Ndata,"course":course_name}
-    image_data_set = {"data":Image_Data,
-                        "set":video_data_set_path,"Ndata":Ndata,"course":course_name}
+    if validation_mode:
+        trajectory_data_set_path = os.path.join(rollout_course_path,"trajectories_val"+data_set_name+".pt")
+        image_data_set_path = os.path.join(rollout_course_path,"imgdata_val"+data_set_name+".pt")
+        video_data_set_path = os.path.join(rollout_course_path,"video_val"+data_set_name+".mp4")
+        trajectory_data_set = {"data":Trajectories,
+                            "tXUd":tXUd,"set":data_set_name,"Ndata":Ndata,"course":course_name}
+        image_data_set = {"data":Image_Data,
+                            "set":video_data_set_path,"Ndata":Ndata,"course":course_name}
+    else:
+        trajectory_data_set = {"data":Trajectories,
+                            "tXUd":tXUd,"set":data_set_name,"Ndata":Ndata,"course":course_name}
+        image_data_set = {"data":Image_Data,
+                            "set":video_data_set_path,"Ndata":Ndata,"course":course_name}
 
     torch.save(trajectory_data_set,trajectory_data_set_path)
     torch.save(image_data_set,image_data_set_path)
