@@ -9,11 +9,11 @@ Nep_com: 250
 
 # Each entry is a (scene, course) pair
 flights:
-  # - ["sv_917_3_left_gemsplat", "sv_917_3_left_gemsplat"]
+  - ["sv_917_3_left_gemsplat", "sv_917_3_left_gemsplat"]
   # - ["flightroom_lowres", "flightroom_lowres"]
   # - ["packardpark", "packardpark"]
   # - ["spheres", "spheres"]
-  - ["indooroutdoor", "indooroutdoor"]
+  # - ["indooroutdoor", "indooroutdoor"]
 
 # List of policy identifiers
 roster: #[]

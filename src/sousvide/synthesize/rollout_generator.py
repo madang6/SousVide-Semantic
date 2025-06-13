@@ -109,7 +109,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
     else:
         vision_processor = None
 
-    if rrt_mode:
+    if rrt_mode and not validation_mode:
         for scene_name,course_name in flights:
             scene_cfg_file = os.path.join(scenes_cfg_dir, f"{scene_name}.yml")
             with open(scene_cfg_file) as f:
@@ -237,7 +237,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                         save_rollouts(
                             cohort_path, course_name, 
                             Trajectories, Images, Img_data, 
-                            tXUi, traj_idx, validation_mode
+                            tXUi, traj_idx
                         )
                         data_count += sum(r["Ndata"] for r in Trajectories)
 
@@ -253,6 +253,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
             objectives      = scene_cfg["queries"]
             radii           = scene_cfg["radii"]
             n_branches = [nb // 10 for nb in scene_cfg["nbranches"]]
+            print(f"n_branches: {n_branches}")
             hover_mode      = scene_cfg["hoverMode"]
             visualize_flag = scene_cfg["visualize"]
             altitudes       = scene_cfg["altitudes"]
@@ -372,7 +373,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                         save_rollouts(
                             cohort_path, course_name, 
                             Trajectories, Images, Img_data, 
-                            tXUi, traj_idx
+                            tXUi, traj_idx, validation_mode=validation_mode
                         )
                         data_count += sum(r["Ndata"] for r in Trajectories)
 

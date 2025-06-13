@@ -45,21 +45,46 @@ def plot_losses(cohort_name:str,roster:List[str],network:Literal["Parameter","Od
         if "Neps" in losses.keys():
             print("-----------------------------------------------------")
             print("Student:",student_name)
-            print("Epochs :",sum(losses["Neps"]))
+            try:
+                print("Epochs :",sum(losses["Neps"]))
+            except:
+                print("Old Losses File, SFTI Fallback")
+                print("Epochs :",losses["Neps"])
 
-            if len(set(losses["Nspl"])) == 1:
-                print("Samples:", losses["Nspl"][0])
-            else:
-                print("Samples:", losses["Nspl"])
+            try:
+                if len(set(losses["Nspl"])) == 1:
+                    print("Samples:", losses["Nspl"][0])
+                else:
+                    print("Samples:", losses["Nspl"])
+            except:
+                print("Samples: ",losses["Nspl"])
 
-            hours = sum(losses["t_train"]) // 3600
-            minutes = (sum(losses["t_train"]) % 3600) // 60
-            seconds = np.around(sum(losses["t_train"]) % 60,1)
-            print(f"t_train: {hours} hour(s), {minutes} minute(s), {seconds} second(s)")
-            # print("t_train: ",losses["t_train"])
+            try:
+                hours = sum(losses["t_train"]) // 3600
+                minutes = (sum(losses["t_train"]) % 3600) // 60
+                seconds = np.around(sum(losses["t_train"]) % 60,1)
+                print(f"t_train: {hours} hour(s), {minutes} minute(s), {seconds} second(s)")
+                # print("t_train: ",losses["t_train"])
+            except:
+                hours = losses["t_train"] // 3600
+                minutes = (losses["t_train"] % 3600) // 60
+                seconds = losses["t_train"] % 60
+                (f"t_train: {hours} hour(s), {minutes} minute(s), {seconds} second(s)")
+                print("t_train: ",losses["t_train"])
+        else:
+            print("-----------------------------------------------------")
+            print("Student:",student_name)
+            print("No epochs found in losses file.")
+            print(f"losses keys: {list(losses.keys())}")
+            print("-----------------------------------------------------")
+            continue
 
+        
         loss_train = np.hstack(losses["train"])
-        loss_test = np.hstack(losses["test"])
+        try:
+            loss_test = np.hstack(losses["test"])
+        except:
+            loss_test = np.hstack(losses["tests"])
         axs[0].plot(loss_train)
         axs[0].set_title('Training Loss')
 

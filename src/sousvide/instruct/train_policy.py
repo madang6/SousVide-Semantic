@@ -65,17 +65,16 @@ def train_student(cohort_name:str,student:Pilot,
         print("Re-training existing network.")
         print("Previous Epochs: ", sum(losses["Neps"]), losses["Neps"])
 
-        losses["train"].append([]),losses["test"].append([])
+        losses["train"].append([]),losses["test"].append([]),losses["rollout"].append([])
         losses["Neps"].append(0),losses["Nspl"].append(0),losses["t_train"].append(0)
     else:
         losses = {
-            "train": [None], "test": [None],
+            "train": [None], "test": [None], "rollout":[None],
             "Neps": [None], "Nspl": [None], "t_train": [None]
         }
         print("Training new network.")
 
-    Loss_train,Loss_tests = [],[]
-
+    Loss_train,Loss_tests,Loss_rollouts = [],[],[]
     # Record the start time
     start_time = time.time()
 
@@ -86,7 +85,7 @@ def train_student(cohort_name:str,student:Pilot,
             unlock_networks(student,mode)
 
             # Get Observation Data Files (Paths)
-            od_train_files,od_test_files = get_data_paths(cohort_name,student.name)
+            od_train_files,od_test_files,od_val_files = get_data_paths(cohort_name,student.name)
 
             # Training
             loss_log_tn =[]
@@ -130,6 +129,22 @@ def train_student(cohort_name:str,student:Pilot,
 
                     # Save loss logs
                     log_log_tt.append((label.shape[0],loss.item()))
+            
+            # Validation
+            val_log = []
+            for val_file in od_val_files:
+                ds = generate_dataset(val_file, student, mode, device)
+                loader = DataLoader(ds, batch_size=batch_size,
+                                    shuffle=False, drop_last=False)
+                for inp, lbl in loader:
+                    inp, lbl = (t.to(device) for t in inp), lbl.to(device)
+                    pred, _ = model(*inp)
+                    val_log.append((lbl.shape[0], criterion(pred, lbl).item()))
+            if val_log:
+                Ntv = sum(n for n, _ in val_log)
+                loss_rollouts = sum(n * l for n, l in val_log) / Ntv
+            else:
+                loss_rollouts = float('nan')
 
             # Loss Diagnostics
             Ntn = np.sum([n for n,_ in loss_log_tn])
@@ -140,6 +155,7 @@ def train_student(cohort_name:str,student:Pilot,
             eps.set_description('Loss %f' % loss_train)
             Loss_train.append(loss_train)
             Loss_tests.append(loss_tests)
+            Loss_rollouts.append(loss_rollouts)
 
             # Log losses to wandb
             wandb.log({
@@ -162,6 +178,7 @@ def train_student(cohort_name:str,student:Pilot,
 
                 losses["train"][-1] = Loss_train
                 losses["test"][-1] = Loss_tests
+                losses["rollout"][-1] = Loss_rollouts
                 losses["Neps"][-1] = ep+1
                 losses["Nspl"][-1] = Ntn
                 losses["t_train"][-1] = t_train

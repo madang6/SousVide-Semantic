@@ -150,7 +150,60 @@ def extract_data(observation_data_path:str):
     
     return Xnn_ds,Ynn_ds
 
-def get_data_paths(cohort_name:str,
+def get_data_paths(cohort_name: str,
+                   student_name: str,
+                   course_name: Union[str, None] = None
+                   ) -> Tuple[List[str], List[str], List[str]]:
+    """
+    Walk each course directory and gather:
+      • normal files    -> split into train/test just like before
+      • rollout files   -> all filenames matching observations_val*.pt
+
+    Returns train_paths, test_paths, rollout_paths.
+    """
+    # base folder: .../cohorts/<cohort>/observation_data/<student>/
+    workspace_path = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    base = os.path.join(workspace_path, "cohorts", cohort_name,
+                        "observation_data", student_name)
+
+    # choose which course folders to scan
+    if course_name is None:
+        course_paths = [d.path for d in os.scandir(base) if d.is_dir()]
+    else:
+        course_paths = [os.path.join(base, course_name)]
+
+    train_paths, test_paths, rollout_paths = [], [], []
+    for course_path in course_paths:
+        data_files = []
+        val_files = []
+        for entry in os.scandir(course_path):
+            fn = entry.name
+            if not fn.endswith(".pt"):
+                continue
+            if fn.startswith("observations_val"):
+                val_files.append(entry.path)
+            elif fn.startswith("observations"):
+                data_files.append(entry.path)
+        data_files.sort()
+        val_files.sort()
+
+        # split the normal data_files into train/test
+        if len(data_files) == 0:
+            raise ValueError(f"No observation files in {course_path}")
+        elif len(data_files) == 1:
+            train_paths.append(data_files[0])
+            test_paths.append(data_files[0])
+        else:
+            train_paths.extend(data_files[:-1])
+            test_paths.append(data_files[-1])
+
+        # collect all rollout (val) files
+        rollout_paths.extend(val_files)
+
+    return train_paths, test_paths, rollout_paths
+
+def get_data_paths_old(cohort_name:str,
                    student_name:str,
                    course_name:Union[str,None]=None
                    ) -> Tuple[List[str],str]:
