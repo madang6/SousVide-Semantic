@@ -1,6 +1,6 @@
 # Test Campaign Settings and Identifiers
-# cohort: "ssv_multi_CLIPSEG_Overlay_coruscant"
-cohort: "ssv_multi_CLIPSEG_Only"
+cohort: "ssv_multi_CLIPSEG_Overlay_coruscant"
+# cohort: "ssv_multi_CLIPSEG_Only"
 method: "rrt"
 
 # Number of episodes for history/command training

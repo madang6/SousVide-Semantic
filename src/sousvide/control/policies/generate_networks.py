@@ -81,8 +81,16 @@ def policy_factory(path:str,config:Dict[str,Any],device:torch.device) -> Tuple[U
 
 
         # (2) Load the old, fully‐trained policy into a temporary object
-        old_model = torch.load(model_path, map_location=device)
-
+        try:
+            old_model = torch.load(model_path, map_location=device)
+        except ModuleNotFoundError as e:
+            print(f"Old model found, aliasing controller module to control")
+            if "No module named 'controller'" in str(e):            
+                _alias_controller_to_control()
+                old_model = torch.load(model_path, map_location=device)
+            else:
+                raise
+            
         # (3) Copy ONLY the HistoryEncoder weights from old_model → new_model
         #     We assume both classes define `self.network["HistoryEncoder"]` in the same way.
         try:
