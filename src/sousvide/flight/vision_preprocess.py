@@ -274,6 +274,37 @@ class CLIPSegHFModel:
         # LUT for colorization
         self.lut = get_colormap_lut(cmap_name=cmap)
 
+        # initialize running bounds
+        self.running_min = float('inf')
+        self.running_max = float('-inf')
+        # self.running_min = None
+        # self.running_max = 1.0
+        # self.eps = 1e-10
+
+    def _rescale_global(self, arr: np.ndarray) -> np.ndarray:
+        """
+        Rescale `arr` to [0,1] using the min/max seen so far (updated here).
+        """
+        cur_min = float(arr.min())
+        cur_max = float(arr.max())
+        self.running_min = min(self.running_min, cur_min)
+        self.running_max = max(self.running_max, cur_max)
+        # print(f"Running bounds: min={self.running_min}, max={self.running_max}")
+        # print(f"Current bounds: min={cur_min}, max={cur_max}")
+        span = self.running_max - self.running_min + 1e-10
+        return (arr - self.running_min) / span
+    
+        # cur_min = float(arr.min())
+        # if self.running_min is None:
+        #     # first frame: seed the low‐end
+        #     self.running_min = cur_min
+        # else:
+        #     # subsequent frames: only ever reduce the low‐end
+        #     self.running_min = min(self.running_min, cur_min)
+        # # note: running_max stays at 1.0
+        # span = self.running_max - self.running_min + self.eps
+        # return (arr - self.running_min) / span
+
     def clipseg_hf_inference(
         self,
         image: Union[Image.Image, np.ndarray],
@@ -313,12 +344,18 @@ class CLIPSegHFModel:
             prob = 1.0 / (1.0 + np.exp(-arr))
             mask_u8 = (prob * 255).astype(np.uint8)
         else:
-            mn, mx = arr.min(), arr.max()
-            if mx - mn < 1e-9:
-                scaled = np.zeros_like(arr)
-            else:
-                scaled = (arr - mn) / (mx - mn)
+            # mn, mx = arr.min(), arr.max()
+            # if mx - mn < 1e-9:
+            #     scaled = np.zeros_like(arr)
+            # else:
+            #     scaled = (arr - mn) / (mx - mn)
+            # mask_u8 = (scaled * 255).astype(np.uint8)
+            # prob = 1.0 / (1.0 + np.exp(-arr))
+            # scaled = prob
+            scaled = self._rescale_global(arr)
+            # scaled = prob
             mask_u8 = (scaled * 255).astype(np.uint8)
+
         # arr = logits.cpu().squeeze()  # remove batch and channel dims
         # # arr may now be [H,W]
         # pm = arr.numpy().astype(np.float32)
@@ -580,3 +617,20 @@ def blend_overlay_gpu(base: np.ndarray,
     # 6. Clamp to [0,255], cast → uint8, move to CPU, return as H×W×3
     blended = blended.clamp(0, 255).round().byte()                    # [3, H, W]
     return blended.permute(1, 2, 0).cpu().numpy()   
+
+def render_rescale(self, srgb_mono):
+    '''This function takes a single channel semantic similarity and rescales it globally'''
+    # Maintain running min/max
+    if not hasattr(self, "running_min"):
+        self.running_min = -1.0
+    if not hasattr(self, "running_max"):
+        self.running_max = 1.0
+
+    current_min = srgb_mono.min().item()
+    current_max = srgb_mono.max().item()
+    self.running_min = min(self.running_min, current_min)
+    self.running_max = max(self.running_max, current_max)
+
+    similarity_clip = (srgb_mono - self.running_min) / (self.running_max - self.running_min + 1e-10)
+
+    return similarity_clip
