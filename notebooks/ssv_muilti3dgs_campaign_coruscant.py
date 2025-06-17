@@ -41,13 +41,20 @@ def load_yaml(path: Path) -> dict:
 
 
 def init_wandb(cfg: dict, job: str) -> None:
-    if cfg.get("use_wandb"):
-        wandb.init(
-            project=cfg.get("wandb_project", "default_project"),
-            name=cfg.get("wandb_run_name", job),
-            config=cfg,
-        )
-
+    if not cfg.get("use_wandb"):
+        return
+    init_args = dict(
+        project=cfg.get("wandb_project", "default_project"),
+        name=cfg.get("wandb_run_name", job),
+        config=cfg,
+    )
+    # If they passed in a run ID, resume that run
+    run_id = cfg.get("wandb_run_id")
+    if run_id:
+        init_args["id"] = run_id
+        init_args["resume"] = cfg.get("wandb_resume", "allow")
+        
+    wandb.init(**init_args)
 
 def common_options(
     config_file: Path,
@@ -73,12 +80,14 @@ def generate_rollouts(
     use_wandb: bool = typer.Option(False),
     wandb_project: Optional[str] = typer.Option(None),
     wandb_run_name: Optional[str] = typer.Option(None),
+    wandb_run_id: Optional[str] = typer.Option(None, help="Existing W&B run ID to resume"),
+    wandb_resume: Optional[str] = typer.Option("allow", help="resume mode: allow|must"),
 ):
     cfg = common_options(  # type: ignore
         config_file, plot, use_wandb, wandb_project, wandb_run_name
     )
     init_wandb(cfg, "generate_rollouts")
-    rg.generate_rollout_data(cfg["cohort"], cfg["method"], cfg["flights"], validation_mode=validation_mode)
+    rg.generate_rollout_data(cfg["cohort"], cfg["method"], cfg["flights"],validation_mode=validation_mode)
 
     if cfg.get("use_wandb"):
         logs = {}
@@ -87,7 +96,9 @@ def generate_rollouts(
             logs[f"generate_rollout_mpl_fig_{i}"] = wandb.Image(fig_mpl)
 
         for i, fig in enumerate(_all_plotly_figs, start=1):
-            img_bytes = fig.to_image(format="png", width=1200, height=1200)
+            img_bytes = safe_to_image(fig,width=1200,height=1200)#fig.to_image(format="png", width=1200, height=1200)
+            if img_bytes is None:
+                continue  # skip this one
             buf = BytesIO(img_bytes)
             pil_img = Image.open(buf)
             logs[f"generate_rollout_plotly_png_{i}"] = wandb.Image(pil_img)
@@ -109,6 +120,8 @@ def generate_observations(
     use_wandb: bool = typer.Option(False),
     wandb_project: Optional[str] = typer.Option(None),
     wandb_run_name: Optional[str] = typer.Option(None),
+    wandb_run_id: Optional[str] = typer.Option(None, help="Existing W&B run ID to resume"),
+    wandb_resume: Optional[str] = typer.Option("allow", help="resume mode: allow|must"),
 ):
     cfg = common_options(  # type: ignore
         config_file, plot, use_wandb, wandb_project, wandb_run_name
@@ -147,6 +160,8 @@ def train_command(
     use_wandb: bool = typer.Option(False),
     wandb_project: Optional[str] = typer.Option(None),
     wandb_run_name: Optional[str] = typer.Option(None),
+    wandb_run_id: Optional[str] = typer.Option(None, help="Existing W&B run ID to resume"),
+    wandb_resume: Optional[str] = typer.Option("allow", help="resume mode: allow|must")
 ):
     cfg = common_options(  # type: ignore
         config_file, plot, use_wandb, wandb_project, wandb_run_name
@@ -166,13 +181,16 @@ def simulate(
     use_wandb: bool = typer.Option(False),
     wandb_project: Optional[str] = typer.Option(None),
     wandb_run_name: Optional[str] = typer.Option(None),
+    wandb_run_id: Optional[str] = typer.Option(None, help="Existing W&B run ID to resume"),
+    wandb_resume: Optional[str] = typer.Option("allow", help="resume mode: allow|must"),
 ):
     cfg = common_options(
         config_file, False, use_wandb, wandb_project, wandb_run_name
     )
     init_wandb(cfg, "simulate")
     df.simulate_roster(
-        cfg["cohort"], cfg["method"], cfg["flights"], cfg["roster"]
+        cfg["cohort"], cfg["method"], cfg["flights"], cfg["roster"], 
+        review=cfg["review"]
     )
 
     if cfg.get("use_wandb"):
@@ -182,8 +200,13 @@ def simulate(
             logs[f"simulate_mpl_fig_{i}"] = wandb.Image(fig_mpl)
 
         for i, fig in enumerate(_all_plotly_figs, start=1):
-            img_bytes = fig.to_image(format="png", width=1200, height=1200)
+            img_bytes = safe_to_image(fig,width=1200,height=1200)#fig.to_image(format="png", width=1200, height=1200)
+            if img_bytes is None:
+                continue  # skip this one
             buf = BytesIO(img_bytes)
+            # pil_img = Image.open(buf)
+            # img_bytes = fig.to_image(format="png", width=1200, height=1200)
+            # buf = BytesIO(img_bytes)
             pil_img = Image.open(buf)
             logs[f"simulate_plotly_png_{i}"] = wandb.Image(pil_img)
 
