@@ -344,17 +344,16 @@ class CLIPSegHFModel:
             prob = 1.0 / (1.0 + np.exp(-arr))
             mask_u8 = (prob * 255).astype(np.uint8)
         else:
-            # mn, mx = arr.min(), arr.max()
-            # if mx - mn < 1e-9:
-            #     scaled = np.zeros_like(arr)
-            # else:
-            #     scaled = (arr - mn) / (mx - mn)
-            # mask_u8 = (scaled * 255).astype(np.uint8)
-            # prob = 1.0 / (1.0 + np.exp(-arr))
-            # scaled = prob
-            scaled = self._rescale_global(arr)
-            # scaled = prob
+            mn, mx = arr.min(), arr.max()
+            if mx - mn < 1e-9:
+                scaled = np.zeros_like(arr)
+            else:
+                scaled = (arr - mn) / (mx - mn)
             mask_u8 = (scaled * 255).astype(np.uint8)
+            # # prob = 1.0 / (1.0 + np.exp(-arr))
+            # # scaled = prob
+            # scaled = self._rescale_global(arr)
+            # mask_u8 = (scaled * 255).astype(np.uint8)
 
         # arr = logits.cpu().squeeze()  # remove batch and channel dims
         # # arr may now be [H,W]

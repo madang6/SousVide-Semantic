@@ -41,13 +41,20 @@ def load_yaml(path: Path) -> dict:
 
 
 def init_wandb(cfg: dict, job: str) -> None:
-    if cfg.get("use_wandb"):
-        wandb.init(
-            project=cfg.get("wandb_project", "default_project"),
-            name=cfg.get("wandb_run_name", job),
-            config=cfg,
-        )
-
+    if not cfg.get("use_wandb"):
+        return
+    init_args = dict(
+        project=cfg.get("wandb_project", "default_project"),
+        name=cfg.get("wandb_run_name", job),
+        config=cfg,
+    )
+    # If they passed in a run ID, resume that run
+    run_id = cfg.get("wandb_run_id")
+    if run_id:
+        init_args["id"] = run_id
+        init_args["resume"] = cfg.get("wandb_resume", "allow")
+        
+    wandb.init(**init_args)
 
 def common_options(
     config_file: Path,
@@ -73,6 +80,8 @@ def generate_rollouts(
     use_wandb: bool = typer.Option(False),
     wandb_project: Optional[str] = typer.Option(None),
     wandb_run_name: Optional[str] = typer.Option(None),
+    wandb_run_id: Optional[str] = typer.Option(None, help="Existing W&B run ID to resume"),
+    wandb_resume: Optional[str] = typer.Option("allow", help="resume mode: allow|must"),
 ):
     cfg = common_options(  # type: ignore
         config_file, plot, use_wandb, wandb_project, wandb_run_name
@@ -111,6 +120,8 @@ def generate_observations(
     use_wandb: bool = typer.Option(False),
     wandb_project: Optional[str] = typer.Option(None),
     wandb_run_name: Optional[str] = typer.Option(None),
+    wandb_run_id: Optional[str] = typer.Option(None, help="Existing W&B run ID to resume"),
+    wandb_resume: Optional[str] = typer.Option("allow", help="resume mode: allow|must"),
 ):
     cfg = common_options(  # type: ignore
         config_file, plot, use_wandb, wandb_project, wandb_run_name
@@ -149,6 +160,8 @@ def train_command(
     use_wandb: bool = typer.Option(False),
     wandb_project: Optional[str] = typer.Option(None),
     wandb_run_name: Optional[str] = typer.Option(None),
+    wandb_run_id: Optional[str] = typer.Option(None, help="Existing W&B run ID to resume"),
+    wandb_resume: Optional[str] = typer.Option("allow", help="resume mode: allow|must")
 ):
     cfg = common_options(  # type: ignore
         config_file, plot, use_wandb, wandb_project, wandb_run_name
@@ -168,6 +181,8 @@ def simulate(
     use_wandb: bool = typer.Option(False),
     wandb_project: Optional[str] = typer.Option(None),
     wandb_run_name: Optional[str] = typer.Option(None),
+    wandb_run_id: Optional[str] = typer.Option(None, help="Existing W&B run ID to resume"),
+    wandb_resume: Optional[str] = typer.Option("allow", help="resume mode: allow|must"),
 ):
     cfg = common_options(
         config_file, False, use_wandb, wandb_project, wandb_run_name

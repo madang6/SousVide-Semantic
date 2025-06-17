@@ -110,7 +110,7 @@ def simulate_roster(cohort_name:str,method_name:str,
     base_cfg = generate_specifications(base_frame_config)
 
     if use_clip:
-        print("Using CLIPSeg for semantic segmentation.")
+        print("SIL Model set to CLIPSeg.")
         vision_processor = vp.CLIPSegHFModel(
             hf_model="CIDAS/clipseg-rd64-refined"
         )
