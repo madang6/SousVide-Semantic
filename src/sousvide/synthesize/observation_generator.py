@@ -69,13 +69,13 @@ def generate_observation_data(cohort:str,roster:List[str],subsample:float=1.0,va
                 rollout_data_path = os.path.join(rollout_folder_path,course)
                 trajectory_data_files = sorted([
                     file for file in os.listdir(rollout_data_path)
-                    if file.startswith("trajectories") and file.endswith(".pt")])
+                    if file.startswith("trajectories") and not file.startswith("trajectories_val") and file.endswith(".pt")])
                 image_data_files = sorted([
                     file for file in os.listdir(rollout_data_path)
-                    if file.startswith("img") and file.endswith(".pt")])
+                    if file.startswith("imgdata") and not file.startswith("imgdata_val") and file.endswith(".pt")])
                 video_data_files = sorted([
                     os.path.join(rollout_data_path, file) for file in os.listdir(rollout_data_path)
-                    if file.startswith("video") and file.endswith(".mp4")])
+                    if file.startswith("video") and not file.startswith("video_val") and file.endswith(".mp4")])
                 
                 # Generate Observation Data (sans images)
                 for trajectory_data_file,image_data_file,video in zip(trajectory_data_files,image_data_files,video_data_files):
