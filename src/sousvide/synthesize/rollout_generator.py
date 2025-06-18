@@ -379,10 +379,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                         Perturbations = generate_perturbations(
                             Tsps=Trep, tXUi=tXUi, trajectory_set_config=trajectory_set_config
                         )
-                        # Trajectories, images, img_data = generate_rollouts(
-                        #     tXUi, course, objectives[course_idx],
-                        #     sample_cfg, simulator.gsplat, drones, perturb
-                        # )
+
                         Trajectories,Images,Img_data = generate_rollouts(
                         simulator, sample_set_config,
                         tXUd=tXUi, 
@@ -705,12 +702,20 @@ def generate_rollouts(
 
             # Build image entry depending on validation mode
             if validation_mode:
-                entry = {
-                    "rollout_id": str(idx).zfill(5),
-                    "course": objective,
-                    "train_images": Imgs.get("semantic", []),
-                    "val_images": Imgs.get("validation", [])
-                }
+                has_roll = "validation" in Imgs
+                if has_roll:
+                    entry = {
+                        "rollout_id": str(idx).zfill(5),
+                        "course": objective,
+                        "val_images": Imgs.get("semantic", []),
+                        "val_rollout_images": Imgs.get("validation", [])
+                    }
+                else:
+                    entry = {
+                        "rollout_id": str(idx).zfill(5),
+                        "course": objective,
+                        "val_images": Imgs.get("semantic", []),
+                    }
             else:
                 entry = {
                     "rollout_id": str(idx).zfill(5),
@@ -816,31 +821,28 @@ def save_rollouts(
 
     # Flatten and save videos
     if validation_mode:
-        # semantic frames
-        all_semantic   = [f for entry in Images for f in entry.get("train_images", [])]
         # validation frames
-        all_validation = [f for entry in Images for f in entry.get("val_images", [])]
+        all_val   = [f for entry in Images for f in entry.get("val_images", [])]
+        du.save_images_as_video(all_val, video_rollout_data_set_path)
 
-        du.save_images_as_video(all_semantic,   video_data_set_path)
-        du.save_images_as_video(all_validation, video_rollout_data_set_path)
+        has_roll = any("val_rollout_images" in entry for entry in Images)
+        if has_roll:
+            all_roll = [f for entry in Images for f in entry.get("val_rollout_images", [])]
+            du.save_images_as_video(all_roll, video_rollout_data_set_path)
 
         image_data_set = {
             "data":          Image_Data,
-            "set":           f"video: {video_data_set_path}, rollout: {video_rollout_data_set_path}",
-            "filenames_train": all_semantic,
-            "filenames_val":   all_validation,
+            "set":           video_data_set_path,
             "Ndata":         Ndata,
             "course":        course_name
         }
     else:
         all_frames = [f for entry in Images for f in entry.get("images", [])]
-
         du.save_images_as_video(all_frames, video_data_set_path)
 
         image_data_set = {
             "data":     Image_Data,
             "set":      video_data_set_path,
-            "filenames": all_frames,
             "Ndata":    Ndata,
             "course":   course_name
         }

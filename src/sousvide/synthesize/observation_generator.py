@@ -44,30 +44,45 @@ def generate_observation_data(
                 vid_val    = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith("video_val") and f.endswith(".mp4")])
                 vid_roll   = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith("video_rollout") and f.endswith(".mp4")])
 
-                for tfile, ifile, vval, vrol in zip(traj_files, img_files, vid_val, vid_roll):
-                    traj_ds = torch.load(os.path.join(folder, tfile))
-                    img_ds  = torch.load(os.path.join(folder, ifile))
+                has_roll = len(vid_roll) > 0
+                if has_roll:
+                    for tfile, ifile, vval, vrol in zip(traj_files, img_files, vid_val, vid_roll):
+                        traj_ds = torch.load(os.path.join(folder, tfile))
+                        img_ds  = torch.load(os.path.join(folder, ifile))
 
-                    # Observations on semantic-validation video
-                    obs_val = generate_observations(pilot, traj_ds, img_ds, vval, subsample)
-                    Nobs += obs_val["Nobs"]
-                    save_observations(
-                        cohort_path, course, pilot.name,
-                        obs_val,
-                        validation_mode=True,
-                        suffix="val"
-                    )
+                        # Observations on semantic-validation video
+                        obs_val = generate_observations(pilot, traj_ds, img_ds, vval, subsample)
+                        Nobs += obs_val["Nobs"]
+                        save_observations(
+                            cohort_path, course, pilot.name,
+                            obs_val,
+                            validation_mode=True,
+                            suffix="val"
+                        )
 
-                    # Observations on rollout-validation video
-                    obs_rol = generate_observations(pilot, traj_ds, img_ds, vrol, subsample)
-                    Nobs += obs_rol["Nobs"]
-                    save_observations(
-                        cohort_path, course, pilot.name,
-                        obs_rol,
-                        validation_mode=True,
-                        suffix="val_rollout"
-                    )
+                        # Observations on rollout-validation video
+                        obs_rol = generate_observations(pilot, traj_ds, img_ds, vrol, subsample)
+                        Nobs += obs_rol["Nobs"]
+                        save_observations(
+                            cohort_path, course, pilot.name,
+                            obs_rol,
+                            validation_mode=True,
+                            suffix="val_rollout"
+                        )
+                    else:
+                        for tfile, ifile, vval in zip(traj_files, img_files, vid_val):
+                            traj_ds = torch.load(os.path.join(folder, tfile))
+                            img_ds  = torch.load(os.path.join(folder, ifile))
 
+                            # Observations on semantic-validation video
+                            obs_val = generate_observations(pilot, traj_ds, img_ds, vval, subsample)
+                            Nobs += obs_val["Nobs"]
+                            save_observations(
+                                cohort_path, course, pilot.name,
+                                obs_val,
+                                validation_mode=True,
+                                suffix="val"
+                            )
             else:
                 traj_files = sorted([f for f in os.listdir(folder)
                                      if f.startswith("trajectories") and not f.startswith("trajectories_val") and f.endswith(".pt")])
