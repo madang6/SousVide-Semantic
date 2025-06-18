@@ -9,7 +9,7 @@
         "policy": "vrmpc_rrt",
         "rrt_mode": true,
         "loitering": true,
-        "clipseg": true,
+        "clipseg": false,
         "videoMode": true
     },
     "trajectory_set":{
@@ -33,6 +33,7 @@
     "test_set":{
         "rollout": "challenged",
         "reps": 30,
+        "clipseg":true,
         "trajectory_set": {
             "initial": [
                 [
@@ -46,10 +47,6 @@
                      0.10,  0.10,  0.10,  0.10
                 ]
             ]
-        },
-        "frame_set": {
-            "mass": 0.15,
-            "force_normalized" : 0.15
         }
     }
 }

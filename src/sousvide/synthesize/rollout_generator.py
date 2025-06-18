@@ -59,6 +59,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
     sample_set_config = method_config["sample_set"]
     trajectory_set_config = method_config["trajectory_set"]
     frame_set_config = method_config["frame_set"]
+    test_set_config = method_config["test_set"]
 
     rrt_mode = sample_set_config["rrt_mode"]
     loitering = sample_set_config["loitering"]
@@ -70,7 +71,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
     rollout_name = sample_set_config["rollout"]
     policy_name = sample_set_config["policy"]
     frame_name = sample_set_config["frame"]
-    use_clip   = sample_set_config["clipseg"]
+    use_clip   = sample_set_config["clipseg"] or test_set_config["clipseg"]
 
     # Extract policy and frame
     policy_path = os.path.join(workspace_path,"configs","policy",policy_name+".json")
