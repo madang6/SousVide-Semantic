@@ -61,6 +61,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
     frame_set_config = method_config["frame_set"]
 
     rrt_mode = sample_set_config["rrt_mode"]
+    loitering = sample_set_config["loitering"]
     Tdt_ro = sample_set_config["duration"]
     Nro_tp = sample_set_config["reps"]
     Trep   = np.zeros(Nro_tp)
@@ -169,11 +170,30 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                 filtered = th.filter_branches(alt_set, n_branches[idx], hover_mode)
                 raw_filtered[obj_name] = filtered
                 print(f"{obj_name}: {len(filtered)} branches")
+                # print(f"filtered branches: {filtered}")
 
                 all_trajectories[obj_name], _ = th.parameterize_RRT_trajectories(
                     filtered, obj_centroids[idx], 1.0, 20
                 )
-            
+
+            if loitering:
+                loiter_trajectories = {}
+                for idx in range(len(obstacles)):
+                    print(f"Rings for loiter: {[rings[idx]]}")
+                    all_trajectories[f"loiter_{idx}"], _ = th.parameterize_RRT_trajectories(
+                        [rings[idx]], obstacles[idx], constant_velocity=1.0, sampling_frequency=20, loiter=True)
+                    # print(f"Parameterized: {len(traj_list)} loiter trajectories for obstacle {idx}")
+                # print(f"chosen_traj.shape: {traj_list[0].shape}")
+                # combined_data = {
+                #     "tXUi": traj_list[0],
+                #     "nodes": node_list[0],
+                #     **debug_info
+                # }
+                # combined_file = f"{combined_prefix}_loiter_{idx}.pkl"
+                # with open(combined_file, "wb") as f:
+                #     pickle.dump(combined_data, f)
+                # trajectory_dataset[f"loiter_{idx}"] = combined_data
+
             # Plot filtered trajectories
             bd.visualize_rrt_trajectories(
                 raw_filtered,
@@ -228,7 +248,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                         Frames=Frames,
                         Perturbations=Perturbations,
                         Tdt_ro=Tdt_ro, err_tol=err_tol,
-                        vision_processor=vision_processor
+                        vision_processor=vision_processor,
                         )
                         # save_rollouts(
                         #     cohort_name, course, Trajectories, Images, Img_data,
@@ -310,6 +330,13 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                     filtered, obj_centroids[idx], 1.0, 20
                 )
             
+            if loitering:
+                loiter_trajectories = {}
+                for idx in range(len(obstacles)):
+                    print(f"Rings for loiter: {[rings[idx]]}")
+                    all_trajectories[f"loiter_{idx}"], _ = th.parameterize_RRT_trajectories(
+                        [rings[idx]], obstacles[idx], 1.0, 20, randint=idx, loiter=True)
+            
             # Plot filtered trajectories
             bd.visualize_rrt_trajectories(
                 raw_filtered,
@@ -364,12 +391,10 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                         Frames=Frames,
                         Perturbations=Perturbations,
                         Tdt_ro=Tdt_ro, err_tol=err_tol,
-                        vision_processor=vision_processor
+                        vision_processor=vision_processor,
+                        validation_mode=validation_mode
                         )
-                        # save_rollouts(
-                        #     cohort_name, course, Trajectories, Images, Img_data,
-                        #     tXUi, traj_idx
-                        # )
+
                         save_rollouts(
                             cohort_path, course_name, 
                             Trajectories, Images, Img_data, 
@@ -453,375 +478,6 @@ def generate_rollout_data(cohort_name:str,method_name:str,
             print("--------------------------------------------------------------------------")
             print("Generated ",Ndata," points of data.")
             print("--------------------------------------------------------------------------")
-
-def generate_rollout_data_ssv_sfti(
-    cohort_name: str,
-    course_list: List[str],
-    drone_name: str,
-    method_name: str,
-    # nerf_model: nf.NeRF,
-    rollouts_per_time_point: int,
-    rollouts_per_save: int = 25,
-    time_points_per_second: int = 4,
-    n_iter_rrt: int = 1000
-) -> None:
-    """
-    Generate and save rollout data for a cohort of courses (objects, maneuvers) 
-    for a specific scene (nerf_model) on a specific drone using MPC and RRT.
-    """
-    # === 1) Header ===
-    print("=" * 70)
-    print(f" Scene : {nerf_model.name}")
-    print(f" Method: {method_name}")
-
-    # === 2) Paths & Output Directory ===
-    ws = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    courses_cfg_dir = os.path.join(ws, "configs", "courses")
-    scenes_cfg_dir  = os.path.join(ws, "configs", "scenes")
-    drones_cfg_dir  = os.path.join(ws, "configs", "drones")
-    methods_cfg_dir = os.path.join(ws, "configs", "methods")
-    output_dir      = os.path.join(ws, "cohorts", cohort_name, "output")
-    os.makedirs(output_dir, exist_ok=True)
-
-    # === 3) Load Drone & Method Configs ===
-    with open(os.path.join(drones_cfg_dir, f"{drone_name}.json")) as f:
-        drone_cfg = json.load(f)
-
-    with open(os.path.join(methods_cfg_dir, f"{method_name}.json")) as f:
-        method_cfg = json.load(f)
-
-    sample_cfg     = method_cfg["sample_set"]
-    trajectory_cfg = method_cfg["trajectory_set"]
-    drone_set_cfg  = method_cfg["drone_set"]
-    if not sample_cfg.get("rrt_mode", False):
-        raise NotImplementedError("method config must specify rrt_mode = true")
-
-    # === 4) Load Scene YAML ===
-    scene_cfg_file = os.path.join(scenes_cfg_dir, f"{nerf_model.name}.yml")
-    with open(scene_cfg_file) as f:
-        scene_cfg = yaml.safe_load(f)
-
-    objectives      = scene_cfg["queries"]
-    radii           = scene_cfg["radii"]
-    hover_mode      = scene_cfg["hoverMode"]
-    visualize_flag = scene_cfg["visualize"]
-    altitudes       = scene_cfg["altitudes"]
-    num_trajectories = scene_cfg.get("numTraj", "all")
-    env_bounds      = {}
-    if "minbound" in scene_cfg and "maxbound" in scene_cfg:
-        env_bounds["minbound"] = np.array(scene_cfg["minbound"])
-        env_bounds["maxbound"] = np.array(scene_cfg["maxbound"])
-
-    # === 5) Unpack Noise & Simulation Parameters ===
-    rrt_mode   = sample_cfg["rrt_mode"]
-    # mu_model   = np.array(sample_cfg["model_noise"]["mean"])
-    # std_model  = np.array(sample_cfg["model_noise"]["std"])
-    # mu_sensor  = np.array(sample_cfg["sensor_noise"]["mean"])
-    # std_sensor = np.array(sample_cfg["sensor_noise"]["std"])
-    # outdoors   = sample_cfg["outdoors"]
-    use_clip   = sample_cfg["clipseg"]
-    # hz_control = sample_cfg["simulation"]["hz_ctl"]
-    # hz_sim     = sample_cfg["simulation"]["hz_sim"]
-    # delay_sim  = sample_cfg["simulation"]["delay"]
-
-    # === 6) Vision Processor ===
-    if use_clip:
-        vision_processor = vp.CLIPSegONNXModel(
-            onnx_path=os.path.join(ws, "cohorts", "clipseg.onnx"),
-            hf_model="CIDAS/clipseg-rd64-refined"
-        )
-    else:
-        vision_processor = None
-
-    # ----- Generate Data -----
-    if rrt_mode and num_trajectories != 1:
-        # RRT-based trajectories
-        obj_targets, _, epcds_list, epcds_arr = get_objectives(
-            nerf_model, objectives, visualize_flag
-        )
-
-        # Goal poses and centroids
-        goal_poses, obj_centroids = th.process_RRT_objectives(
-            obj_targets, epcds_arr, env_bounds, radii, altitudes
-        )
-
-        # Generate RRT paths
-        raw_rrt_paths = generate_rrt_paths(
-            scene_cfg_file, epcds_list, epcds_arr, objectives,
-            goal_poses, obj_centroids, env_bounds, n_iter_rrt
-        )
-
-        # Base drone for randomization
-        base_drone_cfg = qc.generate_preset_config(drone_cfg)
-
-        # Print some useful information
-        print("==========================================================================")
-        print("Cohort :",cohort_name)
-        print("Method :",method_name)
-        print("Drone  :",drone_name)
-        print("Courses:",objectives)
-
-        # Filter and parameterize trajectories
-        all_trajectories = {}
-        for idx, obj_name in enumerate(objectives):
-            branches = raw_rrt_paths[obj_name]
-            alt_set  = th.set_RRT_altitude(branches, altitudes[idx])
-            filtered = th.filter_branches(alt_set, hover_mode)
-            print(f"{obj_name}: {len(filtered)} branches")
-
-            all_trajectories[obj_name], _ = th.parameterize_RRT_trajectories(
-                filtered, obj_centroids[idx], 1.0, 20
-            )
-
-        # Simulate and save rollouts
-        for course_idx, course in enumerate(all_trajectories):
-            trajectories = all_trajectories[course]
-            total = rollouts_per_time_point * len(trajectories)
-            print(f"Preparing {total} samples for course '{course}'")
-
-            for traj_idx, tXUi in enumerate(trajectories):
-                duration = int(tXUi[0][-1])
-                splits = duration // 2
-                n_time = splits
-                n_samples = rollouts_per_time_point * n_time
-
-                times = np.tile(
-                    np.linspace(tXUi[0][0], tXUi[0][-1], n_time + 1)[:-1],
-                    rollouts_per_time_point
-                )
-                times += np.random.uniform(
-                    -1 / time_points_per_second,
-                    1 / time_points_per_second,
-                    n_samples
-                )
-                times = np.clip(times, tXUi[0][0], tXUi[0][-1])
-                np.random.shuffle(times)
-                batches = np.split(
-                    times,
-                    np.arange(rollouts_per_save, n_samples, rollouts_per_save)
-                )
-
-                data_count = 0
-                for batch_idx, batch_times in enumerate(batches):
-                    drones = generate_frames(
-                        len(batch_times), drone_set_cfg, base_drone_cfg
-                    )
-                    perturb = generate_perturbations(
-                        batch_times, trajectory_cfg, tXUi
-                    )
-                    rollouts, images, img_data = generate_rollouts(
-                        tXUi, course, objectives[course_idx],
-                        sample_cfg, nerf_model, drones, perturb
-                    )
-                    du.save_rollouts(
-                        cohort_name, course, rollouts, images, img_data,
-                        tXUi, traj_idx
-                    )
-                    data_count += sum(r["Ndata"] for r in rollouts)
-
-                print(f"Trajectory {traj_idx} generated {data_count} data points")
-
-    else:
-        # Single trajectory per "objective"
-        base_drone_cfg = qc.generate_preset_config(drone_cfg)
-
-        for course_idx, cid in enumerate(course_list):
-            data_file = courses_cfg_dir / f"{cid}_combined_data.pkl"
-            with open(data_file, 'rb') as f:
-                data = pickle.load(f)
-            th.debug_figures_RRT(
-                data["obj_loc"], data["positions"],
-                data["trajectory"], data["smooth_trajectory"],
-                data["times"]
-            )
-
-            traj = data["tXUi"]
-            duration = int(traj[0][-1])
-            n_time = time_points_per_second * duration
-            n_samples = rollouts_per_time_point * n_time
-
-            times = np.tile(
-                np.linspace(traj[0][0], traj[0][-1], n_time + 1)[:-1],
-                rollouts_per_time_point
-            )
-            times += np.random.uniform(
-                -1 / time_points_per_second,
-                1 / time_points_per_second,
-                n_samples
-            )
-            times = np.clip(times, traj[0][0], traj[0][-1])
-            np.random.shuffle(times)
-            batches = np.split(
-                times,
-                np.arange(rollouts_per_save, n_samples, rollouts_per_save)
-            )
-
-            data_count = 0
-            for batch_idx in trange(len(batches)):
-                batch_times = batches[batch_idx]
-                drones = du.generate_drones(
-                    len(batch_times), drone_set_cfg, base_drone_cfg
-                )
-                perturb = du.generate_perturbations(
-                    batch_times, trajectory_cfg, traj
-                )
-                rollouts, images, img_data = du.generate_rollouts(
-                    traj, cid, objectives[course_idx],
-                    sample_cfg, nerf_model, drones, perturb
-                )
-                du.save_rollouts(
-                    cohort_name, cid, rollouts, images, img_data,
-                    traj, batch_idx
-                )
-                data_count += sum(r["Ndata"] for r in rollouts)
-
-            print(f"Generated {data_count} data points for course '{cid}'")
-
-def generate_rollout_data_original(cohort_name:str,method_name:str,
-                          flights:List[Tuple[str,str]],
-                          Nro_sv:int=50):
-    
-    """
-    Generates flight data for a given cohort. A cohort comprises a set of courses flown on a specific
-    drone frame with a specific method of domain randomization. Flight data is agnostic to the pilot 
-    and is generated by simulating variations of the drone over the set of courses using an MPC flight
-    controller that has full knowledge. The flight data is saved to a .pt file in the cohort directory.
-
-    Args:
-        cohort_name:    Cohort name.
-        method_name:    Sous Vide config.
-        flights:        List of flights (scene,frame,course).
-        Nro_sv:         Number of rollouts per save.
-
-    Returns:
-        None:           (flight data saved to cohort directory)
-    """
-
-    # Some useful path(s)
-    workspace_path = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    
-    # Extract method configs
-    method_path = os.path.join(workspace_path,"configs","method",method_name+".json")
-        
-    with open(method_path) as json_file:
-        method_config = json.load(json_file)
-    
-    sample_set_config = method_config["sample_set"]
-    trajectory_set_config = method_config["trajectory_set"]
-    frame_set_config = method_config["frame_set"]
-
-    Tdt_ro = sample_set_config["duration"]
-    Nro_tp = sample_set_config["reps"]
-    Ntp_sc = sample_set_config["rate"]
-    err_tol = sample_set_config["tolerance"]
-    rollout_name = sample_set_config["rollout"]
-    policy_name = sample_set_config["policy"]
-    frame_name = sample_set_config["frame"]
-
-    # Extract policy and frame
-    policy_path = os.path.join(workspace_path,"configs","policy",policy_name+".json")
-    frame_path  = os.path.join(workspace_path,"configs","frame",frame_name+".json")
-    
-    with open(policy_path) as json_file:
-        policy_config = json.load(json_file)
-
-    with open(frame_path) as json_file:
-        base_frame_config = json.load(json_file)   
-
-    hz_ctl = policy_config["hz"]
-
-    # Create cohort folder
-    cohort_path = os.path.join(workspace_path,"cohorts",cohort_name)
-
-    if not os.path.exists(cohort_path):
-        os.makedirs(cohort_path)
-
-    # Generate base drone specifications
-    base_frame_specs = generate_specifications(base_frame_config)
-
-    # Print some useful information
-    print("==========================================================================")
-    print("Cohort :",cohort_name)
-    print("Method :",method_name)
-    print("Policy :",policy_name)
-    print("Frame  :",frame_name)
-    print("Flights:",flights)
-
-    # Generate rollouts for each course
-    for scene_name,course_name in flights:
-        # Load course_config
-        course_path = os.path.join(workspace_path,"configs","course",course_name+".json")
-
-        with open(course_path) as json_file:
-            course_config = json.load(json_file)
-        
-        # Add course name
-        course_config["name"] = course_name
-
-        # Generate desired trajectory
-        output = ms.solve(course_config)
-        if output is not False:
-            Tpd,CPd = output
-            tXUd = th.TS_to_tXU(Tpd,CPd,base_frame_specs,hz_ctl)
-        else:
-            raise ValueError("Desired trajectory not feasible. Aborting.")
-        
-        # Generate simulator
-        simulator = Simulator(scene_name,rollout_name)
-        
-        # Generate Sample Set Batches
-        Ntp = Ntp_sc*int(Tpd[-1])                                       # Number of time points per trajectory
-        Nsp = Nro_tp*Ntp                                                # Number of sample points (total)
-        
-        Tsp = np.tile(np.linspace(Tpd[0],Tpd[-1],Ntp+1)[:-1],Nro_tp)    # Entire sample points array
-        Tsp += np.random.uniform(-1/Ntp_sc,1/Ntp_sc,Nsp)                # Add some noise to the sample points array
-        Tsp = np.clip(Tsp,Tpd[0],Tpd[-1])                               # Clip the sample points array
-        np.random.shuffle(Tsp)                                          # Shuffle the sample points array
-
-        TTsp = np.split(Tsp,np.arange(Nro_sv,Nsp,Nro_sv))               # Split the sample points array into their batches
-        
-        # Print some diagnostics
-        Ndc = int(Tdt_ro*hz_ctl)
-
-        print("--------------------------------------------------------------------------")
-        print("Course Name :",course_name)
-        print("Rollout Reps:",Nro_tp,"(per time point)")
-        print("Rollout Rate:",Ntp_sc,"(per second)")
-        print("Rollout Data:",Ndc,"(per sample)")
-        print("--------------------------------------------------------------------------")
-        print("Total Rollouts:",Nsp)
-        print("Batch Sizes :", len(TTsp)-1, "x", Nro_sv,"+ 1 x", len(TTsp[-1]))
-        print("Total Data:",Nsp*Ndc)
-        print("--------------------------------------------------------------------------")
-
-        # Generate Sample Set Batches
-        Ndata = 0
-        for idx in trange(len(TTsp)):
-            # Get the current batch
-            Tsp = TTsp[idx]
-            
-            # Generate sample frames
-            Frames = generate_frames(Tsp,base_frame_config,frame_set_config)
-
-            # Generate sample perturbations
-            Perturbations  = generate_perturbations(Tsp,Tpd,CPd,trajectory_set_config)
-
-            # Generate rollout data
-            Trajectories,Images = generate_rollouts(
-                simulator,course_config,policy_config,
-                Frames,Perturbations,Tdt_ro,err_tol)
-
-            # Save the rollout data
-            save_rollouts(cohort_path,course_name,Trajectories,Images,tXUd,idx)
-
-            # Update the data count
-            Ndata += sum([trajectory["Ndata"] for trajectory in Trajectories])
-
-        # Print some diagnostics
-        print("--------------------------------------------------------------------------")
-        print("Generated ",Ndata," points of data.")
-        print("--------------------------------------------------------------------------")
 
 def generate_frames(Tsps:np.ndarray,
                     base_frame_config:Dict[str,Union[int,float,List[float]]],
@@ -955,7 +611,8 @@ def generate_rollouts(
         Frames:Dict[str,Union[np.ndarray,str,int,float]]|None=None,
         Perturbations:Dict[str,Union[float,np.ndarray]]|None=None,
         Tdt_ro:float|None=None,err_tol:float|None=None,
-        vision_processor:bool=False
+        vision_processor:bool=False,
+        validation_mode:bool=False
         ) -> Tuple[List[Dict[str,Union[np.ndarray,np.ndarray,np.ndarray]]],List[torch.Tensor]]:
     """
     Generates rollout data for the quadcopter given a list of drones and initial states (perturbations).
@@ -994,7 +651,7 @@ def generate_rollouts(
         videoMode = sample_config["videoMode"]
 
         # Initialize rollout variables
-        Trajectories,Images,Image_Data = [],[],[]
+        Trajectories, Images, Image_Data = [], [], []
 
         obj = np.zeros((18,1))
 
@@ -1003,61 +660,70 @@ def generate_rollouts(
 
         rolling_idx = 0
         # Rollout the trajectories
-        for idx,(frame_config,perturbation) in enumerate(zip(Frames,Perturbations)):
+        for idx, (frame_config, perturbation) in enumerate(zip(Frames, Perturbations)):
             # Unpack rollout variables
-            t0,x0 = perturbation["t0"],perturbation["x0"]
+            t0, x0 = perturbation["t0"], perturbation["x0"]
             tf = t0 + Tdt_ro
 
             # Load the simulation variables
             sim.load_frame(frame_config)
-            ctl = VehicleRateMPC(tXUd,policy_config,frame_config)
+            ctl = VehicleRateMPC(tXUd, policy_config, frame_config)
 
             # Simulate the flight
-            Tro,Xro,Uro,Imgs,Tsol,Adv = sim.simulate(ctl,t0,tf,x0,query=objective,clipseg=vision_processor)
+            Tro, Xro, Uro, Imgs, Tsol, Adv = sim.simulate(
+                ctl, t0, tf, x0,
+                query=objective,
+                clipseg=vision_processor,
+                validation=validation_mode
+            )
 
-            # # Simulate the flight
-            # Tro,Xro,Uro,Imgs,Tsol,Adv = qs.simulate_flight(policy,simulator,
-            #                                             t0,tf,x0,obj,nerf,semantic_target,hz_sim,
-            #                                             mu_md=mu_md,std_md=std_md,
-            #                                             mu_sn=mu_sn,std_sn=std_sn,
-            #                                             t_dly=t_dly)
-            
-            # TODO: either make Xid from Tpi,CPi or maybe it's ok to leave it blank?
             trajectory = {
-                "Tro":Tro,"Xro":Xro,"Uro":Uro,
-                "Xid":tXUd[1:,:],"obj":obj,"Ndata":Uro.shape[1],"Tsol":Tsol,"Adv":Adv,
-                "rollout_id":str(idx).zfill(5),
-                "course":objective,
-                "frame":frame_config}
-            
+                "Tro": Tro,
+                "Xro": Xro,
+                "Uro": Uro,
+                "Xid": tXUd[1:, :],
+                "obj": obj,
+                "Ndata": Uro.shape[1],
+                "Tsol": Tsol,
+                "Adv": Adv,
+                "rollout_id": str(idx).zfill(5),
+                "course": objective,
+                "frame": frame_config
+            }
+
+            # compute frame offsets for video sequences
             if videoMode:
                 start_idx = rolling_idx
                 end_idx = rolling_idx + len(Imgs["semantic"]) - 1
-                rolling_idx += len(Imgs["semantic"])
+                rolling_idx = end_idx + 1
 
-                # Save the offset info
                 Image_Data.append({
                     "rollout_id": str(idx).zfill(5),
                     "start_id": start_idx,
                     "end_id": end_idx
                 })
-                Images.extend(Imgs["semantic"])
-            else:
-                images = {
-                    "images":Imgs["semantic"],
-                    "rollout_id":str(idx).zfill(5),
-                    "course":objective
-                }
-                Images.append(images)
 
-            # Store rollout data
+            # Build image entry depending on validation mode
+            if validation_mode:
+                entry = {
+                    "rollout_id": str(idx).zfill(5),
+                    "course": objective,
+                    "train_images": Imgs.get("semantic", []),
+                    "val_images": Imgs.get("validation", [])
+                }
+            else:
+                entry = {
+                    "rollout_id": str(idx).zfill(5),
+                    "course": objective,
+                    "images": Imgs.get("semantic", [])
+                }
+
+            Images.append(entry)
             Trajectories.append(trajectory)
 
-            # Delete the generated code
-            # policy.clear_generated_code()
             del ctl
 
-        return Trajectories,Images,Image_Data
+        return Trajectories, Images, Image_Data
     else:
         # Unpack the trajectory
         Tpi,CPi = ms.solve(course_config)
@@ -1105,69 +771,79 @@ def generate_rollouts(
 
         return Trajectories,Images
 
-def save_rollouts(cohort_path:str,course_name:str,
-                  Trajectories:List[Tuple[np.ndarray,np.ndarray,np.ndarray]],
-                  Images:List[torch.Tensor],
-                  Image_Data,
-                  tXUd:np.ndarray,
-                  stack_id:Union[str,int],
-                  validation_mode:bool=False) -> None:
+def save_rollouts(
+    cohort_path: str,
+    course_name: str,
+    Trajectories: List[Dict],
+    Images: List[Dict],
+    Image_Data,
+    tXUd: np.ndarray,
+    stack_id: Union[str, int],
+    validation_mode: bool = False
+) -> None:
     """
-    Saves the rollout data to a .pt file in folders corresponding to coursename within the cohort 
-    directory. The rollout data is stored as a list of rollout dictionaries of size stack_size for
-    ease of comprehension and loading (at a cost of storage space).
-    
-    Args:
-        cohort_path:    Cohort path.
-        course_name:    Name of the course.
-        Trajectories:   Rollout data.
-        Images:         Image data.
-        tXUd:           Ideal trajectory data.
-        stack_id:       Stack id.
-
-    Returns:
-        None:           (rollout data saved to cohort directory)
+    Saves rollout data to .pt files and converts images to videos,
+    preserving the original file-name patterns.
     """
+    # Ensure output directory exists
+    rollout_course_path = os.path.join(cohort_path, "rollout_data", course_name)
+    os.makedirs(rollout_course_path, exist_ok=True)
 
-    # Create rollout course directory (if it does not exist)
-    rollout_course_path = os.path.join(cohort_path,"rollout_data",course_name)
-    if not os.path.exists(rollout_course_path):
-        os.makedirs(rollout_course_path)
+    # Format the dataset suffix
+    ds = str(stack_id).zfill(5) if isinstance(stack_id, int) else str(stack_id)
 
-    # Save the stacks
-    Ndata = sum([trajectory["Ndata"] for trajectory in Trajectories])
-    data_set_name = str(stack_id).zfill(3) if type(stack_id) == int else str(stack_id)
-    trajectory_data_set_path = os.path.join(rollout_course_path,"trajectories"+data_set_name+".pt")
-    # image_data_set_path = os.path.join(rollout_course_path,"images"+data_set_name+".pt")
-    image_data_set_path = os.path.join(rollout_course_path,"imgdata"+data_set_name+".pt")
-    video_data_set_path = os.path.join(rollout_course_path,"video"+data_set_name+".mp4")
-
-#NOTE: Modified from original to support saving rollouts as video
-    # Compress the image data
-    # Images = du.compress_data(Images)
-
-    # trajectory_data_set = {"data":Trajectories,
-    #                        "tXUd":tXUd,
-    #                         "set":data_set_name,"Ndata":Ndata,"course":course_name}
-    # image_data_set = {"data":Images,
-    #                     "set":data_set_name,"Ndata":Ndata,"course":course_name}
-
-    # torch.save(trajectory_data_set,trajectory_data_set_path)
-    # torch.save(image_data_set,image_data_set_path)
+    # Determine file paths exactly as in original code
     if validation_mode:
-        trajectory_data_set_path = os.path.join(rollout_course_path,"trajectories_val"+data_set_name+".pt")
-        image_data_set_path = os.path.join(rollout_course_path,"imgdata_val"+data_set_name+".pt")
-        video_data_set_path = os.path.join(rollout_course_path,"video_val"+data_set_name+".mp4")
-        trajectory_data_set = {"data":Trajectories,
-                            "tXUd":tXUd,"set":data_set_name,"Ndata":Ndata,"course":course_name}
-        image_data_set = {"data":Image_Data,
-                            "set":video_data_set_path,"Ndata":Ndata,"course":course_name}
+        trajectory_data_set_path    = os.path.join(rollout_course_path, f"trajectories_val{ds}.pt")
+        image_data_set_path         = os.path.join(rollout_course_path, f"imgdata_val{ds}.pt")
+        video_data_set_path         = os.path.join(rollout_course_path, f"video_val{ds}.mp4")
+        video_rollout_data_set_path = os.path.join(rollout_course_path, f"video_val_rollout{ds}.mp4")
     else:
-        trajectory_data_set = {"data":Trajectories,
-                            "tXUd":tXUd,"set":data_set_name,"Ndata":Ndata,"course":course_name}
-        image_data_set = {"data":Image_Data,
-                            "set":video_data_set_path,"Ndata":Ndata,"course":course_name}
+        trajectory_data_set_path = os.path.join(rollout_course_path, f"trajectories{ds}.pt")
+        image_data_set_path      = os.path.join(rollout_course_path, f"imgdata{ds}.pt")
+        video_data_set_path      = os.path.join(rollout_course_path, f"video{ds}.mp4")
 
-    torch.save(trajectory_data_set,trajectory_data_set_path)
-    torch.save(image_data_set,image_data_set_path)
-    du.save_images_as_video(Images, video_data_set_path)
+    # Save trajectory data
+    Ndata = sum(traj["Ndata"] for traj in Trajectories)
+    trajectory_data_set = {
+        "data":   Trajectories,
+        "tXUd":   tXUd,
+        "set":    ds,
+        "Ndata":  Ndata,
+        "course": course_name
+    }
+    torch.save(trajectory_data_set, trajectory_data_set_path)
+
+    # Flatten and save videos
+    if validation_mode:
+        # semantic frames
+        all_semantic   = [f for entry in Images for f in entry.get("train_images", [])]
+        # validation frames
+        all_validation = [f for entry in Images for f in entry.get("val_images", [])]
+
+        du.save_images_as_video(all_semantic,   video_data_set_path)
+        du.save_images_as_video(all_validation, video_rollout_data_set_path)
+
+        image_data_set = {
+            "data":          Image_Data,
+            "set":           f"video: {video_data_set_path}, rollout: {video_rollout_data_set_path}",
+            "filenames_train": all_semantic,
+            "filenames_val":   all_validation,
+            "Ndata":         Ndata,
+            "course":        course_name
+        }
+    else:
+        all_frames = [f for entry in Images for f in entry.get("images", [])]
+
+        du.save_images_as_video(all_frames, video_data_set_path)
+
+        image_data_set = {
+            "data":     Image_Data,
+            "set":      video_data_set_path,
+            "filenames": all_frames,
+            "Ndata":    Ndata,
+            "course":   course_name
+        }
+
+    # Save image metadata
+    torch.save(image_data_set, image_data_set_path)

@@ -54,6 +54,7 @@ def train_student(cohort_name:str,student:Pilot,
     model_path   = os.path.join(student_path,"model.pth")
     losses_path  = os.path.join(student_path,"losses_"+mode+".pt")
     best_model_path   = os.path.join(student_path, "best_model.pth")
+    last_model_path   = os.path.join(student_path, "last_model.pth")
 
     # Say who we are training
     print("Training Student: ",student.name)
@@ -66,19 +67,21 @@ def train_student(cohort_name:str,student:Pilot,
         print("Re-training existing network.")
         print("Previous Epochs: ", sum(losses["Neps"]), losses["Neps"])
 
-        losses["train"].append([]),losses["test"].append([]),losses["rollout"].append([])
+        losses["train"].append([]),losses["test"].append([]),losses["validation"].append([])
         losses["Neps"].append(0),losses["Nspl"].append(0),losses["t_train"].append(0)
     else:
         losses = {
-            "train": [None], "test": [None], "rollout":[None],
+            "train": [None], "test": [None], "validation":[None],
             "Neps": [None], "Nspl": [None], "t_train": [None]
         }
         print("Training new network.")
 
-    Loss_train,Loss_tests,Loss_rollouts = [],[],[]
+    Loss_train,Loss_tests,Loss_validation,Loss_rollouts = [],[],[],[]
     best_test_loss = float('inf')
     best_val_loss = float('inf')
     last_val_loss = float('inf')
+    best_rol_loss = float('inf')
+    last_rol_loss = float('inf')
     # Record the start time
     start_time = time.time()
 
@@ -89,7 +92,7 @@ def train_student(cohort_name:str,student:Pilot,
             unlock_networks(student,mode)
 
             # Get Observation Data Files (Paths)
-            od_train_files,od_test_files,od_val_files = get_data_paths(cohort_name,student.name)
+            od_train_files,od_test_files,od_val_files,od_rol_files = get_data_paths(cohort_name,student.name)
 
             # Training
             loss_log_tn =[]
@@ -147,12 +150,32 @@ def train_student(cohort_name:str,student:Pilot,
                         val_log.append((lbl.shape[0], criterion(pred, lbl).item()))
                 if val_log:
                     Ntv = sum(n for n, _ in val_log)
+                    loss_validation = sum(n * l for n, l in val_log) / Ntv
+                else:
+                    loss_validation = float('nan')
+                last_val_loss = loss_validation
+            else:
+                loss_validation = last_val_loss
+
+            # Rollouts
+            if ((ep + 1) % 5 == 0) or (ep + 1 == Neps):
+                rol_log = []
+                for rol_file in od_rol_files:
+                    ds = generate_dataset(rol_file, student, mode, device)
+                    loader = DataLoader(ds, batch_size=batch_size,
+                                        shuffle=False, drop_last=False)
+                    for inp, lbl in loader:
+                        inp, lbl = (t.to(device) for t in inp), lbl.to(device)
+                        pred, _ = model(*inp)
+                        val_log.append((lbl.shape[0], criterion(pred, lbl).item()))
+                if val_log:
+                    Ntv = sum(n for n, _ in val_log)
                     loss_rollouts = sum(n * l for n, l in val_log) / Ntv
                 else:
                     loss_rollouts = float('nan')
-                last_val_loss = loss_rollouts
+                last_rol_loss = loss_rollouts
             else:
-                loss_rollouts = last_val_loss
+                loss_rollouts = last_rol_loss
 
             # Loss Diagnostics
             Ntn = np.sum([n for n,_ in loss_log_tn])
@@ -163,21 +186,27 @@ def train_student(cohort_name:str,student:Pilot,
             eps.set_description('Loss %f' % loss_train)
             Loss_train.append(loss_train)
             Loss_tests.append(loss_tests)
+            Loss_validation.append(loss_validation)
             Loss_rollouts.append(loss_rollouts)
 
             # Log losses to wandb
             wandb.log({
                 "train/epoch_loss": loss_train,
-                "val/epoch_loss": loss_tests,
-                "val/epoch/rollout_loss:": loss_rollouts,
+                "test/epoch_loss": loss_tests,
+                "test/epoch/validation_loss": loss_validation,
+                "test/epoch/rollout_loss:": loss_rollouts,
                 "epoch": ep,
             })
 
-            if loss_rollouts < best_val_loss and loss_tests < best_test_loss:
-                best_val_loss = loss_rollouts
+            if loss_validation < best_val_loss and loss_tests < best_test_loss:
+                best_val_loss = loss_validation
                 best_test_loss = loss_tests
                 torch.save(student.model, best_model_path)
                 print(f"\nEpoch {ep+1}: new best validation loss {best_val_loss:.4f} → saved to best_model.pth\n")
+            elif ep+1== Neps:
+                # If we reach the end of training, save the last model
+                torch.save(student.model, last_model_path)
+                print(f"\nEpoch {ep+1}: final model saved to last_model.pth\n")
 
             # Save at intermediate steps and at the end
             if ((ep+1) % lim_sv == 0) or (ep+1==Neps):
@@ -192,6 +221,7 @@ def train_student(cohort_name:str,student:Pilot,
 
                 losses["train"][-1] = Loss_train
                 losses["test"][-1] = Loss_tests
+                losses["validation"][-1] = Loss_validation
                 losses["rollout"][-1] = Loss_rollouts
                 losses["Neps"][-1] = ep+1
                 losses["Nspl"][-1] = Ntn

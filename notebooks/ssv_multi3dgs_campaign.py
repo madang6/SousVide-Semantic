@@ -53,7 +53,7 @@ def init_wandb(cfg: dict, job: str) -> None:
     if run_id:
         init_args["id"] = run_id
         init_args["resume"] = cfg.get("wandb_resume", "allow")
-        
+
     wandb.init(**init_args)
 
 def common_options(
@@ -62,6 +62,8 @@ def common_options(
     use_wandb: bool,
     wandb_project: Optional[str],
     wandb_run_name: Optional[str],
+    wandb_run_id: Optional[str] = None,
+    wandb_resume: str = "allow",
 ) -> dict:
     cfg = load_yaml(config_file)
     cfg.update({
@@ -69,6 +71,8 @@ def common_options(
         "use_wandb": use_wandb,
         "wandb_project": wandb_project,
         "wandb_run_name": wandb_run_name,
+        "wandb_run_id": wandb_run_id,
+        "wandb_resume": wandb_resume,
     })
     return cfg
 
@@ -83,9 +87,11 @@ def generate_rollouts(
     wandb_run_id: Optional[str] = typer.Option(None, help="Existing W&B run ID to resume"),
     wandb_resume: Optional[str] = typer.Option("allow", help="resume mode: allow|must"),
 ):
-    cfg = common_options(  # type: ignore
-        config_file, plot, use_wandb, wandb_project, wandb_run_name
+    cfg = common_options(
+        config_file, plot, use_wandb, wandb_project, wandb_run_name,
+        wandb_run_id, wandb_resume
     )
+
     init_wandb(cfg, "generate_rollouts")
     rg.generate_rollout_data(cfg["cohort"], cfg["method"], cfg["flights"],validation_mode=validation_mode)
 

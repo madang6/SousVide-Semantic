@@ -8,7 +8,7 @@
         "frame": "carl",
         "policy": "vrmpc_rrt",
         "rrt_mode": true,
-        "loitering": false,
+        "loitering": true,
         "clipseg": true,
         "videoMode": true
     },
