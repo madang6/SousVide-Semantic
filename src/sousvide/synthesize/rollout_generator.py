@@ -183,6 +183,8 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                     print(f"Rings for loiter: {[rings[idx]]}")
                     all_trajectories[f"loiter_{idx}"], _ = th.parameterize_RRT_trajectories(
                         [rings[idx]], obstacles[idx], constant_velocity=1.0, sampling_frequency=20, loiter=True)
+                objectives.extend([f"loiter_{idx}" for idx in range(len(obstacles))])
+
                     # print(f"Parameterized: {len(traj_list)} loiter trajectories for obstacle {idx}")
                 # print(f"chosen_traj.shape: {traj_list[0].shape}")
                 # combined_data = {
@@ -202,6 +204,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                 goal_poses, obj_centroids, env_bounds, rings, obstacles
             )
             # Simulate and save rollouts
+            stack_id = 0
             for course_idx, course in tqdm(enumerate(all_trajectories),desc=f"Objects"):
                 trajectories = all_trajectories[course]
                 total = Nro_tp * len(trajectories)
@@ -260,6 +263,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                             Trajectories, Images, Img_data, 
                             tXUi, traj_idx
                         )
+                        stack_id += 1
                         data_count += sum(r["Ndata"] for r in Trajectories)
 
                     print(f"Trajectory {traj_idx} generated {data_count} data points")
