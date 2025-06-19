@@ -130,7 +130,8 @@ def generate_observations(
     wandb_resume: Optional[str] = typer.Option("allow", help="resume mode: allow|must"),
 ):
     cfg = common_options(  # type: ignore
-        config_file, plot, use_wandb, wandb_project, wandb_run_name
+        config_file, plot, use_wandb, wandb_project, wandb_run_name,
+        wandb_run_id, wandb_resume
     )
     init_wandb(cfg, "generate_observations")
     og.generate_observation_data(cfg["cohort"], cfg["roster"],validation_mode=validation_mode)

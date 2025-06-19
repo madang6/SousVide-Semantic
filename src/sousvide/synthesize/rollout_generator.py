@@ -210,10 +210,16 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                 total = Nro_tp * len(trajectories)
                 print(f"Preparing {total} samples for course '{course}'")
 
+                if course.startswith("loiter_"):
+                    Nro_tp = sample_set_config["reps"] * 6
+                else:
+                    Nro_tp = sample_set_config["reps"]
+
                 for traj_idx, tXUi in tqdm(enumerate(trajectories),desc=f"Trajectories"):
                     duration = int(tXUi[0][-1])
-                    splits = duration // 2
+                    splits = duration // int(Tdt_ro)
                     n_time = splits
+
                     n_samples = Nro_tp * n_time
 
                     times = np.tile(
@@ -261,7 +267,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                         save_rollouts(
                             cohort_path, course_name, 
                             Trajectories, Images, Img_data, 
-                            tXUi, traj_idx
+                            tXUi, stack_id
                         )
                         stack_id += 1
                         data_count += sum(r["Ndata"] for r in Trajectories)
@@ -356,7 +362,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
 
                 for traj_idx, tXUi in tqdm(enumerate(trajectories),desc=f"Trajectories"):
                     duration = int(tXUi[0][-1])
-                    splits = duration // 2
+                    splits = duration // int(Tdt_ro)
                     n_time = splits
                     n_samples = Nro_tp * n_time
 

@@ -9,7 +9,6 @@ FLIGHTS=(
   "indooroutdoor"
   "spheres"
   "flightroom_lowres"
-  "sv_917_3_left_gemsplat"
 )
 
 for flight in "${FLIGHTS[@]}"; do
@@ -31,7 +30,7 @@ for flight in "${FLIGHTS[@]}"; do
     --config-file "$TMP" \
     # --validation-mode \
     --use-wandb --wandb-project ssv \
-    --wandb-run-id 6uzo8pgf \
+    --wandb-run-id qfb3w4zy \
     --wandb-resume allow
 
 done
