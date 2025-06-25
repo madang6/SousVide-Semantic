@@ -9,4 +9,5 @@
 **/test_data/
 **/test_space/
 **/wandb/
+**/configs/scenes/*.pkl
 /outputs/

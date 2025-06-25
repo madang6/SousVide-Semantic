@@ -1,27 +1,27 @@
-# queries: ["park bench", "traffic cone", "bicycles"]
-queries: ["traffic cone"]
+queries: ["park bench", "traffic cone", "bicycles"]
+# queries: ["traffic cone"]
 # queries: ["parkbench"]
 # semantic_target: "mannequin"
 
 radii:
-  # - [ 2.5,  0.3]   # for "microwave"
+  - [ 2.5,  0.3]   # for "microwave"
   - [ 2.5,  0.5]   # for "computer"
-  # - [ 2.5,  0.5]   # for "armchair"
+  - [ 2.5,  0.5]   # for "armchair"
 
 altitudes:
-  # - -0.9            # flight height for “microwave”
+  - -0.9            # flight height for “microwave”
   - -0.8            # flight height for "ladder”
-  # - -1.1            # flight height for "armchair"
+  - -1.1            # flight height for "armchair"
 
 similarities:
-  # - [ 0.90, 0.025 ]  # threshold, filter radius
+  - [ 0.90, 0.025 ]  # threshold, filter radius
   - [ 0.90, 0.025 ]
-  # - [ 0.90, 0.025 ]
+  - [ 0.90, 0.025 ]
 
 nbranches:
-  # - 120
-  - 120
-  # - 120
+  - 110
+  - 110
+  - 110
 
 hoverMode: False
 numTraj: all

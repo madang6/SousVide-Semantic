@@ -171,7 +171,8 @@ def train_command(
     wandb_resume: Optional[str] = typer.Option("allow", help="resume mode: allow|must")
 ):
     cfg = common_options(  # type: ignore
-        config_file, plot, use_wandb, wandb_project, wandb_run_name
+        config_file, plot, use_wandb, wandb_project, wandb_run_name,
+        wandb_run_id, wandb_resume
     )
     init_wandb(cfg, "train_command")
     tp.train_roster(
@@ -192,7 +193,8 @@ def simulate(
     wandb_resume: Optional[str] = typer.Option("allow", help="resume mode: allow|must"),
 ):
     cfg = common_options(
-        config_file, False, use_wandb, wandb_project, wandb_run_name
+        config_file, False, use_wandb, wandb_project, wandb_run_name,
+        wandb_run_id, wandb_resume
     )
     init_wandb(cfg, "simulate")
     df.simulate_roster(
@@ -209,11 +211,8 @@ def simulate(
         for i, fig in enumerate(_all_plotly_figs, start=1):
             img_bytes = safe_to_image(fig,width=1200,height=1200)#fig.to_image(format="png", width=1200, height=1200)
             if img_bytes is None:
-                continue  # skip this one
+                continue
             buf = BytesIO(img_bytes)
-            # pil_img = Image.open(buf)
-            # img_bytes = fig.to_image(format="png", width=1200, height=1200)
-            # buf = BytesIO(img_bytes)
             pil_img = Image.open(buf)
             logs[f"simulate_plotly_png_{i}"] = wandb.Image(pil_img)
 

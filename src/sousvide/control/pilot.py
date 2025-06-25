@@ -21,7 +21,7 @@ class Pilot():
         Args:
             cohort_name:    Name of the cohort.
             pilot_name:     Name of the pilot.
-        
+
         Variables:
             name:           Name of the pilot.
             hz:             Frequency of the pilot.

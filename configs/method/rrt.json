@@ -32,7 +32,7 @@
     },
     "test_set":{
         "rollout": "challenged",
-        "reps": 30,
+        "reps": 1,
         "clipseg":true,
         "trajectory_set": {
             "initial": [

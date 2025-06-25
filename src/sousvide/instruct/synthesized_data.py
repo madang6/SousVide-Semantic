@@ -173,19 +173,23 @@ def get_data_paths(cohort_name: str,
     else:
         course_paths = [os.path.join(base, course_name)]
 
-    train_paths, test_paths, rollout_paths = [], [], []
+    train_paths, test_paths, validation_paths, rollout_paths = [], [], [], []
     for course_path in course_paths:
         data_files = []
         val_files = []
+        rollout_files = []
         for entry in os.scandir(course_path):
             fn = entry.name
             if not fn.endswith(".pt"):
                 continue
-            if fn.startswith("observations_val"):
+            if fn.startswith("observations_val_rollout"):
+                rollout_files.append(entry.path)
+            elif fn.startswith("observations_val"):
                 val_files.append(entry.path)
             elif fn.startswith("observations"):
                 data_files.append(entry.path)
         data_files.sort()
+        rollout_files.sort()
         val_files.sort()
 
         # split the normal data_files into train/test
@@ -199,9 +203,10 @@ def get_data_paths(cohort_name: str,
             test_paths.append(data_files[-1])
 
         # collect all rollout (val) files
-        rollout_paths.extend(val_files)
+        validation_paths.extend(val_files)
+        rollout_paths.extend(rollout_files)
 
-    return train_paths, test_paths, rollout_paths
+    return train_paths, test_paths, validation_paths, rollout_paths
 
 def get_data_paths_old(cohort_name:str,
                    student_name:str,

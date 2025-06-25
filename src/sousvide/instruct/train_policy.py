@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader,Dataset
-from tqdm.notebook import trange
+from tqdm import trange
 import wandb
 from sousvide.control.pilot import Pilot
 from sousvide.instruct.synthesized_data import *
@@ -67,11 +67,11 @@ def train_student(cohort_name:str,student:Pilot,
         print("Re-training existing network.")
         print("Previous Epochs: ", sum(losses["Neps"]), losses["Neps"])
 
-        losses["train"].append([]),losses["test"].append([]),losses["validation"].append([])
+        losses["train"].append([]),losses["test"].append([]),losses["validation"].append([]),losses["rollout"].append([])
         losses["Neps"].append(0),losses["Nspl"].append(0),losses["t_train"].append(0)
     else:
         losses = {
-            "train": [None], "test": [None], "validation":[None],
+            "train": [None], "test": [None], "validation":[None], "rollout":[None],
             "Neps": [None], "Nspl": [None], "t_train": [None]
         }
         print("Training new network.")
@@ -86,7 +86,7 @@ def train_student(cohort_name:str,student:Pilot,
     start_time = time.time()
 
     # Training + Testing Loop
-    with trange(Neps) as eps:
+    with trange(Neps, desc="Training Progress") as eps:
         for ep in eps:
             # Lock/Unlock Networks
             unlock_networks(student,mode)
@@ -138,7 +138,7 @@ def train_student(cohort_name:str,student:Pilot,
                     log_log_tt.append((label.shape[0],loss.item()))
             
             # Validation
-            if ((ep + 1) % 5 == 0) or (ep + 1 == Neps):
+            if bool(od_val_files) and ((ep + 1) % 5 == 0) or (ep + 1 == Neps):
                 val_log = []
                 for val_file in od_val_files:
                     ds = generate_dataset(val_file, student, mode, device)
@@ -158,7 +158,7 @@ def train_student(cohort_name:str,student:Pilot,
                 loss_validation = last_val_loss
 
             # Rollouts
-            if ((ep + 1) % 5 == 0) or (ep + 1 == Neps):
+            if bool(od_rol_files) and ((ep + 1) % 5 == 0) or (ep + 1 == Neps):
                 rol_log = []
                 for rol_file in od_rol_files:
                     ds = generate_dataset(rol_file, student, mode, device)
@@ -167,10 +167,10 @@ def train_student(cohort_name:str,student:Pilot,
                     for inp, lbl in loader:
                         inp, lbl = (t.to(device) for t in inp), lbl.to(device)
                         pred, _ = model(*inp)
-                        val_log.append((lbl.shape[0], criterion(pred, lbl).item()))
-                if val_log:
-                    Ntv = sum(n for n, _ in val_log)
-                    loss_rollouts = sum(n * l for n, l in val_log) / Ntv
+                        rol_log.append((lbl.shape[0], criterion(pred, lbl).item()))
+                if rol_log:
+                    Ntv = sum(n for n, _ in rol_log)
+                    loss_rollouts = sum(n * l for n, l in rol_log) / Ntv
                 else:
                     loss_rollouts = float('nan')
                 last_rol_loss = loss_rollouts
@@ -186,17 +186,40 @@ def train_student(cohort_name:str,student:Pilot,
             eps.set_description('Loss %f' % loss_train)
             Loss_train.append(loss_train)
             Loss_tests.append(loss_tests)
-            Loss_validation.append(loss_validation)
-            Loss_rollouts.append(loss_rollouts)
+            if bool(od_val_files):
+                Loss_validation.append(loss_validation)
+            if bool(od_rol_files):
+                Loss_rollouts.append(loss_rollouts)
 
             # Log losses to wandb
-            wandb.log({
-                "train/epoch_loss": loss_train,
-                "test/epoch_loss": loss_tests,
-                "test/epoch/validation_loss": loss_validation,
-                "test/epoch/rollout_loss:": loss_rollouts,
-                "epoch": ep,
-            })
+            if bool(od_val_files) and bool(od_rol_files):
+                wandb.log({
+                    "train/epoch loss": loss_train,
+                    "test/epoch loss": loss_tests,
+                    "test/epoch validation loss": loss_validation,
+                    "test/epoch rollout loss:": loss_rollouts,
+                    "epoch": ep,
+                })
+            elif bool(od_val_files):
+                wandb.log({
+                    "train/epoch loss": loss_train,
+                    "test/epoch loss": loss_tests,
+                    "test/epoch validation_loss": loss_validation,
+                    "epoch": ep,
+                })
+            elif bool(od_rol_files):
+                wandb.log({
+                    "train/epoch loss": loss_train,
+                    "test/epoch loss": loss_tests,
+                    "test/epoch rollout loss:": loss_rollouts,
+                    "epoch": ep,
+                })
+            else:
+                wandb.log({
+                    "train/epoch loss": loss_train,
+                    "test/epoch loss": loss_tests,
+                    "epoch": ep,
+                })
 
             if loss_validation < best_val_loss and loss_tests < best_test_loss:
                 best_val_loss = loss_validation
@@ -221,8 +244,10 @@ def train_student(cohort_name:str,student:Pilot,
 
                 losses["train"][-1] = Loss_train
                 losses["test"][-1] = Loss_tests
-                losses["validation"][-1] = Loss_validation
-                losses["rollout"][-1] = Loss_rollouts
+                if bool(od_val_files):
+                    losses["validation"][-1] = Loss_validation
+                if bool(od_rol_files):
+                    losses["rollout"][-1] = Loss_rollouts
                 losses["Neps"][-1] = ep+1
                 losses["Nspl"][-1] = Ntn
                 losses["t_train"][-1] = t_train

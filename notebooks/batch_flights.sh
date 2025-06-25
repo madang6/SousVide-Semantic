@@ -4,38 +4,28 @@ set -euo pipefail
 CONFIG="/home/admin/StanfordMSL/SousVide-Semantic/configs/experiment/ssv_multi3dgs.yml"
 TMP="/home/admin/StanfordMSL/SousVide-Semantic/configs/experiment/ssv_multi3dgs.tmp.yml"
 
-# Run in reverse order so the last-listed flight runs first
-FLIGHTS=(
-  "indooroutdoor"
-  "spheres"
-  "flightroom_lowres"
-)
+# reverse order
+FLIGHTS=( "flightroom_lowres" "spheres" "indooroutdoor" "packardpark")
 
 for flight in "${FLIGHTS[@]}"; do
-  echo
   echo "=== Running flight = $flight ==="
 
-  # Comment out every list item, then uncomment the one matching $flight
   perl -pe '
-    if (/^[[:space:]]*-\s*\[/) {
-      s/^/#/;
-    }
-    if (/^([[:space:]]*)#\s*-\s*\[.*'"$flight"'.*\]/) {
-      s/^([[:space:]]*)#\s*/\1/;
-    }
+    if (/^[[:space:]]*-\s*\[/)      { s/^/#/; }
+    if (/^([[:space:]]*)#\s*-\s*\[.*'"$flight"'.*\]/) { s/^([[:space:]]*)#\s*/\1/; }
   ' "$CONFIG" > "$TMP"
 
-  # 4) Launch your experiment
-  python ssv_multi3dgs_campaign.py generate-rollouts \
-    --config-file "$TMP" \
-    # --validation-mode \
-    --use-wandb --wandb-project ssv \
-    --wandb-run-id qfb3w4zy \
-    --wandb-resume allow
+  # build the args in an array
+  args=( generate-rollouts --config-file "$TMP" )
+  
+  args+=( --validation-mode )
 
+  args+=( --use-wandb --wandb-project ssv \
+          --wandb-run-id qfb3w4zy --wandb-resume allow )
+
+  python ssv_multi3dgs_campaign.py "${args[@]}"
 done
 
-# Cleanup
 rm -f "$TMP"
 
 
@@ -56,7 +46,6 @@ rm -f "$TMP"
 # for flight in "${FLIGHTS[@]}"; do
 #   echo
 #   echo "=== DRY RUN: processing flight = $flight ==="
-
 #   perl -pe '
 #     # 1) comment every “- [ … ]” line
 #     if (/^[[:space:]]*-\s*\[.*\]/) {

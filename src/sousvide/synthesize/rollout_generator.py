@@ -183,7 +183,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                     print(f"Rings for loiter: {[rings[idx]]}")
                     all_trajectories[f"loiter_{idx}"], _ = th.parameterize_RRT_trajectories(
                         [rings[idx]], obstacles[idx], constant_velocity=1.0, sampling_frequency=20, loiter=True)
-                objectives.extend([f"loiter_{idx}" for idx in range(len(obstacles))])
+                objectives.extend([f"null" for _ in range(len(obstacles))])
 
                     # print(f"Parameterized: {len(traj_list)} loiter trajectories for obstacle {idx}")
                 # print(f"chosen_traj.shape: {traj_list[0].shape}")
@@ -275,7 +275,6 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                     print(f"Trajectory {traj_idx} generated {data_count} data points")
     elif validation_mode:
         Nro_tp = 1
-        Tdt_ro = None
         for scene_name,course_name in flights:
             scene_cfg_file = os.path.join(scenes_cfg_dir, f"{scene_name}.yml")
             with open(scene_cfg_file) as f:
@@ -346,19 +345,23 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                 for idx in range(len(obstacles)):
                     print(f"Rings for loiter: {[rings[idx]]}")
                     all_trajectories[f"loiter_{idx}"], _ = th.parameterize_RRT_trajectories(
-                        [rings[idx]], obstacles[idx], 1.0, 20, randint=idx, loiter=True)
-            
+                        [rings[idx]], obstacles[idx], 1.0, 20, loiter=True)
+                objectives.extend([f"null" for _ in range(len(obstacles))])
+
             # Plot filtered trajectories
             bd.visualize_rrt_trajectories(
                 raw_filtered,
                 scene_cfg_file, simulator, epcds_list, epcds_arr, objectives,
                 goal_poses, obj_centroids, env_bounds, rings, obstacles
             )
+
             # Simulate and save rollouts
+            stack_id = 0
             for course_idx, course in tqdm(enumerate(all_trajectories),desc=f"Objects"):
                 trajectories = all_trajectories[course]
                 total = Nro_tp * len(trajectories)
                 print(f"Preparing {total} samples for course '{course}'")
+                print(f"Query: {objectives[course_idx]}")
 
                 for traj_idx, tXUi in tqdm(enumerate(trajectories),desc=f"Trajectories"):
                     duration = int(tXUi[0][-1])
@@ -398,7 +401,8 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                         policy_config=policy_config,
                         Frames=Frames,
                         Perturbations=Perturbations,
-                        Tdt_ro=Tdt_ro, err_tol=err_tol,
+#NOTE Tdt_ro is not None for validation mode                        
+                        Tdt_ro=None, err_tol=err_tol,
                         vision_processor=vision_processor,
                         validation_mode=validation_mode
                         )
@@ -406,8 +410,9 @@ def generate_rollout_data(cohort_name:str,method_name:str,
                         save_rollouts(
                             cohort_path, course_name, 
                             Trajectories, Images, Img_data, 
-                            tXUi, traj_idx, validation_mode=validation_mode
+                            tXUi, stack_id, validation_mode=validation_mode
                         )
+                        stack_id += 1
                         data_count += sum(r["Ndata"] for r in Trajectories)
 
                     print(f"Trajectory {traj_idx} generated {data_count} data points")
@@ -663,14 +668,16 @@ def generate_rollouts(
 
         obj = np.zeros((18,1))
 
-        if not isinstance(Tdt_ro, int):
-            Tdt_ro = tXUd[0,-1] - tXUd[0,0]
-
         rolling_idx = 0
         # Rollout the trajectories
         for idx, (frame_config, perturbation) in enumerate(zip(Frames, Perturbations)):
             # Unpack rollout variables
             t0, x0 = perturbation["t0"], perturbation["x0"]
+
+#NOTE Validation specific behavior
+            if not isinstance(Tdt_ro, int):
+                Tdt_ro = tXUd[0,-1] - t0
+
             tf = t0 + Tdt_ro
 
             # Load the simulation variables
@@ -834,7 +841,7 @@ def save_rollouts(
     if validation_mode:
         # validation frames
         all_val   = [f for entry in Images for f in entry.get("val_images", [])]
-        du.save_images_as_video(all_val, video_rollout_data_set_path)
+        du.save_images_as_video(all_val, video_data_set_path)
 
         has_roll = any("val_rollout_images" in entry for entry in Images)
         if has_roll:

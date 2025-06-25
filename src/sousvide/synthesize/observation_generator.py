@@ -7,6 +7,7 @@ from typing import Dict,Union,List
 import sousvide.synthesize.data_utils as du
 
 from sousvide.control.pilot import Pilot
+from tqdm import tqdm
 
 def generate_observation_data(
     cohort: str,
@@ -41,12 +42,14 @@ def generate_observation_data(
                 # pick up val vs rollout files
                 traj_files = sorted([f for f in os.listdir(folder) if f.startswith("trajectories_val") and f.endswith(".pt")])
                 img_files  = sorted([f for f in os.listdir(folder) if f.startswith("imgdata_val") and f.endswith(".pt")])
-                vid_val    = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith("video_val") and f.endswith(".mp4")])
-                vid_roll   = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith("video_rollout") and f.endswith(".mp4")])
+                vid_val    = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith("video_val") and not f.startswith("video_val_rollout") and f.endswith(".mp4")])
+                vid_roll   = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith("video_val_rollout") and f.endswith(".mp4")])
+
+                print(f"Course {course}: Found {len(traj_files)} trajectory files, {len(img_files)} image files, {len(vid_val)} validation videos, and {len(vid_roll)} rollout videos.")
 
                 has_roll = len(vid_roll) > 0
                 if has_roll:
-                    for tfile, ifile, vval, vrol in zip(traj_files, img_files, vid_val, vid_roll):
+                    for tfile, ifile, vval, vrol in tqdm(zip(traj_files, img_files, vid_val, vid_roll), total=len(traj_files), desc=f"Processing Rollout & Validation Files for Course: {course}"):
                         traj_ds = torch.load(os.path.join(folder, tfile))
                         img_ds  = torch.load(os.path.join(folder, ifile))
 
@@ -59,7 +62,6 @@ def generate_observation_data(
                             validation_mode=True,
                             suffix="val"
                         )
-
                         # Observations on rollout-validation video
                         obs_rol = generate_observations(pilot, traj_ds, img_ds, vrol, subsample)
                         Nobs += obs_rol["Nobs"]
@@ -69,20 +71,20 @@ def generate_observation_data(
                             validation_mode=True,
                             suffix="val_rollout"
                         )
-                    else:
-                        for tfile, ifile, vval in zip(traj_files, img_files, vid_val):
-                            traj_ds = torch.load(os.path.join(folder, tfile))
-                            img_ds  = torch.load(os.path.join(folder, ifile))
+                else:
+                    for tfile, ifile, vval in tqdm(zip(traj_files, img_files, vid_val), total=len(traj_files), desc=f"Processing Validation Files for Course: {course}"):
+                        traj_ds = torch.load(os.path.join(folder, tfile))
+                        img_ds  = torch.load(os.path.join(folder, ifile))
 
-                            # Observations on semantic-validation video
-                            obs_val = generate_observations(pilot, traj_ds, img_ds, vval, subsample)
-                            Nobs += obs_val["Nobs"]
-                            save_observations(
-                                cohort_path, course, pilot.name,
-                                obs_val,
-                                validation_mode=True,
-                                suffix="val"
-                            )
+                        # Observations on semantic-validation video
+                        obs_val = generate_observations(pilot, traj_ds, img_ds, vval, subsample)
+                        Nobs += obs_val["Nobs"]
+                        save_observations(
+                            cohort_path, course, pilot.name,
+                            obs_val,
+                            validation_mode=True,
+                            suffix="val"
+                        )
             else:
                 traj_files = sorted([f for f in os.listdir(folder)
                                      if f.startswith("trajectories") and not f.startswith("trajectories_val") and f.endswith(".pt")])
@@ -91,7 +93,9 @@ def generate_observation_data(
                 vid_files  = sorted([os.path.join(folder, f) for f in os.listdir(folder)
                                      if f.startswith("video") and not f.startswith("video_val") and f.endswith(".mp4")])
 
-                for tfile, ifile, vid in zip(traj_files, img_files, vid_files):
+                print(f"Course {course}: Found {len(traj_files)} trajectory files, {len(img_files)} image files, {len(vid)} training videos.")
+
+                for tfile, ifile, vid in tqdm(zip(traj_files, img_files, vid_files), total=len(traj_files), desc=f"Processing Training Files for Course: {course}"):
                     traj_ds = torch.load(os.path.join(folder, tfile))
                     img_ds  = torch.load(os.path.join(folder, ifile))
 
