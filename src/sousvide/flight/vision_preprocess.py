@@ -4,6 +4,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
+from skimage.segmentation import slic
+from skimage.metrics import structural_similarity as ssim
+from scipy.stats import mode
+
 import torch
 import torch.nn.functional as F
 if not hasattr(torch, "get_default_device"):
@@ -19,234 +23,6 @@ from typing import Any, List, Optional, Tuple, Type, Union
 
 from transformers import CLIPSegProcessor, CLIPSegForImageSegmentation
 
-#############################################
-# 1. Initialize CLIPSeg Model and Processor #
-#############################################
-
-# class CLIPSegONNXModel:
-#     def __init__(
-#         self,
-#         onnx_path: str,
-#         hf_model: str = "CIDAS/clipseg-rd64-refined",
-#         device: Optional[str] = None,
-#         providers: Optional[list] = None,
-#         cmap: str = "turbo",
-#     ):
-#         # Choose torch device
-#         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-#         # HF processor
-#         self.processor = CLIPSegProcessor.from_pretrained(hf_model, use_fast=True)
-#         # ORT session
-#         so = ort.SessionOptions()
-#         so.log_severity_level = 2
-#         provs = providers or (["CUDAExecutionProvider"] if "cuda" in self.device else ["CPUExecutionProvider"])
-#         self.session = ort.InferenceSession(onnx_path, sess_options=so, providers=provs)
-#         # Cache output name
-#         self.output_name = self.session.get_outputs()[0].name
-#         # LUT for colorization
-#         self.lut = get_colormap_lut(cmap_name=cmap)
-
-#     # def _preprocess(self, image: Image.Image, prompt: str) -> dict:
-#     #     inputs = self.processor(images=image, text=prompt, return_tensors="pt")
-#     #     for k, v in inputs.items():
-#     #         inputs[k] = v.to(self.device)
-#     #     return {
-#     #         "pixel_values": inputs["pixel_values"].cpu().numpy(),
-#     #         "input_ids":     inputs["input_ids"].cpu().numpy(),
-#     #         "attention_mask":inputs["attention_mask"].cpu().numpy(),
-#     #     }
-#     def _preprocess_tensors(self, image: Image.Image, prompt: str) -> dict:
-#         """
-#         Returns torch.Tensor dict on self.device, casting ints to int32 for ONNX.
-#         """
-#         inputs = self.processor(images=image, text=prompt, return_tensors="pt")
-#         # move to device
-#         for k, v in inputs.items():
-#             inputs[k] = v.to(self.device)
-#         # cast input_ids and attention_mask to int32 for compatibility
-#         inputs["input_ids"] = inputs["input_ids"].to(torch.int32)
-#         inputs["attention_mask"] = inputs["attention_mask"].to(torch.int32)
-#         return inputs
-
-#     def _preprocess_numpy(self, image: Image.Image, prompt: str) -> dict:
-#         """
-#         Returns NumPy inputs via CPU, casting ints to int32 for ONNX.
-#         """
-#         inputs = self.processor(images=image, text=prompt, return_tensors="np")
-#         return {
-#             "pixel_values": inputs["pixel_values"].astype(np.float32),
-#             "input_ids":     inputs["input_ids"].astype(np.int32),
-#             "attention_mask":inputs["attention_mask"].astype(np.int32),
-#         }
-
-#     # def _postprocess(
-#     #     self,
-#     #     logits: np.ndarray,
-#     #     target_size: Optional[Tuple[int, int]] = None
-#     # ) -> np.ndarray:
-#     #     # logits: (1, H, W) or (1,1,H,W)
-#     #     pm = logits.squeeze(0).squeeze(0)  # (H, W)
-#     #     mn, mx = pm.min(), pm.max()
-#     #     if mx - mn < 1e-9:
-#     #         scaled = np.zeros_like(pm, dtype=np.float32)
-#     #     else:
-#     #         scaled = (pm - mn) / (mx - mn)
-#     #     mask_u8 = (scaled * 255).astype(np.uint8)
-#     #     # resize if needed
-#     #     if target_size and mask_u8.shape[::-1] != target_size:
-#     #         mask_u8 = np.array(
-#     #             Image.fromarray(mask_u8)
-#     #                  .resize(target_size, resample=Image.BILINEAR)
-#     #         )
-#     #     return colorize_mask_fast(mask_u8, self.lut)
-#     def _postprocess(
-#         self,
-#         logits: np.ndarray,
-#         target_size: Optional[Tuple[int, int]] = None
-#     ) -> np.ndarray:
-#         # Handle various output shapes: [1,1,H,W], [1,H,W], or [H,W]
-#         arr = logits
-#         if arr.ndim == 4:
-#             pm = arr[0, 0]
-#         elif arr.ndim == 3:
-#             pm = arr[0]
-#         elif arr.ndim == 2:
-#             pm = arr
-#         else:
-#             raise ValueError(f"Unexpected logits shape: {arr.shape}")
-#         mn, mx = pm.min(), pm.max()
-#         if mx - mn < 1e-9:
-#             scaled = np.zeros_like(pm, dtype=np.float32)
-#         else:
-#             scaled = (pm - mn) / (mx - mn)
-#         mask_u8 = (scaled * 255).astype(np.uint8)
-#         if target_size and mask_u8.shape[::-1] != target_size:
-#             mask_u8 = np.array(
-#                 Image.fromarray(mask_u8)
-#                      .resize(target_size, resample=Image.BILINEAR)
-#             )
-#         return colorize_mask_fast(mask_u8, self.lut)
-
-#     # def clipseg_onnx_inference(
-#     #     self,
-#     #     image: Image.Image,
-#     #     prompt: str,
-#     #     resize_output_to_input: bool = True
-#     # ) -> np.ndarray:
-#     #     """
-#     #     Default inference using GPU I/O binding.
-#     #     Returns a colorized NumPy array (H, W, 3) uint8.
-#     #     """
-#     #     # 1) preprocess to torch tensors
-#     #     inputs = self.processor(images=image, text=prompt, return_tensors="pt")
-#     #     for k, v in inputs.items():
-#     #         inputs[k] = v.to(self.device)
-
-#     #     # 2) bind I/O
-#     #     io_binding = self.session.io_binding()
-#     #     def bind_input(name, tensor):
-#     #         io_binding.bind_input(
-#     #             name=name,
-#     #             device_type=self.device,
-#     #             device_id=0,
-#     #             element_type=np.float32 if tensor.dtype==torch.float32 else np.int64,
-#     #             shape=tuple(tensor.shape),
-#     #             buffer_ptr=tensor.data_ptr(),
-#     #         )
-#     #     # bind inputs
-#     #     bind_input("pixel_values", inputs["pixel_values"])
-#     #     bind_input("input_ids", inputs["input_ids"])
-#     #     bind_input("attention_mask", inputs["attention_mask"])
-
-#     #     # 3) prepare output buffer
-#     #     b, _, H, W = inputs["pixel_values"].shape
-#     #     out_tensor = torch.empty((b, H, W), dtype=torch.float32, device=self.device)
-#     #     io_binding.bind_output(
-#     #         name=self.output_name,
-#     #         device_type=self.device,
-#     #         device_id=0,
-#     #         element_type=ort.TensorProto.FLOAT,
-#     #         shape=tuple(out_tensor.shape),
-#     #         buffer_ptr=out_tensor.data_ptr(),
-#     #     )
-
-#     #     # 4) run
-#     #     self.session.run_with_iobinding(io_binding)
-
-#     #     # 5) postprocess
-#     #     logits = out_tensor.cpu().numpy()
-#     #     size   = image.size if resize_output_to_input else None
-#     #     return self._postprocess(logits, target_size=size)
-#     def clipseg_onnx_inference(
-#         self,
-#         image: Union[Image.Image, np.ndarray],
-#         prompt: str,
-#         resize_output_to_input: bool = True
-#     ) -> np.ndarray:
-#         """
-#         Returns a colorized mask (H,W,3 uint8).
-#         Prefers GPU I/O binding if CUDAExecutionProvider is active; otherwise falls back to CPU run().
-#         """
-
-#         if isinstance(image, np.ndarray):
-#             # If it's BGRA/BGR from OpenCV, strip alpha & convert
-#             if image.ndim == 3 and image.shape[2] == 4:
-#                 image = image[..., :3]
-#             # assume BGR if dtype is uint8 and colors look like OpenCV;
-#             # if you know it’s already RGB you can skip the cvtColor
-#             image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-
-#         elif not isinstance(image, Image.Image):
-#             raise TypeError(f"Unsupported input type {type(image)}; expected PIL.Image or ndarray")
-        
-#         if resize_output_to_input:
-#         # now that image is a PIL, image.size == (W, H)
-#             target_size = image.size
-#         else:
-#             target_size = None
-
-
-#         providers = self.session.get_providers()
-#         target_size = image.size if resize_output_to_input else None
-
-
-#         # GPU I/O binding path
-#         if "CUDAExecutionProvider" in providers:
-#             tensors = self._preprocess_tensors(image, prompt)
-#             io_binding = self.session.io_binding()
-#             # bind inputs
-#             for name in ["pixel_values", "input_ids", "attention_mask"]:
-#                 t = tensors[name]
-#                 io_binding.bind_input(
-#                     name=name,
-#                     device_type=self.device,
-#                     device_id=0,
-#                     element_type=np.float32 if t.dtype==torch.float32 else np.int64,
-#                     shape=tuple(t.shape),
-#                     buffer_ptr=t.data_ptr(),
-#                 )
-#             # bind output
-#             b, _, H, W = tensors["pixel_values"].shape
-#             out = torch.empty((b, H, W), dtype=torch.float32, device=self.device)
-#             io_binding.bind_output(
-#                 name=self.output_name,
-#                 device_type=self.device,
-#                 device_id=0,
-#                 element_type=np.float32,
-#                 shape=tuple(out.shape),
-#                 buffer_ptr=out.data_ptr(),
-#             )
-#             self.session.run_with_iobinding(io_binding)
-#             logits = out.cpu().numpy()
-
-#         # CPU path
-#         else:
-#             np_inputs = self._preprocess_numpy(image, prompt)
-#             outputs = self.session.run([self.output_name], np_inputs)
-#             logits = outputs[0]
-
-#         return self._postprocess(logits, target_size=target_size)
-    
 class CLIPSegHFModel:
     def __init__(
         self,
@@ -281,6 +57,17 @@ class CLIPSegHFModel:
         # self.running_max = 1.0
         # self.eps = 1e-10
 
+        # initialize frame cache
+        self.prev_image = None
+        self.prev_output = None
+
+        # ema for smoothing
+        self.segmentation_ema = None
+        self.ema_alpha = 0.7  # adjust between [0.0, 1.0]; higher = more current weight
+        self.last_superpixel_mask = None
+        self.superpixel_every = 1  # update superpixels every N frames
+        self.frame_counter = 0
+
     def _rescale_global(self, arr: np.ndarray) -> np.ndarray:
         """
         Rescale `arr` to [0,1] using the min/max seen so far (updated here).
@@ -291,255 +78,255 @@ class CLIPSegHFModel:
         self.running_max = max(self.running_max, cur_max)
         # print(f"Running bounds: min={self.running_min}, max={self.running_max}")
         # print(f"Current bounds: min={cur_min}, max={cur_max}")
-        span = self.running_max - self.running_min + 1e-10
-        return (arr - self.running_min) / span
-    
-        # cur_min = float(arr.min())
-        # if self.running_min is None:
-        #     # first frame: seed the low‐end
-        #     self.running_min = cur_min
-        # else:
-        #     # subsequent frames: only ever reduce the low‐end
-        #     self.running_min = min(self.running_min, cur_min)
-        # # note: running_max stays at 1.0
-        # span = self.running_max - self.running_min + self.eps
-        # return (arr - self.running_min) / span
+        span = self.running_max - self.running_min
+        if span < 1e-9:
+            scaled = np.zeros_like(arr, dtype=np.float32)
+        else:
+            scaled = (arr - self.running_min) / span
+        return scaled
 
     def clipseg_hf_inference(
         self,
         image: Union[Image.Image, np.ndarray],
         prompt: str,
-        resize_output_to_input: bool = True
+        resize_output_to_input: bool = True,
+        use_refinement: bool = True,
+        scene_change_threshold: float = 1.00,
+        verbose=False
     ) -> np.ndarray:
         """
         Run CLIPSeg on a PIL image or numpy array, return colorized mask as (H,W,3) uint8.
         """
-        # 1) ensure PIL
+        def log(*args, **kwargs):
+            if verbose:
+                print(*args, **kwargs)
+
+        # --- Step 1: Normalize input to PIL + NumPy ---
         if isinstance(image, np.ndarray):
-            # handle BGR->RGB if needed
-            if image.ndim == 3 and image.shape[2] == 3:
-                img = Image.fromarray(image)
-            else:
-                img = Image.fromarray(image)
+            img = Image.fromarray(image)
+            image_np = image
         elif isinstance(image, Image.Image):
             img = image
+            image_np = np.array(image)
         else:
             raise TypeError(f"Unsupported image type {type(image)}")
-        
-        skip_norm = isinstance(prompt, str) and prompt.strip().lower() == "null"
 
-        # 2) preprocess
+        # --- Step 2: Determine whether to reuse ---
+        should_reuse = False
+        ssim_score = None
+        if self.prev_image is not None and self.prev_output is not None:
+            # Compare resized grayscale SSIM
+            prev_small = cv2.resize(self.prev_image, (64, 64))
+            curr_small = cv2.resize(image_np, (64, 64))
+            prev_gray = cv2.cvtColor(prev_small, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+            curr_gray = cv2.cvtColor(curr_small, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+            ssim_score = ssim(prev_gray, curr_gray, data_range=1.0)
+            should_reuse = ssim_score >= scene_change_threshold
+            log(f"[DEBUG] SSIM = {ssim_score:.4f}, Threshold = {scene_change_threshold}, Reuse = {should_reuse}")
+
+        # --- Step 3: Reuse path (warp previous mask) ---
+        if should_reuse:
+            mask_u8 = warp_mask(self.prev_image, image_np, self.prev_output)
+            # Optional: fast filtering
+            mask_u8 = cv2.bilateralFilter(mask_u8, d=7, sigmaColor=75, sigmaSpace=75)
+            colorized = colorize_mask_fast(mask_u8, self.lut)
+            overlayed = blend_overlay_gpu(image_np, colorized)
+            return overlayed
+
+        # --- Step 4: Run inference (scene has changed) ---
+        start = time.time()
         inputs = self.processor(images=img, text=prompt, return_tensors="pt")
-        inputs = {k: v.to(self.device) for k,v in inputs.items()}
-
-        # 3) inference
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
         with torch.no_grad():
-            outputs = self.model(**inputs)
-            logits = outputs.logits  # shape [1,1,H,W]
+            logits = self.model(**inputs).logits  # [1,1,H,W]
 
-        # 4) postprocess logits to (H,W)
         arr = logits.cpu().squeeze().numpy().astype(np.float32)
+        skip_norm = prompt.strip().lower() == "null"
         if skip_norm:
-            # apply sigmoid directly
             prob = 1.0 / (1.0 + np.exp(-arr))
             mask_u8 = (prob * 255).astype(np.uint8)
         else:
-            mn, mx = arr.min(), arr.max()
-            if mx - mn < 1e-9:
-                scaled = np.zeros_like(arr)
-            else:
-                scaled = (arr - mn) / (mx - mn)
+            scaled = self._rescale_global(arr)
             mask_u8 = (scaled * 255).astype(np.uint8)
-            # # prob = 1.0 / (1.0 + np.exp(-arr))
-            # # scaled = prob
-            # scaled = self._rescale_global(arr)
-            # mask_u8 = (scaled * 255).astype(np.uint8)
 
-        # arr = logits.cpu().squeeze()  # remove batch and channel dims
-        # # arr may now be [H,W]
-        # pm = arr.numpy().astype(np.float32)
-        # # normalize
-        # mn, mx = pm.min(), pm.max()
-        # if mx - mn < 1e-9:
-        #     norm = np.zeros_like(pm)
-        # else:
-        #     norm = (pm - mn) / (mx - mn)
-        # mask_u8 = (norm * 255).astype(np.uint8)
-
-        # 5) resize if needed
         if resize_output_to_input:
-            target_size = img.size  # (W,H)
-            mask_u8 = np.array(
-                Image.fromarray(mask_u8).resize(target_size, resample=Image.BILINEAR)
+            mask_u8 = np.array(Image.fromarray(mask_u8).resize(img.size, resample=Image.BILINEAR))
+
+        # --- Step 5: Post-processing only on fresh inference ---
+        # Temporal EMA
+        mask_f = mask_u8.astype(np.float32)
+        if self.segmentation_ema is None or self.segmentation_ema.shape != mask_f.shape:
+            self.segmentation_ema = mask_f.copy()
+        else:
+            self.segmentation_ema = (
+                self.ema_alpha * mask_f + (1 - self.ema_alpha) * self.segmentation_ema
             )
+        mask_u8 = np.clip(self.segmentation_ema, 0, 255).astype(np.uint8)
 
-        # 6) colorize
+        # Optional filtering
+        mask_u8 = cv2.bilateralFilter(mask_u8, d=7, sigmaColor=75, sigmaSpace=75)
+
+        # Optional: superpixel refinement
+        if use_refinement:
+            self.frame_counter += 1
+            if self.frame_counter % self.superpixel_every == 0:
+                # self.last_superpixel_mask = superpixel_smoothing(image_np, mask_u8)
+                self.last_superpixel_mask = fast_superpixel_seeds(image_np, mask_u8)
+            if self.last_superpixel_mask is not None:
+                mask_u8 = self.last_superpixel_mask
+
+        # --- Step 6: Render and cache ---
         colorized = colorize_mask_fast(mask_u8, self.lut)
-        overlayed = blend_overlay_gpu(image, colorized)
+        overlayed = blend_overlay_gpu(image_np, colorized)
+
+        # Store just raw mask + image for reuse
+        self.prev_image = image_np.copy()
+        self.prev_output = mask_u8.copy()
+        # # --- Step 1: Convert to PIL and NumPy ---
+        # if isinstance(image, np.ndarray):
+        #     img = Image.fromarray(image)
+        #     image_np = image
+        # elif isinstance(image, Image.Image):
+        #     img = image
+        #     image_np = np.array(image)
+        # else:
+        #     raise TypeError(f"Unsupported image type {type(image)}")
+        
+        # start = time.time()
+        # # --- Step 2: Decide whether to reuse previous output ---
+        # should_reuse = False
+        # ssim_score = None
+
+        # if self.prev_image is not None:
+        #     # Compute SSIM
+        #     prev_small = cv2.resize(self.prev_image, (64, 64))
+        #     curr_small = cv2.resize(image_np, (64, 64))
+        #     prev_gray = cv2.cvtColor(prev_small, cv2.COLOR_RGB2GRAY)
+        #     curr_gray = cv2.cvtColor(curr_small, cv2.COLOR_RGB2GRAY)
+        #     ssim_score = ssim(prev_gray, curr_gray, data_range=1.0)
+
+        #     if ssim_score > scene_change_threshold:
+        #         mask_u8 = warp_mask(prev_gray, image_np, self.prev_output)
+        #         should_reuse = True
+        #     log(f"[DEBUG] SSIM = {ssim_score:.4f}, Threshold = {scene_change_threshold}, Reuse = {ssim_score >= scene_change_threshold}")
+
+        #     # Determine reuse
+        #     should_reuse = ssim_score >= scene_change_threshold
+
+        # if should_reuse and self.prev_output is not None:
+        #     log(f"[DEBUG] Reusing previous output | SSIM = {ssim_score:.4f} ≥ {scene_change_threshold}")
+        #     return self.prev_output
+
+        # # --- 3. Run CLIPSeg inference ---
+        # if not should_reuse:
+        #     inputs = self.processor(images=img, text=prompt, return_tensors="pt")
+        #     inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        #     with torch.no_grad():
+        #         outputs = self.model(**inputs)
+        #         logits = outputs.logits  # shape [1, 1, H, W]
+
+        #     arr = logits.cpu().squeeze().numpy().astype(np.float32)
+        #     skip_norm = prompt.strip().lower() == "null"
+
+        #     if skip_norm:
+        #         prob = 1.0 / (1.0 + np.exp(-arr))
+        #         mask_u8 = (prob * 255).astype(np.uint8)
+        #     else:
+        #         scaled = self._rescale_global(arr)
+        #         mask_u8 = (scaled * 255).astype(np.uint8)
+
+        # # --- 4. Resize to input resolution if needed ---
+        # if resize_output_to_input:
+        #     target_size = img.size  # (W, H)
+        #     mask_u8 = np.array(
+        #         Image.fromarray(mask_u8).resize(target_size, resample=Image.BILINEAR)
+        #     )
+
+        # # --- 5. Postprocessing: guided + superpixel ---
+        # if not should_reuse:
+        #     if mask_u8.shape != image_np.shape[:2]:
+        #         mask_u8 = cv2.resize(mask_u8, (image_np.shape[1], image_np.shape[0]), interpolation=cv2.INTER_LINEAR)
+        #     # === [ Temporal smoothing via EMA ] ===
+        #     mask_f = mask_u8.astype(np.float32)
+        #     if self.segmentation_ema is None or self.segmentation_ema.shape != mask_f.shape:
+        #         self.segmentation_ema = mask_f.copy()
+        #     else:
+        #         self.segmentation_ema = (
+        #             self.ema_alpha * mask_f + (1 - self.ema_alpha) * self.segmentation_ema
+        #         )
+        #     mask_u8 = np.clip(self.segmentation_ema, 0, 255).astype(np.uint8)
+        #     # mask_u8 = guided_smoothing(image_np, mask_u8)
+        #     mask_u8 = cv2.bilateralFilter(mask_u8, d=7, sigmaColor=75, sigmaSpace=75)
+        #     # === [ Superpixel smoothing every N frames ] ===
+        #     if use_refinement:
+        #         self.frame_counter += 1
+        #         if self.frame_counter % self.superpixel_every == 0:
+        #             self.last_superpixel_mask = superpixel_smoothing(image_np, mask_u8)
+        #         if self.last_superpixel_mask is not None:
+        #             mask_u8 = self.last_superpixel_mask
+
+        # # --- 6. Colorize and overlay ---
+        # colorized = colorize_mask_fast(mask_u8, self.lut)
+        # overlayed = blend_overlay_gpu(image_np, colorized)
+
+        # # --- 7. Cache for reuse ---
+        # self.prev_image = image_np.copy()
+        # self.prev_output = mask_u8.copy()
+        # # 1) ensure PIL
+        # # if isinstance(image, np.ndarray):
+        # #     # handle BGR->RGB if needed
+        # #     if image.ndim == 3 and image.shape[2] == 3:
+        # #         img = Image.fromarray(image)
+        # #     else:
+        # #         img = Image.fromarray(image)
+        # # elif isinstance(image, Image.Image):
+        # #     img = image
+        # # else:
+        # #     raise TypeError(f"Unsupported image type {type(image)}")
+        
+        # # skip_norm = isinstance(prompt, str) and prompt.strip().lower() == "null"
+
+        # # # 2) preprocess
+        # # inputs = self.processor(images=img, text=prompt, return_tensors="pt")
+        # # inputs = {k: v.to(self.device) for k,v in inputs.items()}
+
+        # # # 3) inference
+        # # with torch.no_grad():
+        # #     outputs = self.model(**inputs)
+        # #     logits = outputs.logits  # shape [1,1,H,W]
+
+        # # # 4) postprocess logits to (H,W)
+        # # arr = logits.cpu().squeeze().numpy().astype(np.float32)
+        # # if skip_norm:
+        # #     # apply sigmoid directly
+        # #     prob = 1.0 / (1.0 + np.exp(-arr))
+        # #     mask_u8 = (prob * 255).astype(np.uint8)
+        # # else:
+        # #     scaled = self._rescale_global(arr)
+        # #     mask_u8 = (scaled * 255).astype(np.uint8)
+
+        # # # 5) resize if needed
+        # # if resize_output_to_input:
+        # #     target_size = img.size  # (W,H)
+        # #     mask_u8 = np.array(
+        # #         Image.fromarray(mask_u8).resize(target_size, resample=Image.BILINEAR)
+        # #     )
+        
+        # # # # === [ NEW ] Edge-aware + spatial consistency refinement === #
+        # # # image_np = np.array(img)
+        # # # # 7) Guided smoothing
+        # # # mask_u8 = guided_smoothing(image_np, mask_u8)
+
+        # # # # 8) Superpixel smoothing
+        # # # mask_u8 = superpixel_smoothing(image_np, mask_u8)
+        # # # # =========================================================== #
+
+        # # # 6) colorize
+        # # colorized = colorize_mask_fast(mask_u8, self.lut)
+        # # overlayed = blend_overlay_gpu(image, colorized)
+        end = time.time()
+        log(f"CLIPSeg inference time: {end - start:.3f} seconds")
         return overlayed
-
-# class CLIPSegModel:
-#     def __init__(
-#         self,
-#         hf_model: str = "CIDAS/clipseg-rd64-refined",
-#         device: Optional[str] = None,
-#         cmap: str = "turbo",
-#     ):
-#         # Choose torch device
-#         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-#         # HF processor
-#         self.processor = CLIPSegProcessor.from_pretrained(hf_model, use_fast=True)
-
-#     def clipseg_inference(
-#         image: Image.Image,
-#         prompt: str,
-#         processor: CLIPSegProcessor,
-#         model: CLIPSegForImageSegmentation,
-#         device: str,
-#         resize_output_to_input: bool = True
-#     ) -> Image.Image:
-#         """
-#         Given a PIL image and a text prompt, return a single-channel mask 
-#         (0-255) from CLIPSeg representing semantic probability.
-#         """
-#         # 1. Preprocess inputs for CLIPSeg
-#         inputs = processor(text=prompt, images=image, return_tensors="pt")
-#         for k, v in inputs.items():
-#             inputs[k] = v.to(device)
-        
-#         # 2. Forward pass
-#         with torch.no_grad():
-#             outputs = model(**inputs)
-#             # with torch.cuda.amp.autocast():
-#             #     outputs = model(**inputs)
-#             # Use outputs.logits instead of outputs.pred_masks (depends on HF version)
-#             prob_map = outputs.logits #.sigmoid()  # shape: [batch_size, 1, height, width]
-
-#         # 3. Extract the single-channel prob map and convert to PIL
-#         prob_map_2d = prob_map[0].cpu().numpy()
-
-#         # (B) Rescale the clipped logits to [0..1]
-#         current_min = prob_map_2d.min()
-#         current_max = prob_map_2d.max()
-#         range_val = current_max - current_min
-
-#         if range_val < 1e-9:
-#             # If the entire map is the same value, everything becomes 0
-#             scaled_prob_map = np.zeros_like(prob_map_2d, dtype=np.float32)
-#         else:
-#             scaled_prob_map = (prob_map_2d - current_min) / range_val  # => [0..1]
-
-#         mask_pil = Image.fromarray((scaled_prob_map * 255).astype(np.uint8))
-        
-#         # 4. Optionally resize back to original resolution
-#         if resize_output_to_input:
-#             mask_pil = mask_pil.resize(image.size, resample=Image.BILINEAR)
-        
-#         return mask_pil
-
-
-# def init_clipseg_model(
-#     model_name: str = "CIDAS/clipseg-rd64-refined",
-#     device: str = None
-# ):
-#     """
-#     Load the CLIPSeg model and processor from HuggingFace.
-#     """
-#     if device is None:
-#         device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-#     processor = CLIPSegProcessor.from_pretrained(model_name)
-#     model = CLIPSegForImageSegmentation.from_pretrained(model_name)
-#     model.to(device)
-    
-#     return processor, model, device
-
-# def clipseg_preprocess(frame_bgra):
-#     # Convert BGRA → BGR (strip alpha), then → RGB
-#     bgr = frame_bgra[..., :3]
-#     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-
-# def clipseg_inference_onnx_gpu(
-#     image: Image.Image,
-#     prompt: str,
-#     processor,
-#     session: ort.InferenceSession,
-#     resize_output_to_input: bool = True,
-#     device="cuda"
-# ) -> Image.Image:
-#     import torch
-#     device = torch.device(device)  # Convert device string to torch.device
-
-#     # 1. Preprocess input on GPU
-#     inputs = processor(images=image, text=prompt, return_tensors="pt")
-#     pixel_values = inputs["pixel_values"].to(device)
-#     input_ids = inputs["input_ids"].to(device)
-#     attention_mask = inputs["attention_mask"].to(device)
-
-#     # 2. Prepare IO binding
-#     io_binding = session.io_binding()
-
-#     def bind_tensor(name, tensor):
-#         io_binding.bind_input(
-#             name=name,
-#             device_type=device.type,  # e.g., 'cuda'
-#             device_id=device.index if device.index is not None else 0,
-#             element_type=np.float32 if tensor.dtype == torch.float32 else np.int64,
-#             shape=tuple(tensor.shape),
-#             buffer_ptr=tensor.data_ptr(),
-#         )
-
-#     # Bind inputs
-#     bind_tensor("pixel_values", pixel_values)
-#     bind_tensor("input_ids", input_ids)
-#     bind_tensor("attention_mask", attention_mask)
-
-#     # 3. Prepare GPU output buffer
-#     output_name = session.get_outputs()[0].name
-#     output_shape = session.get_outputs()[0].shape  # e.g. [1, 1, None, None]
-#     # Convert dynamic dimensions to fixed integers.
-#     fixed_output_shape = []
-#     for i, dim in enumerate(output_shape):
-#         if isinstance(dim, int):
-#             fixed_output_shape.append(dim)
-#         else:
-#             # For dynamic dimensions, assume they match the corresponding dimension of the input.
-#             # For CLIPSeg, outputs are typically of shape [1, 1, H, W] where H, W come from the input.
-#             if i < len(pixel_values.shape):
-#                 fixed_output_shape.append(pixel_values.shape[i])
-#             else:
-#                 fixed_output_shape.append(224)  # fallback fixed size if needed
-#     fixed_output_shape = tuple(fixed_output_shape)
-
-#     output_array = torch.empty(fixed_output_shape, dtype=torch.float32, device=device)
-#     io_binding.bind_output(
-#         name=output_name,
-#         device_type=device.type,
-#         device_id=device.index if device.index is not None else 0,
-#         element_type=np.float32,
-#         shape=fixed_output_shape,
-#         buffer_ptr=output_array.data_ptr(),
-#     )
-
-#     # 4. Run inference with I/O binding
-#     session.run_with_iobinding(io_binding)
-
-#     # 5. Copy output to CPU for visualization
-#     prob_map = output_array.squeeze().cpu().numpy()  # shape: (H, W)
-
-#     # 6. Normalize and convert to mask
-#     min_val = np.min(prob_map)
-#     max_val = np.max(prob_map)
-#     if max_val - min_val < 1e-9:
-#         scaled = np.zeros_like(prob_map, dtype=np.float32)
-#     else:
-#         scaled = (prob_map - min_val) / (max_val - min_val)
-#     mask_pil = Image.fromarray((scaled * 255).astype(np.uint8))
-
-#     if resize_output_to_input:
-#         mask_pil = mask_pil.resize(image.size, resample=Image.BILINEAR)
-
-#     return mask_pil
 
 ################################################
 # 2. Lookup Table for Semantic Probability Map #
@@ -616,6 +403,92 @@ def blend_overlay_gpu(base: np.ndarray,
     # 6. Clamp to [0,255], cast → uint8, move to CPU, return as H×W×3
     blended = blended.clamp(0, 255).round().byte()                    # [3, H, W]
     return blended.permute(1, 2, 0).cpu().numpy()   
+
+def guided_smoothing(rgb: np.ndarray, seg_mask: np.ndarray, radius=4, eps=1e-3) -> np.ndarray:
+    rgb_float = rgb.astype(np.float32) / 255.0
+    seg_float = seg_mask.astype(np.float32) / 255.0
+    guided = cv2.ximgproc.guidedFilter(guide=rgb_float, src=seg_float, radius=radius, eps=eps)
+    return (guided * 255).astype(np.uint8)
+
+def superpixel_smoothing(image: np.ndarray, seg_mask: np.ndarray, n_segments=500) -> np.ndarray:
+    segments = slic(image, n_segments=n_segments, compactness=10, start_label=0)
+    smoothed = np.zeros_like(seg_mask)
+    for label in np.unique(segments):
+        mask = segments == label
+        values = seg_mask[mask]
+        if values.size == 0:
+            continue  # skip empty segment
+        majority = mode(values, axis=None)[0]
+        smoothed[mask] = majority.item()  # safely extract scalar
+    return smoothed
+
+def fast_superpixel_seeds(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    h, w = image.shape[:2]
+    num_superpixels = 400  # Adjust as needed
+    num_levels = 4
+    prior = 2
+    histogram_bins = 5
+    double_step = False
+
+    seeds = cv2.ximgproc.createSuperpixelSEEDS(
+        w, h, image.shape[2],
+        num_superpixels, num_levels, prior,
+        histogram_bins, double_step
+    )
+
+    seeds.iterate(image, num_iterations=2)  # Keep small
+    labels = seeds.getLabels()
+    out = np.zeros_like(mask)
+
+    for label in np.unique(labels):
+        region = mask[labels == label]
+        if region.size > 0:
+            out[labels == label] = np.bincount(region).argmax()
+    return out
+
+
+def scene_changed(prev: np.ndarray, curr: np.ndarray, threshold=0.02) -> bool:
+    # resize if needed
+    if prev.shape != curr.shape:
+        curr = cv2.resize(curr, (prev.shape[1], prev.shape[0]))
+
+    # normalize
+    prev = prev.astype(np.float32) / 255.0
+    curr = curr.astype(np.float32) / 255.0
+
+    diff = np.mean(np.abs(prev - curr))  # Mean absolute difference
+    return diff > threshold
+
+def scene_changed_ssim(prev: np.ndarray, curr: np.ndarray, threshold=0.95) -> bool:
+    if prev.shape != curr.shape:
+        curr = cv2.resize(curr, (prev.shape[1], prev.shape[0]))
+
+    prev_gray = cv2.cvtColor(prev, cv2.COLOR_RGB2GRAY)
+    curr_gray = cv2.cvtColor(curr, cv2.COLOR_RGB2GRAY)
+    score = ssim(prev_gray, curr_gray, data_range=1.0)
+
+    return score < threshold
+
+def compute_ssim(im1: np.ndarray, im2: np.ndarray) -> float:
+    gray1 = cv2.cvtColor(im1, cv2.COLOR_RGB2GRAY)
+    gray2 = cv2.cvtColor(im2, cv2.COLOR_RGB2GRAY)
+    score, _ = ssim(gray1, gray2, full=True)
+    return score
+
+def warp_mask(prev_rgb, curr_rgb, prev_mask):
+    prev_gray = cv2.cvtColor(prev_rgb, cv2.COLOR_RGB2GRAY)
+    curr_gray = cv2.cvtColor(curr_rgb, cv2.COLOR_RGB2GRAY)
+
+    flow = cv2.calcOpticalFlowFarneback(prev_gray, curr_gray, None,
+                                        pyr_scale=0.5, levels=3, winsize=15,
+                                        iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
+
+    h, w = prev_mask.shape
+    flow_map = np.stack(np.meshgrid(np.arange(w), np.arange(h)), axis=-1).astype(np.float32)
+    remap = flow_map + flow
+    warped = cv2.remap(prev_mask, remap[..., 0], remap[..., 1], interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    return warped.astype(np.uint8)
+
 
 def render_rescale(self, srgb_mono):
     '''This function takes a single channel semantic similarity and rescales it globally'''
