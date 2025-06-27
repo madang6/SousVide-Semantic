@@ -1,7 +1,8 @@
 # Test Campaign Settings and Identifiers
 # cohort: "ssv_multi_CLIPSEG_Overlay_coruscant"
 # cohort: "ssv_multi_CLIPSEG_Only"
-cohort: "ssv_GSPLAT_loiter"
+# cohort: "ssv_GSPLAT_loiter"
+cohort: "ssv_CLIPSEG_NORMAL"
 method: "rrt"
 
 review: false
@@ -12,12 +13,13 @@ Nep_com: 350 #250 already done
 
 # Each entry is a (scene, course) pair
 flights:
-  - ["flightroom_lowres", "flightroom_lowres"]
+  # - ["flightroom_lowres", "flightroom_lowres"]
   # - ["spheres", "spheres"]
   # - ["indooroutdoor", "indooroutdoor"]
   # - ["packardpark", "packardpark"]
+  - ["sv_917_3_left_gemsplat", "sv_917_3_left_gemsplat"]
 
 # List of policy identifiers
-roster: 
+roster: #[]
   - "InstinctJester"
   

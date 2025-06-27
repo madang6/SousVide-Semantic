@@ -5,7 +5,7 @@ CONFIG="/home/admin/StanfordMSL/SousVide-Semantic/configs/experiment/ssv_multi3d
 TMP="/home/admin/StanfordMSL/SousVide-Semantic/configs/experiment/ssv_multi3dgs.tmp.yml"
 
 # reverse order
-FLIGHTS=( "flightroom_lowres" "spheres" "indooroutdoor" "packardpark")
+FLIGHTS=( "sv_917_3_left_gemsplat" "flightroom_lowres" "spheres" "indooroutdoor" "packardpark")
 
 for flight in "${FLIGHTS[@]}"; do
   echo "=== Running flight = $flight ==="
@@ -21,7 +21,7 @@ for flight in "${FLIGHTS[@]}"; do
   args+=( --validation-mode )
 
   args+=( --use-wandb --wandb-project ssv \
-          --wandb-run-id qfb3w4zy --wandb-resume allow )
+          --wandb-run-id dlf34ur2 --wandb-resume allow )
 
   python ssv_multi3dgs_campaign.py "${args[@]}"
 done

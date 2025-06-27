@@ -8,8 +8,8 @@
         "frame": "carl",
         "policy": "vrmpc_rrt",
         "rrt_mode": true,
-        "loitering": true,
-        "clipseg": false,
+        "loitering": false,
+        "clipseg": true,
         "videoMode": true
     },
     "trajectory_set":{

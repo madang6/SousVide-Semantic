@@ -2,6 +2,7 @@ queries: ["mannequin", "textbook on stool", "water barrel"]
 # queries: ["mannequin", "water barrel"]
 # queries: ["textbook on stool"]
 # queries: ["mannequin"]
+# queries: ["water barrel"]
 # semantic_target: "mannequin"
 
 radii:

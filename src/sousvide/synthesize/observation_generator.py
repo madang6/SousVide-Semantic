@@ -93,7 +93,7 @@ def generate_observation_data(
                 vid_files  = sorted([os.path.join(folder, f) for f in os.listdir(folder)
                                      if f.startswith("video") and not f.startswith("video_val") and f.endswith(".mp4")])
 
-                print(f"Course {course}: Found {len(traj_files)} trajectory files, {len(img_files)} image files, {len(vid)} training videos.")
+                print(f"Course {course}: Found {len(traj_files)} trajectory files, {len(img_files)} image files, {len(vid_files)} training videos.")
 
                 for tfile, ifile, vid in tqdm(zip(traj_files, img_files, vid_files), total=len(traj_files), desc=f"Processing Training Files for Course: {course}"):
                     traj_ds = torch.load(os.path.join(folder, tfile))
