@@ -1,0 +1,39 @@
+name: sousvide-semantic
+channels:
+  # - pytorch      # Specific channel for PyTorch packages
+  # - nvidia/label/cuda-11.8.0  # For NVIDIA-specific CUDA tools
+  - conda-forge  # Prefer community-maintained packages first
+  # - fastai       # Added for opencv-python-headless (if necessary)
+  - defaults     # Default channel as fallback
+dependencies:
+  - python=3.10
+  - numpy=1.26.3
+  - scipy
+  - qpsolvers
+  # - albumentations
+  - imageio[ffmpeg]
+  - ninja
+  - gdown
+  - ipykernel
+  - ipympl
+  - matplotlib
+  - tqdm
+  - tabulate
+  - cython
+  # - conda-forge::colmap
+  - conda-forge::captum
+  # - fastai::opencv-python-headless=4.10.0.84
+  # - pytorch=2.1.2
+  # - torchvision=0.16.2
+  # - pytorch-cuda=11.8
+  # - nvidia/label/cuda-11.8.0::cuda-toolkit
+  # - nvidia/label/cuda-11.8.0::cuda-nvcc
+  - pip
+  - pip:
+    # - git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
+    # - nerfstudio==1.1.1
+    - pyrealsense2
+    - -e ./FiGS-Semantic/
+    - -e ./FiGS-Semantic/acados/interfaces/acados_template/
+    # - -e ./FiGS-Semantic/Hierarchical-Localization/
+    - -e .

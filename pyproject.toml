@@ -23,9 +23,8 @@ dependencies = [
     "matplotlib",
     "cython",
     "torch",
-    "torchvision",
-    "nerfstudio",
-]
+    "torchvision"
+    ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
