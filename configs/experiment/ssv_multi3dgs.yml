@@ -2,7 +2,8 @@
 # cohort: "ssv_multi_CLIPSEG_Overlay_coruscant"
 # cohort: "ssv_multi_CLIPSEG_Only"
 # cohort: "ssv_GSPLAT_loiter"
-cohort: "ssv_CLIPSEG_NORMAL"
+# cohort: "ssv_CLIPSEG_NORMAL"
+cohort: "ssv_CLIPSEG_SUPERPIXELS"
 method: "rrt"
 
 review: false

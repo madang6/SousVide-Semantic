@@ -90,7 +90,7 @@ class CLIPSegHFModel:
         image: Union[Image.Image, np.ndarray],
         prompt: str,
         resize_output_to_input: bool = True,
-        use_refinement: bool = False,
+        use_refinement: bool = True,
         scene_change_threshold: float = 1.00,
         verbose=False
     ) -> np.ndarray:

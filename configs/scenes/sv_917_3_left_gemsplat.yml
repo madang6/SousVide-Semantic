@@ -2,6 +2,7 @@ queries: ["microwave","ladder","armchair"]
 # queries: ["microwave", "armchair"]
 # queries: ["nothing"]
 # queries: ["ladder"]
+# queries: ["microwave"]
 # queries: ["armchair"]
 # semantic_target: "mannequin"
 

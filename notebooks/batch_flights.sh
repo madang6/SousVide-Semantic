@@ -21,7 +21,7 @@ for flight in "${FLIGHTS[@]}"; do
   args+=( --validation-mode )
 
   args+=( --use-wandb --wandb-project ssv \
-          --wandb-run-id dlf34ur2 --wandb-resume allow )
+          --wandb-run-id 7gb08mun --wandb-resume allow )
 
   python ssv_multi3dgs_campaign.py "${args[@]}"
 done
