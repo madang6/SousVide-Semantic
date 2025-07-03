@@ -32,7 +32,7 @@ dependencies:
   - pip:
     # - git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
     # - nerfstudio==1.1.1
-    - pyrealsense2
+    # - pyrealsense2
     - -e ./FiGS-Semantic/
     - -e ./FiGS-Semantic/acados/interfaces/acados_template/
     # - -e ./FiGS-Semantic/Hierarchical-Localization/
