@@ -186,6 +186,7 @@ def train_command(
 @app.command()
 def simulate(
     config_file: Path = typer.Option(..., exists=True),
+    verbose: bool = typer.Option(False, help="Enable verbose output"),
     use_wandb: bool = typer.Option(False),
     wandb_project: Optional[str] = typer.Option(None),
     wandb_run_name: Optional[str] = typer.Option(None),
@@ -199,7 +200,7 @@ def simulate(
     init_wandb(cfg, "simulate")
     df.simulate_roster(
         cfg["cohort"], cfg["method"], cfg["flights"], cfg["roster"], 
-        review=cfg["review"]
+        review=cfg["review"],verbose=verbose
     )
 
     if cfg.get("use_wandb"):

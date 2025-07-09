@@ -9,5 +9,6 @@
 **/test_data/
 **/test_space/
 **/wandb/
+**/*.onnx
 **/configs/scenes/*.pkl
 /outputs/

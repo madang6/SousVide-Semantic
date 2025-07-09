@@ -35,6 +35,20 @@ python -m pip install --upgrade pip
 
 pip install numpy==1.26.3
 
+conda deactivate
+```
+4) Install Zed SDK and pyzed (Zed Python bindings)
+Follow instructions on Zed website for this part, including the bindings.
+
+5) Install pyzed in <env-name> and rest of dependencies
+```
+conda activate <env-name>
+
+python3 -m pip install --no-deps \
+--ignore-installed /usr/local/zed/pyzed-5.0-cp310-cp310-linux_aarch64.whl
+
+conda deactivate
+
 conda env update <env-name> environment_x86.yml
 
 pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118

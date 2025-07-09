@@ -35,14 +35,16 @@ import figs.tsampling.build_rrt_dataset as bd
 # import visualize.plot_synthesize as ps
 # import visualize.record_flight as rf
 
-import sousvide.flight.vision_preprocess as vp
+# import sousvide.flight.vision_preprocess as vp
+import sousvide.flight.vision_preprocess_alternate as vp
 
 
 def simulate_roster(cohort_name:str,method_name:str,
                     flights:List[Tuple[str,str]],
                     roster:List[str],
                     use_flight_recorder:bool=False,
-                    review:bool=False):
+                    review:bool=False,
+                    verbose:bool=False):
                     # visualize_rrt:bool=False):
     
     # Some useful path(s)
@@ -54,6 +56,12 @@ def simulate_roster(cohort_name:str,method_name:str,
 
     # Extract scene configs
     scenes_cfg_dir  = os.path.join(workspace_path, "configs", "scenes")
+
+    # Extrac Perception configs
+    perception_cfg_dir = os.path.join(workspace_path, "configs", "perception")
+    with open(os.path.join(perception_cfg_dir, "onnx_benchmark_config.json")) as json_file:
+        perception_config = json.load(json_file)
+    onnx_model_path = perception_config.get("onnx_model_path", None)
         
     with open(method_path) as json_file:
         method_config = json.load(json_file)
@@ -111,9 +119,17 @@ def simulate_roster(cohort_name:str,method_name:str,
 
     if use_clip:
         print("SIL Model set to CLIPSeg.")
-        vision_processor = vp.CLIPSegHFModel(
-            hf_model="CIDAS/clipseg-rd64-refined"
-        )
+        if onnx_model_path is not None:
+            print("Using ONNX model for CLIPSeg.")
+            vision_processor = vp.CLIPSegHFModel(
+                hf_model="CIDAS/clipseg-rd64-refined",
+                onnx_model_path=onnx_model_path
+            )
+        else:
+            print("Using HuggingFace model for CLIPSeg.")
+            vision_processor = vp.CLIPSegHFModel(
+                hf_model="CIDAS/clipseg-rd64-refined"
+            )
     else:
         vision_processor = None
 
@@ -319,12 +335,12 @@ def simulate_roster(cohort_name:str,method_name:str,
                     print(f"simulating loiter trajectory with query: null")
                     Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
                         policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),
-                        query="null",clipseg=vision_processor)
+                        query="null",clipseg=vision_processor,verbose=verbose)
                 else:
                     # Normal simulation for non-loiter trajectories
                     Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
                         policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),
-                        query=obj_name,clipseg=vision_processor)
+                        query=obj_name,clipseg=vision_processor,verbose=verbose)
                 # Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
                 #     policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),query=obj_name,clipseg=vision_processor)
 
