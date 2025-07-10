@@ -95,14 +95,14 @@ class CLIPSegHFModel:
         torch_inputs = {k: v.to(self.device) for k, v in torch_inputs.items()}
 
         # names must match the processor/model
-        input_names = ["pixel_values", "input_ids", "attention_mask"]
-        output_names = ["logits"]
-        dynamic_axes = {
-            "pixel_values":   {0: "batch", 2: "height", 3: "width"},
-            "input_ids":      {0: "batch", 1: "seq_len"},
-            "attention_mask": {0: "batch", 1: "seq_len"},
-            "logits":         {0: "batch", 2: "height", 3: "width"},
-        }
+        # input_names = ["pixel_values", "input_ids", "attention_mask"]
+        # output_names = ["logits"]
+        # dynamic_axes = {
+        #     "pixel_values":   {0: "batch", 2: "height", 3: "width"},
+        #     "input_ids":      {0: "batch", 1: "seq_len"},
+        #     "attention_mask": {0: "batch", 1: "seq_len"},
+        #     "logits":         {0: "batch", 2: "height", 3: "width"},
+        # }
 
         # export
         torch.onnx.export(
@@ -122,6 +122,7 @@ class CLIPSegHFModel:
                 "logits":         {0: "batch", 2: "height", 3: "width"},
             },
             opset_version=17,
+            do_constant_folding=True,
         )
 
     def _rescale_global(self, arr: np.ndarray) -> np.ndarray:
