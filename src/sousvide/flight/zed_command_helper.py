@@ -14,8 +14,6 @@ from px4_msgs.msg import (
     ActuatorMotors
 )
 
-#NOTE 
-#TODO replace get_camera and get_image with the Zed Mini equivalents
 def get_camera(height: int, width: int, fps: int) -> sl.Camera:
     """Initialize the ZED camera."""
     print("Initializing ZED camera if available...")

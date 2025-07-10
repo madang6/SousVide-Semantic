@@ -73,7 +73,7 @@ class CLIPSegHFModel:
             # load the session
             self.ort_session = ort.InferenceSession(
                 onnx_model_path,
-                providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+                providers=["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
             )
             self.use_onnx = True
 
@@ -168,6 +168,7 @@ class CLIPSegHFModel:
         prompt: str,
         resize_output_to_input: bool = True,
         use_refinement: bool = False,
+        use_blending: bool = False,
         scene_change_threshold: float = 1.00,
         verbose=False
     ) -> np.ndarray:
@@ -207,7 +208,10 @@ class CLIPSegHFModel:
             # Optional: fast filtering
             mask_u8 = cv2.bilateralFilter(mask_u8, d=7, sigmaColor=75, sigmaSpace=75)
             colorized = colorize_mask_fast(mask_u8, self.lut)
-            overlayed = blend_overlay_gpu(image_np, colorized)
+            if use_blending:
+                overlayed = blend_overlay_gpu(image_np, colorized)
+            else:
+                overlayed = colorized
             return overlayed
 
         # --- Step 4: Run inference (scene has changed) ---
@@ -257,7 +261,10 @@ class CLIPSegHFModel:
 
         # --- Step 6: Render and cache ---
         colorized = colorize_mask_fast(mask_u8, self.lut)
-        overlayed = blend_overlay_gpu(image_np, colorized)
+        if use_blending:
+            overlayed = blend_overlay_gpu(image_np, colorized)
+        else:
+            overlayed = colorized
 
         # Store just raw mask + image for reuse
         self.prev_image = image_np.copy()
