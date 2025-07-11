@@ -62,8 +62,8 @@ class CLIPSegHFModel:
 
         # ONNX support
         self.use_onnx = False
-        self.ort_session = None
         self.using_fp16 = False
+        self.ort_session = None
         if onnx_model_path is not None:
             if ort is None:
                 raise ImportError(
@@ -79,6 +79,7 @@ class CLIPSegHFModel:
                 self.using_fp16 = True
 
             # load the session
+            print("Available:", ort.get_available_providers())
             so = ort.SessionOptions()
             so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             so.intra_op_num_threads = 1
@@ -88,15 +89,19 @@ class CLIPSegHFModel:
             self.ort_session = ort.InferenceSession(
                 onnx_model_path,
                 sess_options=so,
-                providers=["TensorrtExecutionProvider"]#, "CUDAExecutionProvider", "CPUExecutionProvider"]
+                # providers=["TensorrtExecutionProvider"]#, "CUDAExecutionProvider", "CPUExecutionProvider"]
+                providers=["CUDAExecutionProvider"]
             )
+            print("Session uses:", self.ort_session.get_providers())
             self.io_binding = self.ort_session.io_binding()
             self.use_onnx = True
 
             self._io_binding = None
             self._input_gpu  = None
             self._output_gpu = None
-
+#FIXME:
+            print(">>> ONNX inputs:", [i.name for i in self.ort_session.get_inputs()])
+            print(">>> ONNX outputs:", [o.name for o in self.ort_session.get_outputs()])    
 
 
     def _export_onnx(self, onnx_path: str):
@@ -167,16 +172,19 @@ class CLIPSegHFModel:
     def _convert_to_fp16(self, onnx_path: str, fp16_path: str):
         import onnx
         from onnxconverter_common import float16
-        """Convert an ONNX model to FP16 using the standard converter."""
 
+        # 1) Load the FP32 model
         model = onnx.load(onnx_path)
-
+        # 2) Convert internals to FP16, but KEEP inputs/outputs as FP32
         model_fp16 = float16.convert_float_to_float16(
             model,
-            keep_io_types=False,
+            keep_io_types=True,       # preserve graph I/O as float32
+            disable_shape_infer=False,
+            op_block_list=None,       # no ops forced to stay FP32
+            node_block_list=None
         )
-
-        onnx.save(model_fp16, fp16_path)
+        # 3) Save the converted model
+        onnx.save_model(model_fp16, fp16_path)
 
     def _rescale_global(self, arr: np.ndarray) -> np.ndarray:
         """
@@ -224,11 +232,9 @@ class CLIPSegHFModel:
         # 1) Preprocess on GPU
         torch_inputs = self.processor(images=img, text=prompt, return_tensors="pt")
         if self.using_fp16:
-            # convert to FP16 if needed and move to device
-            torch_inputs = {
-                k: (v.half().to(self.device) if k == "pixel_values" else v.to(self.device))
-                for k, v in torch_inputs.items()
-            }
+            # convert to FP16 if needed
+            torch_inputs = {k: (v.half() if k=="pixel_values" else v)
+                            for k, v in torch_inputs.items()}
         else:
             torch_inputs = {k: v.to(self.device) for k, v in torch_inputs.items()}
 
@@ -264,13 +270,12 @@ class CLIPSegHFModel:
             raise RuntimeError(f"Unsupported logits rank: {len(out_meta.shape)}")
 
         # 5) Allocate & bind output buffer on GPU
-        out_dtype = torch.float16 if self.using_fp16 else torch.float32
-        output_gpu = torch.empty(out_shape, dtype=out_dtype, device=self.device)
+        output_gpu = torch.empty(out_shape, dtype=torch.float32, device=self.device)
         io_binding.bind_output(
             name=out_meta.name,
             device_type=self.device,
             device_id=0,
-            element_type=(np.float16 if self.using_fp16 else np.float32),
+            element_type=np.float32,
             shape=out_shape,
             buffer_ptr=output_gpu.data_ptr(),
         )
