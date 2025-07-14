@@ -31,6 +31,7 @@ class CLIPSegHFModel:
         device: Optional[str] = None,
         cmap: str = "turbo",
         onnx_model_path: Optional[str] = None,
+        onnx_model_fp16_path: Optional[str] = None
     ):
         """
         HuggingFace CLIPSeg wrapper for torch inference, with optional ONNX fallback.
@@ -42,10 +43,8 @@ class CLIPSegHFModel:
         else:
             self.device = device
 
-        # load HF processor & model
+        # load HF processor
         self.processor = CLIPSegProcessor.from_pretrained(hf_model, use_fast=True)
-        self.model = CLIPSegForImageSegmentation.from_pretrained(hf_model)
-        self.model.to(self.device).eval()
 
         # color‐lut, running bounds, caches, etc.
         self.lut = get_colormap_lut(cmap_name=cmap)
@@ -62,6 +61,7 @@ class CLIPSegHFModel:
         # ONNX support
         self.use_onnx = False
         self.ort_session = None
+        self.using_fp16 = False
         if onnx_model_path is not None:
             if ort is None:
                 raise ImportError(
@@ -69,60 +69,207 @@ class CLIPSegHFModel:
                 )
             # if the .onnx file is missing, export it:
             if not os.path.isfile(onnx_model_path):
+                print(f"Exporting HF model to ONNX at {onnx_model_path}...")
+                self.model = CLIPSegForImageSegmentation.from_pretrained(hf_model)
+                self.model.to(self.device).eval()
                 self._export_onnx(onnx_model_path)
-            # load the session
+            if onnx_model_fp16_path:
+                print(f"Converting ONNX model to FP16 at {onnx_model_fp16_path}...")
+                if (not os.path.isfile(onnx_model_fp16_path)):
+                    self._convert_to_fp16(onnx_model_path, onnx_model_fp16_path)
+                onnx_model_path = onnx_model_fp16_path
+                self.using_fp16 = True
+            print(f"Using ONNX model at {onnx_model_path}...")
+            
+            so = ort.SessionOptions()
+
+            # so.enable_mem_pattern     = False
+            # so.enable_cpu_mem_arena   = False
+            
+            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+            
+            # so.intra_op_num_threads = 1
+            # so.inter_op_num_threads = 1
+            so.log_severity_level   = 2
             self.ort_session = ort.InferenceSession(
                 onnx_model_path,
-                providers=["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+                sess_options=so,
+                providers=["CUDAExecutionProvider"]#, "CUDAExecutionProvider", "CPUExecutionProvider"]
             )
+            self.io_binding = self.ort_session.io_binding()
             self.use_onnx = True
+
+            self._input_gpu  = None
+            self._output_gpu = None
+
+        else:
+            self.model = CLIPSegForImageSegmentation.from_pretrained(hf_model)
+            self.model.to(self.device).eval()
 
     def _export_onnx(self, onnx_path: str):
         """
-        Exports the HF CLIPSeg model to ONNX at onnx_path.
-        Uses a dummy text+image input from the processor.
+        Exports the HF CLIPSeg model to ONNX at `onnx_path` using a model wrapper,
+        grabs a real frame from the Zed camera at the configured resolution/fps.
         """
-        # pick a dummy prompt and image
-        dummy_prompt = "a photo of a cat"
-        dummy_img = Image.new("RGB", (224, 224), color="white")
+        import sousvide.flight.zed_command_helper as zed
 
-        # prepare torch inputs
-        torch_inputs = self.processor(
-            images=dummy_img,
+        # 1) Grab one frame from the Zed camera
+        camera = zed.get_camera(height=376, width=672, fps=30)
+        if camera is None:
+            raise RuntimeError("Unable to initialize Zed camera.")
+        frame, timestamp = zed.get_image(camera)
+        if not isinstance(frame, np.ndarray):
+            raise RuntimeError(f"Expected NumPy array from Zed, got {type(frame)}")
+        # Convert BGRA/BGR → RGB PIL.Image
+        bgr = frame[..., :3]
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+
+        # 2) Prepare dummy text & tokenize image+text
+        dummy_prompt = "a cabinet"
+        proc_inputs = self.processor(
+            images=pil_img,
             text=dummy_prompt,
             return_tensors="pt"
         )
-        torch_inputs = {k: v.to(self.device) for k, v in torch_inputs.items()}
+        proc_inputs = {k: v.to(self.device) for k, v in proc_inputs.items()}
+        inputs = (
+            proc_inputs["input_ids"],
+            proc_inputs["pixel_values"],
+            proc_inputs["attention_mask"],
+        )
 
-        # names must match the processor/model
-        input_names = ["pixel_values", "input_ids", "attention_mask"]
-        output_names = ["logits"]
-        dynamic_axes = {
-            "pixel_values":   {0: "batch", 2: "height", 3: "width"},
-            "input_ids":      {0: "batch", 1: "seq_len"},
-            "attention_mask": {0: "batch", 1: "seq_len"},
-            "logits":         {0: "batch", 2: "height", 3: "width"},
-        }
+        # 3) Wrap HF model so it outputs a single tensor (.logits)
+        class Wrapper(torch.nn.Module):
+            def __init__(self, model):
+                super().__init__()
+                self.model = model
 
-        # export
+            def forward(self, input_ids, pixel_values, attention_mask):
+                out = self.model(
+                    input_ids=input_ids,
+                    pixel_values=pixel_values,
+                    attention_mask=attention_mask
+                )
+                return out.logits
+
+        wrapper = Wrapper(self.model).eval().to(self.device)
+
+        # 4) Export with generic names, dynamic batch+seq_len axes, opset 21
+        from onnx import __version__, IR_VERSION
+        from onnx.defs import onnx_opset_version
+        print(f"onnx.__version__={__version__!r}, opset={onnx_opset_version()}, IR_VERSION={IR_VERSION}")
+        print(f"[INFO] Exporting ONNX model to '{onnx_path}'…")
         torch.onnx.export(
-            self.model,
-            (
-                torch_inputs["input_ids"],
-                torch_inputs["pixel_values"],
-                torch_inputs["attention_mask"],
-            ),
+            wrapper,
+            inputs,
             onnx_path,
             input_names=["input_ids", "pixel_values", "attention_mask"],
             output_names=["logits"],
             dynamic_axes={
                 "input_ids":      {0: "batch", 1: "seq_len"},
-                "pixel_values":   {0: "batch", 2: "height", 3: "width"},
+                "pixel_values":   {0: "batch"},
                 "attention_mask": {0: "batch", 1: "seq_len"},
-                "logits":         {0: "batch", 2: "height", 3: "width"},
+                "logits":         {0: "batch", 2: "height", 3: "width"}
             },
-            opset_version=17,
+            opset_version=20,
+            do_constant_folding=True,
+            verbose=False,
         )
+        # ── Patch Resize nodes (cubic→linear) ──
+        # ONNXRuntime’s Resize only supports 'cubic' on 2-D or certain 4-D inputs,
+        # so we rewrite anything using cubic to linear for full compatibility.
+        import onnx
+        model_onnx = onnx.load(onnx_path)
+        patched = False
+        for node in model_onnx.graph.node:
+            if node.op_type == "Resize":
+                for attr in node.attribute:
+                    if attr.name == "mode" and attr.s.decode("utf-8").lower() == "cubic":
+                        attr.s = b"linear"
+                        patched = True
+        if patched:
+            onnx.save(model_onnx, onnx_path)
+            print(f"[INFO] Patched Resize mode→'linear' in {onnx_path}")
+        print(f"[INFO] Exported ONNX model with inputs ['input_ids','pixel_values','attention_mask'] → '{onnx_path}' ✅")
+    # def _export_onnx(self, onnx_path: str):
+    #     """
+    #     Exports the HF CLIPSeg model to ONNX at onnx_path.
+    #     Uses a dummy text+image input from the processor.
+    #     """
+    #     # pick a dummy prompt and image
+    #     dummy_prompt = "a photo of a cat"
+    #     dummy_img = Image.new("RGB", (224, 224), color="white")
+
+    #     # prepare torch inputs
+    #     torch_inputs = self.processor(
+    #         images=dummy_img,
+    #         text=dummy_prompt,
+    #         return_tensors="pt"
+    #     )
+    #     torch_inputs = {k: v.to(self.device) for k, v in torch_inputs.items()}
+
+    #     # names must match the processor/model
+    #     # input_names = ["pixel_values", "input_ids", "attention_mask"]
+    #     # output_names = ["logits"]
+    #     # dynamic_axes = {
+    #     #     "pixel_values":   {0: "batch", 2: "height", 3: "width"},
+    #     #     "input_ids":      {0: "batch", 1: "seq_len"},
+    #     #     "attention_mask": {0: "batch", 1: "seq_len"},
+    #     #     "logits":         {0: "batch", 2: "height", 3: "width"},
+    #     # }
+
+    #     # export
+    #     torch.onnx.export(
+    #         self.model,
+    #         (
+    #             torch_inputs["input_ids"],
+    #             torch_inputs["pixel_values"],
+    #             torch_inputs["attention_mask"],
+    #         ),
+    #         onnx_path,
+    #         input_names=["input_ids", "pixel_values", "attention_mask"],
+    #         # input_names=["input_ids", "pixel_values"],session
+    #         output_names=["logits"],
+    #         dynamic_axes={
+    #             "input_ids":      {1: "seq_len"},
+    #             # "pixel_values":   {2: "height", 3: "width"},
+    #             "attention_mask": {1: "seq_len"},
+    #             # "logits":         {2: "height", 3: "width"},
+    #         },
+    #         opset_version=17,
+    #         do_constant_folding=True,
+    #     )
+    
+    # def _convert_to_fp16(self, onnx_path: str, fp16_path: str):
+    #     import onnx
+    #     from onnxconverter_common import float16
+
+    #     model = onnx.load("clipseg_model.onnx")
+
+    #     model_fp16 = float16.convert_float_to_float16(
+    #         model,
+    #         keep_io_types=False,       # keep inputs/outputs in float32
+    #         disable_shape_infer=True,  # skip ONNX shape inference
+    #         op_block_list=[],
+    #         check_fp16_ready=False
+    #     )
+
+    #     onnx.save_model(model_fp16, "clipseg_model_fp16.onnx")
+
+    def _convert_to_fp16(self, onnx_path: str, fp16_path: str):
+        import onnx
+        from onnxconverter_common import float16
+        """Convert an ONNX model to FP16 using the standard converter."""
+
+        model = onnx.load(onnx_path)
+
+        model_fp16 = float16.convert_float_to_float16(
+            model,
+            keep_io_types=False,
+        )
+
+        onnx.save(model_fp16, fp16_path)
 
     def _rescale_global(self, arr: np.ndarray) -> np.ndarray:
         """
@@ -141,26 +288,165 @@ class CLIPSegHFModel:
             scaled = (arr - self.running_min) / span
         return scaled
     
+    # def _run_onnx_model(self, img: Image.Image, prompt: str) -> np.ndarray:
+    #     """
+    #     Runs forward pass via onnxruntime and returns the raw logits as a float32 numpy array.
+    #     """
+    #     # 1) Get PyTorch tensors from the HF processor...
+    #     torch_inputs = self.processor(images=img, text=prompt, return_tensors="pt")
+    #     # 2) Move them to CPU & convert to numpy for ONNX runtime
+    #     ort_inputs = {}
+    #     for inp in self.ort_session.get_inputs():
+    #         name = inp.name
+    #         tensor = torch_inputs.get(name)
+    #         if tensor is None:
+    #             continue
+    #         # detach, move to CPU, numpy
+    #         ort_inputs[name] = tensor.cpu().numpy()
+    #     # 3) Run the ONNX session
+    #     ort_outs = self.ort_session.run(None, ort_inputs)
+    #     # assume first output is logits [1,1,H,W]
+    #     logits = ort_outs[0]
+    #     return logits.squeeze().astype(np.float32)
+
     def _run_onnx_model(self, img: Image.Image, prompt: str) -> np.ndarray:
-        """
-        Runs forward pass via onnxruntime and returns the raw logits as a float32 numpy array.
-        """
-        # 1) Get PyTorch tensors from the HF processor...
+        import numpy as np
+        import torch
+
+        # 1) Preprocess — half if FP16, full-precision otherwise
         torch_inputs = self.processor(images=img, text=prompt, return_tensors="pt")
-        # 2) Move them to CPU & convert to numpy for ONNX runtime
-        ort_inputs = {}
-        for inp in self.ort_session.get_inputs():
-            name = inp.name
-            tensor = torch_inputs.get(name)
-            if tensor is None:
-                continue
-            # detach, move to CPU, numpy
-            ort_inputs[name] = tensor.cpu().numpy()
-        # 3) Run the ONNX session
-        ort_outs = self.ort_session.run(None, ort_inputs)
-        # assume first output is logits [1,1,H,W]
-        logits = ort_outs[0]
-        return logits.squeeze().astype(np.float32)
+        if self.using_fp16:
+            torch_inputs = {
+                k: (v.half().to(self.device) if k == "pixel_values"
+                    else v.to(self.device))
+                for k, v in torch_inputs.items()
+            }
+        else:
+            torch_inputs = {k: v.to(self.device) for k, v in torch_inputs.items()}
+
+        # 2) New binding for each run
+        io_bind = self.ort_session.io_binding()
+
+        # 3) Bind *all* ONNX inputs by name
+        for meta in self.ort_session.get_inputs():
+            name = meta.name
+            if name not in torch_inputs:
+                raise RuntimeError(f"ONNX model expects '{name}' but no tensor was found.")
+            tensor = torch_inputs[name]
+            elem_type = (
+                np.float16 if tensor.dtype == torch.float16 else
+                np.float32 if tensor.dtype == torch.float32 else
+                np.int64
+            )
+            io_bind.bind_input(
+                name=name,
+                device_type=self.device,   # e.g. "cuda"
+                device_id=0,
+                element_type=elem_type,
+                shape=tuple(tensor.shape),
+                buffer_ptr=tensor.data_ptr(),
+            )
+
+        # 4) Figure out the output shape
+        out_meta = self.ort_session.get_outputs()[0]
+        B, _, H, W = torch_inputs["pixel_values"].shape
+        if len(out_meta.shape) == 3:
+            out_shape = (B, H, W)
+        elif len(out_meta.shape) == 4:
+            C = out_meta.shape[1] if isinstance(out_meta.shape[1], int) else 1
+            out_shape = (B, C, H, W)
+        else:
+            raise RuntimeError(f"Unsupported logits rank: {len(out_meta.shape)}")
+
+        # 5) Allocate & bind output on GPU
+        out_dtype = torch.float16 if self.using_fp16 else torch.float32
+        gpu_out = torch.empty(out_shape, dtype=out_dtype, device=self.device)
+        io_bind.bind_output(
+            name=out_meta.name,
+            device_type=self.device,
+            device_id=0,
+            element_type=(np.float16 if self.using_fp16 else np.float32),
+            shape=out_shape,
+            buffer_ptr=gpu_out.data_ptr(),
+        )
+
+        # 6) Run
+        self.ort_session.run_with_iobinding(io_bind)
+
+        # 7) Fetch & postprocess
+        result = gpu_out.cpu().numpy()
+        # if [B,1,H,W], drop channel
+        if result.ndim == 4 and result.shape[1] == 1:
+            result = result[:, 0]
+        return result.squeeze()
+    # def _run_onnx_model(self, img: Image.Image, prompt: str) -> np.ndarray:
+    #     import numpy as np
+    #     import torch
+
+    #     # 1) Preprocess on GPU
+    #     torch_inputs = self.processor(images=img, text=prompt, return_tensors="pt")
+    #     if self.using_fp16:
+    #         # convert to FP16 if needed and move to device
+    #         torch_inputs = {
+    #             k: (v.half().to(self.device) if k == "pixel_values" else v.to(self.device))
+    #             for k, v in torch_inputs.items()
+    #         }
+    #     else:
+    #         torch_inputs = {k: v.to(self.device) for k, v in torch_inputs.items()}
+
+    #     # 2) Fresh IOBinding
+    #     io_binding = self.ort_session.io_binding()
+
+    #     # 3) Bind inputs zero-copy
+    #     sess_input_names = {inp.name for inp in self.ort_session.get_inputs()}
+    #     for name, tensor in torch_inputs.items():
+    #         if name not in sess_input_names:
+    #             continue
+    #         elem_type = np.float32 if tensor.dtype == torch.float32 else np.int64
+    #         io_binding.bind_input(
+    #             name=name,
+    #             device_type=self.device,   # e.g. "cuda"
+    #             device_id=0,
+    #             element_type=elem_type,
+    #             shape=tuple(tensor.shape),
+    #             buffer_ptr=tensor.data_ptr(),
+    #         )
+
+    #     # 4) Figure out the ONNX output shape
+    #     out_meta = self.ort_session.get_outputs()[0]
+    #     B, _, H, W = torch_inputs["pixel_values"].shape
+    #     if len(out_meta.shape) == 3:
+    #         # [batch, height, width]
+    #         out_shape = (B, H, W)
+    #     elif len(out_meta.shape) == 4:
+    #         # [batch, channels, height, width]
+    #         C = out_meta.shape[1] if isinstance(out_meta.shape[1], int) else 1
+    #         out_shape = (B, C, H, W)
+    #     else:
+    #         raise RuntimeError(f"Unsupported logits rank: {len(out_meta.shape)}")
+
+    #     # 5) Allocate & bind output buffer on GPU
+    #     out_dtype = torch.float16 if self.using_fp16 else torch.float32
+    #     output_gpu = torch.empty(out_shape, dtype=out_dtype, device=self.device)
+    #     io_binding.bind_output(
+    #         name=out_meta.name,
+    #         device_type=self.device,
+    #         device_id=0,
+    #         element_type=(np.float16 if self.using_fp16 else np.float32),
+    #         shape=out_shape,
+    #         buffer_ptr=output_gpu.data_ptr(),
+    #     )
+
+    #     # 6) Run
+    #     self.ort_session.run_with_iobinding(io_binding)
+
+    #     # 7) Fetch & squeeze
+    #     result = output_gpu.cpu().numpy()
+    #     # if it’s [B, 1, H, W], drop the channel axis
+    #     if result.ndim == 4 and result.shape[1] == 1:
+    #         result = result[:, 0]
+    #     # if batch‐size is 1, you can also drop that:
+    #     return result.squeeze()
 
     def clipseg_hf_inference(
         self,
@@ -168,7 +454,7 @@ class CLIPSegHFModel:
         prompt: str,
         resize_output_to_input: bool = True,
         use_refinement: bool = False,
-        use_blending: bool = False,
+        use_smoothing: bool = False,
         scene_change_threshold: float = 1.00,
         verbose=False
     ) -> np.ndarray:
@@ -192,7 +478,7 @@ class CLIPSegHFModel:
         # --- Step 2: Determine whether to reuse ---
         should_reuse = False
         ssim_score = None
-        if self.prev_image is not None and self.prev_output is not None:
+        if scene_change_threshold < 1.0 and self.prev_image is not None and self.prev_output is not None:
             # Compare resized grayscale SSIM
             prev_small = cv2.resize(self.prev_image, (64, 64))
             curr_small = cv2.resize(image_np, (64, 64))
@@ -208,10 +494,7 @@ class CLIPSegHFModel:
             # Optional: fast filtering
             mask_u8 = cv2.bilateralFilter(mask_u8, d=7, sigmaColor=75, sigmaSpace=75)
             colorized = colorize_mask_fast(mask_u8, self.lut)
-            if use_blending:
-                overlayed = blend_overlay_gpu(image_np, colorized)
-            else:
-                overlayed = colorized
+            overlayed = blend_overlay_gpu(image_np, colorized)
             return overlayed
 
         # --- Step 4: Run inference (scene has changed) ---
@@ -237,18 +520,19 @@ class CLIPSegHFModel:
             mask_u8 = np.array(Image.fromarray(mask_u8).resize(img.size, resample=Image.BILINEAR))
 
         # --- Step 5: Post-processing only on fresh inference ---
-        # Temporal EMA
-        mask_f = mask_u8.astype(np.float32)
-        if self.segmentation_ema is None or self.segmentation_ema.shape != mask_f.shape:
-            self.segmentation_ema = mask_f.copy()
-        else:
-            self.segmentation_ema = (
-                self.ema_alpha * mask_f + (1 - self.ema_alpha) * self.segmentation_ema
-            )
-        mask_u8 = np.clip(self.segmentation_ema, 0, 255).astype(np.uint8)
+        if use_smoothing:
+            # Temporal EMA
+            mask_f = mask_u8.astype(np.float32)
+            if self.segmentation_ema is None or self.segmentation_ema.shape != mask_f.shape:
+                self.segmentation_ema = mask_f.copy()
+            else:
+                self.segmentation_ema = (
+                    self.ema_alpha * mask_f + (1 - self.ema_alpha) * self.segmentation_ema
+                )
+            mask_u8 = np.clip(self.segmentation_ema, 0, 255).astype(np.uint8)
 
-        # Optional filtering
-        mask_u8 = cv2.bilateralFilter(mask_u8, d=7, sigmaColor=75, sigmaSpace=75)
+            # Optional filtering
+            mask_u8 = cv2.bilateralFilter(mask_u8, d=7, sigmaColor=75, sigmaSpace=75)
 
         # Optional: superpixel refinement
         if use_refinement:
@@ -261,10 +545,7 @@ class CLIPSegHFModel:
 
         # --- Step 6: Render and cache ---
         colorized = colorize_mask_fast(mask_u8, self.lut)
-        if use_blending:
-            overlayed = blend_overlay_gpu(image_np, colorized)
-        else:
-            overlayed = colorized
+        overlayed = blend_overlay_gpu(image_np, colorized)
 
         # Store just raw mask + image for reuse
         self.prev_image = image_np.copy()

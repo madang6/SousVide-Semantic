@@ -22,7 +22,7 @@ def get_camera(height: int, width: int, fps: int) -> sl.Camera:
         camera = sl.Camera()
         
         init_params = sl.InitParameters()
-        init_params.camera_resolution = sl.RESOLUTION.AUTO  # Automatically set resolution
+        init_params.camera_resolution = sl.RESOLUTION.VGA  # Automatically set resolution
         init_params.camera_fps = fps  # Set the camera FPS
 
         err = camera.open(init_params)

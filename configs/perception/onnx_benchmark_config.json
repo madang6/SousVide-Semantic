@@ -1,13 +1,13 @@
 {
   "prompt": "bench",  
   "hf_model": "CIDAS/clipseg-rd64-refined",
+  "input_video_path": "/home/coop/StanfordMSL/SousVide-Semantic/notebooks/test_space/sim_video_sv_917_3_left_gemsplat_armchair_InstinctJester_rgb.mp4",
   "onnx_model_path": "/home/coop/StanfordMSL/SousVide-Semantic/notebooks/clipseg_model.onnx",
-  "input_video_path": "/home/coop/StanfordMSL/SousVide-Semantic/notebooks/test_space/sim_video_bench_expert.mp4",
 
-  "camera_mode": true,
+  "camera_mode": "true",
 
   "camera_fps": 30,
-  "camera_duration": 10.0,
+  "camera_duration": 20.0,
   "camera_width": 640,
   "camera_height": 480
 }

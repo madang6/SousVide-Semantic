@@ -12,14 +12,18 @@ import numpy as np
 import imageio
 import cv2
 
+from torch import device
+
 import sousvide.flight.vision_preprocess_alternate as vp
 import sousvide.flight.zed_command_helper as zed
+
 
 # Path to the external JSON config file
 CONFIG_PATH = (
     "/home/coop/StanfordMSL/SousVide-Semantic/"
     "configs/perception/onnx_benchmark_config.json"
 )
+
 
 
 def load_config(path):
@@ -44,11 +48,16 @@ def main():
     camera_mode = cfg.get('camera_mode', False)
 
     # Initialize CLIPSeg model (may export & load ONNX)
-    print("Initializing CLIPSegHFModel (this may export ONNX)...")
-    model = vp.CLIPSegHFModel(
-        hf_model=hf_model,
-        onnx_model_path=onnx_model_path
-    )
+    if onnx_model_path is None:
+        print("Initializing CLIPSegHFModel...")
+        model = vp.CLIPSegHFModel(hf_model=hf_model)
+    else:
+        print("Initializing ONNX CLIPSegHFModel (this may export ONNX)...")
+        model = vp.CLIPSegHFModel(
+            hf_model=hf_model,
+            onnx_model_path=onnx_model_path,
+            onnx_model_fp16_path=cfg.get('onnx_model_fp16_path', None)
+        )
 
     times = []
     frames = []
@@ -69,7 +78,7 @@ def main():
         camera = zed.get_camera(height=height, width=width, fps=fps_cam)
         if camera is None:
             raise RuntimeError("Unable to initialize camera.")
-
+        
         print(f"Capturing live for {duration:.1f}s at {fps_cam} FPS...")
         start_time = time.time()
 
@@ -88,6 +97,7 @@ def main():
                 prompt,
                 resize_output_to_input=True,
                 use_refinement=False,
+                use_smoothing=False,
                 scene_change_threshold=1.0,
                 verbose=False,
             )
@@ -104,7 +114,6 @@ def main():
         input_video_path = cfg['input_video_path']
         video_dir = os.path.dirname(input_video_path)
         base, ext = os.path.splitext(os.path.basename(input_video_path))
-        output_path = os.path.join(video_dir, f"{base}_onnx_benchmark{ext}")
 
         cap = cv2.VideoCapture(input_video_path)
         if not cap.isOpened():
@@ -132,6 +141,7 @@ def main():
                 prompt,
                 resize_output_to_input=True,
                 use_refinement=False,
+                use_smoothing=False,
                 scene_change_threshold=1.0,
                 verbose=False,
             )
@@ -166,7 +176,8 @@ def main():
         print(f"Max time/frame: {max(times)*1000:.1f} ms")
 
         print(f"Average FPS: {avg_fps:.2f}")
-        imageio.mimsave(output_path, frames, fps=avg_fps)
+        if frames:
+            imageio.mimsave(output_path, frames, fps=avg_fps)
     else:
         print("No frames were processed.")
 
