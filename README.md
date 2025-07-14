@@ -49,7 +49,7 @@ python3 -m pip install --no-deps \
 
 conda deactivate
 
-conda env update <env-name> environment_x86.yml
+conda env update --name sousvide-semantic-flight --file environment.yml
 
 pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
 
