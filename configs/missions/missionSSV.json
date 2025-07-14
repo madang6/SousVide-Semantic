@@ -1,0 +1,20 @@
+{
+    "cohort": "carl_SSV_RRT_Test",
+    "pilot" : "mpc",
+    "drone" : "drone4",
+    "course": "microwave",
+    "semantic_positives": ["microwave"],
+    "frame" : "carl",
+    "failsafes": {
+        "attitude_tolerance": 0.10,
+        "height_tolerance": 0.10      
+    },
+
+    "prompt": "microwave",
+    "hf_model": "CIDAS/clipseg-rd64-refined",
+    "onnx_model_path": "/home/coop/StanfordMSL/SousVide-Semantic/notebooks/clipseg_model.onnx",
+
+    
+    "linger": 5.0,
+    "images_per_second": 10
+}

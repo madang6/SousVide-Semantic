@@ -10,6 +10,8 @@ from tabulate import tabulate
 import time
 from enum import Enum
 
+import albumentations as A
+
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
@@ -146,6 +148,9 @@ class FlightCommand(Node):
         q0_tol,z0_tol = mission_config["failsafes"]["attitude_tolerance"],mission_config["failsafes"]["height_tolerance"]
         t_lg = mission_config["linger"]
 
+        # Unpack vision processor
+
+
         # ---------------------------------------------------------------------------------------
         # Class Variables -----------------------------------------------------------------------
 
@@ -172,9 +177,19 @@ class FlightCommand(Node):
         self.vehicle_rates_setpoint_publisher = self.create_publisher(VehicleRatesSetpoint, drone_prefix+'/fmu/in/vehicle_rates_setpoint', qos_drone)
 
         # Initialize CLIPSeg Model
-        self.vision_processor = vp.CLIPSegONNXModel(
-            onnx_path=os.path.join(workspace_path,"cohorts","clipseg.onnx"),
-            hf_model="CIDAS/clipseg-rd64-refined"
+        self.prompt = mission_config.get('prompt', '')
+        self.hf_model = mission_config.get('hf_model', 'CIDAS/clipseg-rd64-refined')
+        self.onnx_model_path = mission_config.get('onnx_model_path')
+
+        if self.onnx_model_path is None:
+            print("Initializing CLIPSegHFModel...")
+            self.vision_model = vp.CLIPSegHFModel(hf_model=self.hf_model)
+        else:
+            print("Initializing ONNX CLIPSegHFModel (this may export ONNX)...")
+            self.vision_model = vp.CLIPSegHFModel(
+                hf_model=self.hf_model,
+                onnx_model_path=self.onnx_model_path,
+                onnx_model_fp16_path=mission_config.get('onnx_model_fp16_path', None)
         )
 
         # Initalize camera (if exists)
@@ -183,6 +198,10 @@ class FlightCommand(Node):
             self.cam_dim,self.cam_fps = cam_dim,cam_fps
         else:
             self.cam_dim,self.cam_fps = [0,0,0],0
+
+        self.bgr2rgb = A.Compose([
+            A.BgrToRgb(always_apply=True),
+        ])
 
         # Initialize control variables
         #NOTE commented out variables don't exist for RRT* generated tXUi
@@ -324,10 +343,26 @@ class FlightCommand(Node):
         x_est[6:10] = th.obedient_quaternion(x_est[6:10],self.xref[6:10])
         x_ext[6:10] = th.obedient_quaternion(x_ext[6:10],self.xref[6:10])
 
-        img,_ = zch.get_image(self.pipeline)
-        if img is None:
+        imgz,_ = zch.get_image(self.pipeline)
+        if imgz is None:
             self.sm = StateMachine.LAND
             print('Camera feed lost. Initiating landing sequence.')
+
+        # Process Image
+        # Convert ZED frame BGR→RGB
+        frame_rgb = self.bgr2rgb(image=imgz)['image']
+        
+        # Inference
+        t0 = time.time()
+        img = self.vision_model.clipseg_hf_inference(
+            frame_rgb,
+            self.prompt,
+            resize_output_to_input=True,
+            use_refinement=False,
+            use_smoothing=False,
+            scene_change_threshold=1.0,
+            verbose=False,
+        )
 
         zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
 
