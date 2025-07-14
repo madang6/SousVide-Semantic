@@ -26,15 +26,14 @@ from px4_msgs.msg import (
 from sousvide.control.pilot import Pilot
 import figs.control.vehicle_rate_mpc as vr_mpc
 
-
-import sousvide.flight.vision_preprocess as vp
+import sousvide.flight.vision_preprocess_alternate as vp
 import sousvide.flight.zed_command_helper as zch
 import figs.dynamics.model_equations as me
 import figs.dynamics.model_specifications as qc
 import figs.utilities.trajectory_helper as th
 import sousvide.visualize.plot_synthesize as ps
 import sousvide.visualize.record_flight as rf
-import sousvide.visualize.plot_flight as pf
+# import sousvide.visualize.plot_flight as pf
 
 class StateMachine(Enum):
     """Enum class for pilot state."""
@@ -115,21 +114,39 @@ class FlightCommand(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
-    
+
+#FIXME
+        print("Loading Configs")
         # Load Configs
         workspace_path = os.path.dirname(os.path.dirname(__file__))
 
-        with open(os.path.join(workspace_path,"configs","missions",mission_name+".json")) as json_file:
-            mission_config = json.load(json_file)
-
+        # Check for mission file
+        if os.path.isfile(os.path.join(workspace_path,"configs","missions",mission_name+".json")):
+            with open(os.path.join(workspace_path,"configs","missions",mission_name+".json")) as json_file:
+                mission_config = json.load(json_file)
+        else:
+            raise FileNotFoundError(f"Mission file not found: {mission_name}.json")
+#FIXME
+        print("Loading Courses")
         # with open(os.path.join(workspace_path,"configs","courses",mission_config["course"]+".json")) as json_file:
-        #     mission_config = json.load(json_file)
-        #NOTE modified this approach to load the RRT* generated tXUi from the pickle file
-        with open(os.path.join(workspace_path,"configs","courses",mission_config["course"]+"_tXUi.pkl"),"rb") as f:
-            loaded_tXUi = pickle.load(f)
-        with open(os.path.join(workspace_path,"configs","drones",mission_config["frame"]+".json")) as json_file:
-            frame_config = json.load(json_file)
+            # mission_config = json.load(json_file)
+#NOTE modified this approach to load the RRT* generated tXUi from the pickle file
+        # Check for trajectory file, skip if it doesn't exist
+        loaded_tXUi = None
+        if mission_config.get("course") is not None:
+            with open(os.path.join(workspace_path,"configs","scenes",mission_config["course"]+"_tXUi.pkl"),"rb") as f:
+                loaded_tXUi = pickle.load(f)
+        else:
+            print("No Courses Loaded")
 
+        # Check for drone file
+        if os.path.isfile(os.path.join(workspace_path,"configs","drones",mission_config["frame"]+".json")):
+            with open(os.path.join(workspace_path,"configs","drones",mission_config["frame"]+".json")) as json_file:
+                frame_config = json.load(json_file)
+        else:
+            raise FileNotFoundError(f"Drone frame file not found, please provide one")
+#FIXME
+        print("Loaded Frame")
         #NOTE RRT*/SSV precomputes the trajectory, we load it from a saved file
         # # Unpack trajectories
         # output = ms.solve(course_config)
@@ -138,7 +155,8 @@ class FlightCommand(Node):
         # else:
         #     raise ValueError("Trajectory not feasible. Aborting.")
         # tXUi = th.ts_to_tXU(Tpi,CPi,None,hz)
-        tXUi = deepcopy(loaded_tXUi)
+        if loaded_tXUi is not None:
+            tXUi = deepcopy(loaded_tXUi)
 
         # Unpack drone
         drone_config = qc.generate_specifications(frame_config)
@@ -153,7 +171,8 @@ class FlightCommand(Node):
 
         # ---------------------------------------------------------------------------------------
         # Class Variables -----------------------------------------------------------------------
-
+#FIXME:
+        print("Loading Pilot")
         # Controller
         if mission_config["pilot"] == "mpc":
             self.isNN = False
@@ -199,18 +218,47 @@ class FlightCommand(Node):
         else:
             self.cam_dim,self.cam_fps = [0,0,0],0
 
-        self.bgr2rgb = A.Compose([
-            A.BgrToRgb(always_apply=True),
-        ])
+
+        if not self.isNN:
+            # MPC case: unpack the precomputed trajectory exactly as you do today
+            self.Tpi = tXUi[0, :]                             # time vector
+            self.obj = th.tXU_to_obj(tXUi)                    # your “object” vector
+            self.q0, self.z0 = tXUi[7:11,0], tXUi[3,0]         # initial quaternion & altitude
+            self.xref = tXUi[1:11,0]                          # 10-state at t=0
+            mean_u = np.mean(tXUi[14:18,:], axis=0).reshape(1,-1)
+            self.uref = np.vstack((-mean_u, tXUi[11:14,:]))    # reference inputs over time
+
+            # seed your odometry messages to match the first pose in the traj
+            self.vo_est.q[0], self.vo_est.q[1:4] = tXUi[10,0], tXUi[7:10,0]
+            self.vo_ext.q[0], self.vo_ext.q[1:4] = tXUi[10,0], tXUi[7:10,0]
+
+            # record for the full traj duration + linger
+            record_duration = self.Tpi[-1] + self.t_lg
+
+        else:
+            # non-MPC (neural) case: give everything a neutral default
+            self.Tpi = np.array([0.0])                        # no trajectory
+            self.obj = None                                   # Pilot.control will ignore it
+            self.q0 = np.array([1.0, 0.0, 0.0, 0.0])           # identity quaternion
+            self.z0 = 0.0                                     # zero altitude offset
+            self.xref = np.zeros(10)                          # no reference state
+            self.uref = np.zeros((4,1))                       # no reference input
+            # leave vo_est/.vo_ext.q alone so they start at whatever your first callback gives
+            record_duration = self.t_lg                        # maybe only record for linger period
+
 
         # Initialize control variables
-        #NOTE commented out variables don't exist for RRT* generated tXUi
+#NOTE commented out variables don't exist for RRT* generated tXUi
         self.node_start = False                                 # Node start flag
         self.node_status_informed = False                       # Node status informed flag
         # self.Tpi,self.CPi = Tpi,CPi                             # trajectory time and control points
-        self.Tpi = tXUi[0,:]                                    # trajectory time
+        if loaded_tXUi is not None:
+            self.Tpi = tXUi[0,:]                                    # trajectory time
+            self.obj = th.tXU_to_obj(tXUi)                          # objective
+        else:
+            
+
         self.drone_config = drone_config                        # drone configuration
-        self.obj = th.tXU_to_obj(tXUi)                          # objective
         # self.k_sm,self.N_sm = 0, len(Tpi)-1                     # current segment index and total number of segments
         self.k_rdy = 0                                          # ready counter
         self.t_tr0 = 0.0                                        # trajectory start time
@@ -227,7 +275,7 @@ class FlightCommand(Node):
         # State Machine and Failsafe variables
         self.sm = StateMachine.INIT                                    # state machine
         self.xref = tXUi[1:11,0]                                       # reference state
-        #NOTE referring to something used in main loop here
+#NOTE referring to something used in main loop here
         # u_ref = np.hstack((-np.mean(xu_ref[13:17]),xu_ref[10:13]))
         # print(f"mean of tXUi[14:18,0]: {np.mean(tXUi[14:18,:],axis=0)}")
         mean_tXUi = np.mean(tXUi[14:18, :], axis=0)
@@ -259,7 +307,7 @@ class FlightCommand(Node):
         self.T_e2w = np.eye(4)
 
         # Diagnostics Variables
-        #NOTE Maybe save the nodes from RRT* here? could be useful for diagnostics
+#NOTE Maybe save the nodes from RRT* here? could be useful for diagnostics
         # table = []
         # for idx,item in enumerate(course_config["keyframes"].values()):
         #     FOkf = np.array(item['fo'],dtype=float)
@@ -350,7 +398,7 @@ class FlightCommand(Node):
 
         # Process Image
         # Convert ZED frame BGR→RGB
-        frame_rgb = self.bgr2rgb(image=imgz)['image']
+        frame_rgb = imgz[..., ::-1]
         
         # Inference
         t0 = time.time()
@@ -492,7 +540,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Flight Command Node.")
 
     # Add arguments
-    parser.add_argument('--mission', type=str, help='Mission Config Name')
+    parser.add_argument(
+        '--mission',
+        type=str,
+        required=True,
+        help='Mission config name (without .json)'
+    )
 
     # Parse the command line arguments
     args = parser.parse_args()
@@ -504,7 +557,4 @@ def main() -> None:
     rclpy.shutdown()
 
 if __name__ == '__main__':
-    try:
-        main()
-    except Exception as e:
-        print(e)
+    main()

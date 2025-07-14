@@ -7,6 +7,7 @@ import torch
 import sousvide.visualize.plot_synthesize as ps
 from tabulate import tabulate
 
+
 def plot_losses(cohort_name:str,roster:List[str],network:Literal["Parameter","Odometry","Commander"]):
     """
     Plot the losses for each student in the roster.
@@ -30,17 +31,17 @@ def plot_losses(cohort_name:str,roster:List[str],network:Literal["Parameter","Od
 
     labels = []
     for student_name in roster:
-        try:
-            student_path = os.path.join(cohort_path,"roster",student_name)
-            losses_path = os.path.join(student_path,"losses_"+network+".pt")
+        # try:
+        student_path = os.path.join(cohort_path,"roster",student_name)
+        losses_path = os.path.join(student_path,"losses_"+network+".pt")
 
-            losses = torch.load(losses_path)
-            labels.append(student_name)
-        except:
-            print("-----------------------------------------------------")
-            print("No",network,"network found for",student_name)
-            print("-----------------------------------------------------")
-            continue
+        losses = torch.load(losses_path, weights_only=False)
+        labels.append(student_name)
+        # except:
+        #     print("-----------------------------------------------------")
+        #     print("No",network,"network found for",student_name)
+        #     print("-----------------------------------------------------")
+        #     continue
         
         if "Neps" in losses.keys():
             print("-----------------------------------------------------")

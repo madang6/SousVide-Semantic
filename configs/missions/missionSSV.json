@@ -1,8 +1,7 @@
 {
-    "cohort": "carl_SSV_RRT_Test",
-    "pilot" : "mpc",
+    "cohort": "SSV_CLIPSEG_NORMAL",
+    "pilot" : "InstinctJester",
     "drone" : "drone4",
-    "course": "microwave",
     "semantic_positives": ["microwave"],
     "frame" : "carl",
     "failsafes": {

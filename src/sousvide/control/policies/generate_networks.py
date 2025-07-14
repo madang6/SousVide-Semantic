@@ -66,7 +66,8 @@ def policy_factory(path:str,config:Dict[str,Any],device:torch.device) -> Tuple[U
             backup_losses = os.path.join(path, f"losses_Commander_backup_{ts}.pt")
             shutil.copy(losses_cmd, backup_losses)
             print(f"[policy_factory] Backed up losses_Commander ➞ {os.path.basename(backup_losses)}")
-            os.remove(losses_cmd) # messy implementation, #FIXME later
+#FIXME later
+            os.remove(losses_cmd) # messy implementation
             print(f"[policy_factory] Zeroed out {os.path.basename(losses_cmd)}")
 
         policy_type = config["type"]
@@ -134,12 +135,12 @@ def policy_factory(path:str,config:Dict[str,Any],device:torch.device) -> Tuple[U
 
     # Load Model
     try:
-        model = torch.load(model_path,map_location=device)
+        model = torch.load(model_path, weights_only=False, map_location=device)
     except ModuleNotFoundError as e:
         print(f"Old model found, aliasing controller module to control")
         if "No module named 'controller'" in str(e):
             _alias_controller_to_control()
-            model = torch.load(model_path, map_location=device)
+            model = torch.load(model_path, weights_only=False, map_location=device)
         else:
             raise
         
