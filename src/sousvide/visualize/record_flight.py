@@ -125,18 +125,27 @@ class FlightRecorder():
         """
         
         # Record the image data
-        if self.k%self.n_img == 0:
-            self.Imgs[int(self.k/self.n_img),:,:,:] = img
+        # if self.k%self.n_img == 0:
+        #     self.Imgs[int(self.k/self.n_img),:,:,:] = img
+
+        if self.k % self.n_img == 0:
+            frame_idx = int(self.k / self.n_img)
+            # only write if we haven’t exceeded our buffer
+            if frame_idx < self.Imgs.shape[0]:
+                self.Imgs[frame_idx] = img
+
+        max_k = self.Tact.shape[0]
 
         # Record the trajectory data
-        self.Tact[self.k]   = tcr
-        self.Uact[:,self.k] = ucr
-        self.Xref[:,self.k] = xref
-        self.Uref[:,self.k] = uref
-        self.Xest[:,self.k] = xest
-        self.Xext[:,self.k] = xext
-        self.Adv[:,self.k]  = adv
-        self.Tsol[:,self.k] = tsol
+        if self.k < max_k:
+            self.Tact[self.k]   = tcr
+            self.Uact[:,self.k] = ucr
+            self.Xref[:,self.k] = xref
+            self.Uref[:,self.k] = uref
+            self.Xest[:,self.k] = xest
+            self.Xext[:,self.k] = xext
+            self.Adv[:,self.k]  = adv
+            self.Tsol[:,self.k] = tsol
 
         # Increment the counter
         self.k += 1

@@ -52,7 +52,7 @@ def get_image(Camera: sl.Camera) -> tuple[np.ndarray, int]:
 
         timestamp = Camera.get_timestamp(sl.TIME_REFERENCE.CURRENT)  # Get timestamp
 
-        print(f"Image resolution: {image.get_width()} x {image.get_height()} || Image timestamp: {timestamp.get_milliseconds()}")
+        # print(f"Image resolution: {image.get_width()} x {image.get_height()} || Image timestamp: {timestamp.get_milliseconds()}")
 
         return image.get_data(), timestamp.get_milliseconds()
 

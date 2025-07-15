@@ -10,6 +10,7 @@ from tabulate import tabulate
 import time
 from enum import Enum
 
+import cv2
 import albumentations as A
 
 import rclpy
@@ -95,11 +96,13 @@ class FlightCommand(Node):
         print("=====================================================================")
         print("---------------------------------------------------------------------")
 
-        # Some useful constants variables --------------------------------------------------
+        # ---------------------------------------------------------------------------------------
+        # Some useful constants & variables -----------------------------------------------------
+        # ---------------------------------------------------------------------------------------
         hz = 20
 
         # Camera Parameters
-        cam_dim,cam_fps, = [360,640,3],60           # we use the convention: [height,width,channels]
+        cam_dim,cam_fps, = [376,672,3],30           # we use the convention: [height,width,channels]
 
         # QoS Profile
         qos_drone = QoSProfile(
@@ -164,18 +167,21 @@ class FlightCommand(Node):
 
         # Unpack variables
         q0_tol,z0_tol = mission_config["failsafes"]["attitude_tolerance"],mission_config["failsafes"]["height_tolerance"]
-        t_lg = mission_config["linger"]
-
-        # Unpack vision processor
-
+        self.t_lg = mission_config["linger"]
 
         # ---------------------------------------------------------------------------------------
         # Class Variables -----------------------------------------------------------------------
+        # ---------------------------------------------------------------------------------------
 #FIXME:
         print("Loading Pilot")
         # Controller
         if mission_config["pilot"] == "mpc":
             self.isNN = False
+            if loaded_tXUi is None:
+                raise RuntimeError(
+                    "Pilot 'mpc' requires a precomputed tXUi trajectory, but no "
+                    f"'{mission_config['course']}_tXUi.pkl' was found."
+                )
             self.ctl = vr_mpc.VehicleRateMPC(tXUi,drone_config,hz,use_RTI=True,tpad=mission_config["linger"])
         else:
             self.isNN = True
@@ -197,6 +203,7 @@ class FlightCommand(Node):
 
         # Initialize CLIPSeg Model
         self.prompt = mission_config.get('prompt', '')
+        print(f"Query Set to: {self.prompt}")
         self.hf_model = mission_config.get('hf_model', 'CIDAS/clipseg-rd64-refined')
         self.onnx_model_path = mission_config.get('onnx_model_path')
 
@@ -218,7 +225,7 @@ class FlightCommand(Node):
         else:
             self.cam_dim,self.cam_fps = [0,0,0],0
 
-
+#NOTE streamline testing non-mpc pilots
         if not self.isNN:
             # MPC case: unpack the precomputed trajectory exactly as you do today
             self.Tpi = tXUi[0, :]                             # time vector
@@ -237,14 +244,15 @@ class FlightCommand(Node):
 
         else:
             # non-MPC (neural) case: give everything a neutral default
-            self.Tpi = np.array([0.0])                        # no trajectory
-            self.obj = None                                   # Pilot.control will ignore it
-            self.q0 = np.array([1.0, 0.0, 0.0, 0.0])           # identity quaternion
-            self.z0 = 0.0                                     # zero altitude offset
+            dt = 1.0 / hz          # hz (control rate)
+            self.Tpi = np.arange(0.0, 15.0 + dt, dt)
+            self.obj = np.zeros((18,1))
+            self.q0 = np.array([0.0, 0.0, -0.70710678, 0.70710678])          # 
+            self.z0 = -0.50                                    # init altitude offset
             self.xref = np.zeros(10)                          # no reference state
-            self.uref = np.zeros((4,1))                       # no reference input
+            self.uref = -6.90*np.ones((4,))                   # reference input
             # leave vo_est/.vo_ext.q alone so they start at whatever your first callback gives
-            record_duration = self.t_lg                        # maybe only record for linger period
+            record_duration = self.Tpi[-1] + self.t_lg        # 
 
 
         # Initialize control variables
@@ -252,11 +260,6 @@ class FlightCommand(Node):
         self.node_start = False                                 # Node start flag
         self.node_status_informed = False                       # Node status informed flag
         # self.Tpi,self.CPi = Tpi,CPi                             # trajectory time and control points
-        if loaded_tXUi is not None:
-            self.Tpi = tXUi[0,:]                                    # trajectory time
-            self.obj = th.tXU_to_obj(tXUi)                          # objective
-        else:
-            
 
         self.drone_config = drone_config                        # drone configuration
         # self.k_sm,self.N_sm = 0, len(Tpi)-1                     # current segment index and total number of segments
@@ -267,37 +270,42 @@ class FlightCommand(Node):
         self.vrs = VehicleRatesSetpoint()                       # current vehicle rates setpoint
         self.znn = (torch.zeros(self.ctl.model.Nz)              # current visual feature vector
                     if isinstance(self.ctl,Pilot) else None)   
-        
+#FIXME
         # Initialize Quaternions with starting reference quaternion (note: tXUi convention is qx,qy,qz,qw while vo_est is qw,qx,qy,qz)
-        self.vo_est.q[0],self.vo_est.q[1:4] = tXUi[10,0],tXUi[7:10,0]
-        self.vo_ext.q[0],self.vo_ext.q[1:4] = tXUi[10,0],tXUi[7:10,0]
+        # self.vo_est.q[0],self.vo_est.q[1:4] = tXUi[10,0],tXUi[7:10,0]
+        # self.vo_ext.q[0],self.vo_ext.q[1:4] = tXUi[10,0],tXUi[7:10,0]
 
         # State Machine and Failsafe variables
         self.sm = StateMachine.INIT                                    # state machine
-        self.xref = tXUi[1:11,0]                                       # reference state
+        # self.xref = tXUi[1:11,0]                                       # reference state
 #NOTE referring to something used in main loop here
         # u_ref = np.hstack((-np.mean(xu_ref[13:17]),xu_ref[10:13]))
         # print(f"mean of tXUi[14:18,0]: {np.mean(tXUi[14:18,:],axis=0)}")
-        mean_tXUi = np.mean(tXUi[14:18, :], axis=0)
-        mean_tXUi = mean_tXUi.reshape(1, -1)
-        print(f"mean_tXUi: {mean_tXUi.shape}")
-        print(f"tXUi[11:14,0]: {tXUi[11:14,:].shape}")
-        self.uref = np.vstack((-mean_tXUi,tXUi[11:14,:])) # reference input
+        # mean_tXUi = np.mean(tXUi[14:18, :], axis=0)
+        # mean_tXUi = mean_tXUi.reshape(1, -1)
+        # print(f"mean_tXUi: {mean_tXUi.shape}")
+        # print(f"tXUi[11:14,0]: {tXUi[11:14,:].shape}")
+        # self.uref = np.vstack((-mean_tXUi,tXUi[11:14,:])) # reference input
         
-        self.q0,self.z0 = tXUi[7:11,0],tXUi[3,0]                       # initial attitude and altitude
+        # self.q0,self.z0 = tXUi[7:11,0],tXUi[3,0]                       # initial attitude and altitude
         self.q0_tol,self.z0_tol = q0_tol,z0_tol                        # attitude and altitude tolerances
-        self.t_lg = t_lg                                               # linger time
 
         # Create Variables for logging.
-        self.recorder = rf.FlightRecorder(drone_config["nx_br"],drone_config["nu_br"],
-                                          self.ctl.hz,tXUi[0,-1]+self.t_lg,
-                                          cam_dim,
-                                          self.obj,
-                                          mission_config["cohort"],mission_config["course"],mission_config["pilot"],
-                                          Nimps=mission_config["images_per_second"])
+        self.recorder = rf.FlightRecorder(
+            drone_config["nx"],
+            drone_config["nu"],
+            self.ctl.hz,
+            record_duration,
+            cam_dim,
+            self.obj,
+            mission_config["cohort"],
+            mission_config["scene"],
+            mission_config["pilot"],
+            Nimps=mission_config["images_per_second"]
+        )
 
         self.cohort_name = mission_config["cohort"]
-        self.course_name = mission_config["course"]
+        self.scene_name = mission_config["scene"]
         self.pilot_name = mission_config["pilot"]
 
         # Create a timer to publish control commands
@@ -320,7 +328,7 @@ class FlightCommand(Node):
         print("---------------------------------------------------------------------")
         print('-----------------------> Node Configuration <------------------------')
         print('Cohort Name      :',mission_config["cohort"])
-        print('Course Name      :',mission_config["course"])
+        print('Scene Name      :',mission_config["scene"])
         print('Pilot Name       :',mission_config["pilot"])
         print('Quad Name        :',drone_config["name"])
         print('Control Frequency:',self.ctl.hz)
@@ -348,12 +356,16 @@ class FlightCommand(Node):
 
         print('--------------------> Trajectory Information <-----------------------')
         # print('Number of Segments :',self.N_sm)
-        print('Trajectory Duration:',tXUi[0,-1],'s')
+        # print('Trajectory Duration:',tXUi[0,-1],'s')
         print('---------------------------------------------------------------------')
         # print('Keyframes:')
-        print('Starting Location:')
-        print('xref',self.xref)
-        # print(tabulate(table, headers=["Time","x (m)", "y (m)", "z (m)", "yaw (rad)"]))
+        print('Starting Location & Orientation:')
+        x0_est = zch.vo2x(self.vo_est,self.T_e2w)[0:10]
+        x0_est[6:10] = th.obedient_quaternion(x0_est[6:10],self.xref[6:10])
+        print('xref: ',x0_est[1:3])
+        print('qref: ',x0_est[6:10])
+        # print('xref',self.xref)
+        # print(tabulate(table, headers=["x (m)", "y (m)", "z (m)", "yaw (rad)"]))
         print('---------------------------------------------------------------------')
         print('=====================================================================')
 
@@ -397,8 +409,7 @@ class FlightCommand(Node):
             print('Camera feed lost. Initiating landing sequence.')
 
         # Process Image
-        # Convert ZED frame BGR→RGB
-        frame_rgb = imgz[..., ::-1]
+        frame_rgb = cv2.cvtColor(imgz, cv2.COLOR_BGR2RGB)
         
         # Inference
         t0 = time.time()
@@ -463,7 +474,7 @@ class FlightCommand(Node):
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
 
             # Check if we are still in the trajectory
-            if t_tr <= (self.Tpi[-1]+self.t_lg):
+            if t_tr < (self.Tpi[-1]+self.t_lg):
                 # Compute the reference trajectory current point
                 t_ref = np.min((t_tr,self.Tpi[-1]))                             # Reference time (does not exceed ideal)
                 # if t_ref > self.Tpi[self.k_sm+1]:                               # Check if we are in a new segment
@@ -478,7 +489,7 @@ class FlightCommand(Node):
                 u_ref = self.uref
 
                 # Generate vrs command
-                u_act,self.znn,adv,t_sol_ctl = self.ctl.control(u_pr,x_est,u_pr,obj,img,znn)
+                u_act,self.znn,adv,t_sol_ctl = self.ctl.control(t_tr,x_est,u_pr,obj,img,znn)
 
                 # Send command
                 zch.publish_uvr_command(self.get_current_timestamp_time(),u_act,self.vehicle_rates_setpoint_publisher)
@@ -487,6 +498,7 @@ class FlightCommand(Node):
                 t_sol = np.hstack((t_sol_ctl,time.time()-t0_lp))
                 self.recorder.record(img,t_tr,u_act,x_ref,u_ref,x_est,x_ext,adv,t_sol)
             else:
+                self._policy_duration = t_tr
                 self.sm = StateMachine.LAND
                 print('Trajectory Finished.')
         else:
@@ -522,6 +534,7 @@ class FlightCommand(Node):
                 hz_min = 1/np.max(Tcmd)
 
                 print("Controller Computation Time Statistics")
+                print(f"Policy was active for {self._policy_duration:.2f} seconds.")
                 print("Policy Component Compute Time (s): ", mu_t_cmp)
                 print("Policy Total Compute Frequency (hz):", hz_cmp)
                 print("Total Command Loop Frequency (hz): ", hz_cmd)
