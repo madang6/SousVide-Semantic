@@ -1,4 +1,5 @@
-queries: ["mannequin", "textbook on stool", "water barrel"]
+queries: ["mannequin", "textbook on stool", "water barrel", "ladder"]
+# queries: ["mannequin", "textbook on stool", "water barrel"]
 # queries: ["mannequin", "water barrel"]
 # queries: ["textbook on stool"]
 # queries: ["mannequin"]
@@ -9,21 +10,24 @@ radii:
   - [ 1.0,  0.4]   # for "mannequin"
   - [ 2.0,  0.4]   # for "textbook on stool"
   - [ 1.8,  0.4]   # for "water barrel"
-
+  - [ 1.0,  0.4]   # for "mannequin"
 altitudes:
   - -1.0            # flight height for "mannequin"
   - -0.9            # flight height for "ladder”
   - -1.0            # flight height for "water barrel"
+  - -1.0
 
 similarities:
   - [ 0.90, 0.025 ]  # threshold, filter radius
   - [ 0.90, 0.025 ]
   - [ 0.90, 0.025 ]
+  - [ 0.90, 0.025 ]
 
 nbranches:
-  - 110
-  - 110
-  - 110
+  - 1100
+  - 1100
+  - 1100
+  - 1100
 
 hoverMode: False
 numTraj: all

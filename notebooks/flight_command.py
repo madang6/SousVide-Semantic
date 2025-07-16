@@ -10,9 +10,16 @@ from tabulate import tabulate
 import time
 from enum import Enum
 
+import cv2
+import albumentations as A
+
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from rclpy.executors import MultiThreadedExecutor
+
+from sensor_msgs.msg import Image
 
 from px4_msgs.msg import (
     VehicleCommand,
@@ -24,15 +31,14 @@ from px4_msgs.msg import (
 from sousvide.control.pilot import Pilot
 import figs.control.vehicle_rate_mpc as vr_mpc
 
-
-import sousvide.flight.vision_preprocess as vp
+import sousvide.flight.vision_preprocess_alternate as vp
 import sousvide.flight.zed_command_helper as zch
 import figs.dynamics.model_equations as me
 import figs.dynamics.model_specifications as qc
 import figs.utilities.trajectory_helper as th
 import sousvide.visualize.plot_synthesize as ps
 import sousvide.visualize.record_flight as rf
-import sousvide.visualize.plot_flight as pf
+# import sousvide.visualize.plot_flight as pf
 
 class StateMachine(Enum):
     """Enum class for pilot state."""
@@ -94,11 +100,16 @@ class FlightCommand(Node):
         print("=====================================================================")
         print("---------------------------------------------------------------------")
 
-        # Some useful constants variables --------------------------------------------------
-        hz = 20
+        # ---------------------------------------------------------------------------------------
+        # Some useful constants & variables -----------------------------------------------------
+        # ---------------------------------------------------------------------------------------
+        hz = 10
 
         # Camera Parameters
-        cam_dim,cam_fps, = [360,640,3],60           # we use the convention: [height,width,channels]
+        cam_dim,cam_fps, = [376,672,3],30           # we use the convention: [height,width,channels]
+
+        cb_sensor = ReentrantCallbackGroup()
+        cb_control = ReentrantCallbackGroup()
 
         # QoS Profile
         qos_drone = QoSProfile(
@@ -113,30 +124,53 @@ class FlightCommand(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
-    
+        qos_cam = QoSProfile(
+             reliability=ReliabilityPolicy.BEST_EFFORT,
+             durability=DurabilityPolicy.VOLATILE,
+             history=HistoryPolicy.KEEP_LAST,
+             depth=1
+         )
+
+        # subscribe to raw images—depth=1 keeps only latest frame
+        self.create_subscription(
+            Image,
+            'camera/image_raw',
+            self._on_image,
+            qos_cam,
+            callback_group=cb_sensor
+        )
+
+        print("Loading Configs")
         # Load Configs
         workspace_path = os.path.dirname(os.path.dirname(__file__))
 
-        with open(os.path.join(workspace_path,"configs","missions",mission_name+".json")) as json_file:
-            mission_config = json.load(json_file)
+        # Check for mission file
+        if os.path.isfile(os.path.join(workspace_path,"configs","missions",mission_name+".json")):
+            with open(os.path.join(workspace_path,"configs","missions",mission_name+".json")) as json_file:
+                mission_config = json.load(json_file)
+        else:
+            raise FileNotFoundError(f"Mission file not found: {mission_name}.json")
+        print("Loading Courses")
 
-        # with open(os.path.join(workspace_path,"configs","courses",mission_config["course"]+".json")) as json_file:
-        #     mission_config = json.load(json_file)
-        #NOTE modified this approach to load the RRT* generated tXUi from the pickle file
-        with open(os.path.join(workspace_path,"configs","courses",mission_config["course"]+"_tXUi.pkl"),"rb") as f:
-            loaded_tXUi = pickle.load(f)
-        with open(os.path.join(workspace_path,"configs","drones",mission_config["frame"]+".json")) as json_file:
-            frame_config = json.load(json_file)
+#NOTE modified this approach to load the RRT* generated tXUi from the pickle file
+        # Check for trajectory file, skip if it doesn't exist
+        loaded_tXUi = None
+        if mission_config.get("course") is not None:
+            with open(os.path.join(workspace_path,"configs","scenes",mission_config["course"]+"_tXUi.pkl"),"rb") as f:
+                loaded_tXUi = pickle.load(f)
+        else:
+            print("No Courses Loaded")
 
-        #NOTE RRT*/SSV precomputes the trajectory, we load it from a saved file
-        # # Unpack trajectories
-        # output = ms.solve(course_config)
-        # if output is not False:
-        #     Tpi, CPi = output
-        # else:
-        #     raise ValueError("Trajectory not feasible. Aborting.")
-        # tXUi = th.ts_to_tXU(Tpi,CPi,None,hz)
-        tXUi = deepcopy(loaded_tXUi)
+        # Check for drone file
+        if os.path.isfile(os.path.join(workspace_path,"configs","drones",mission_config["frame"]+".json")):
+            with open(os.path.join(workspace_path,"configs","drones",mission_config["frame"]+".json")) as json_file:
+                frame_config = json.load(json_file)
+        else:
+            raise FileNotFoundError(f"Drone frame file not found, please provide one")
+        print("Loaded Frame")
+
+        if loaded_tXUi is not None:
+            tXUi = deepcopy(loaded_tXUi)
 
         # Unpack drone
         drone_config = qc.generate_specifications(frame_config)
@@ -144,18 +178,25 @@ class FlightCommand(Node):
 
         # Unpack variables
         q0_tol,z0_tol = mission_config["failsafes"]["attitude_tolerance"],mission_config["failsafes"]["height_tolerance"]
-        t_lg = mission_config["linger"]
+        self.t_lg = mission_config["linger"]
 
         # ---------------------------------------------------------------------------------------
         # Class Variables -----------------------------------------------------------------------
-
+        # ---------------------------------------------------------------------------------------
+        print("Loading Pilot")
         # Controller
         if mission_config["pilot"] == "mpc":
             self.isNN = False
+            if loaded_tXUi is None:
+                raise RuntimeError(
+                    "Pilot 'mpc' requires a precomputed tXUi trajectory, but no "
+                    f"'{mission_config['course']}_tXUi.pkl' was found."
+                )
             self.ctl = vr_mpc.VehicleRateMPC(tXUi,drone_config,hz,use_RTI=True,tpad=mission_config["linger"])
         else:
             self.isNN = True
             self.ctl = Pilot(mission_config["cohort"],mission_config["pilot"])
+            print(f"Using Pilot: {mission_config['pilot']}")
             self.ctl.set_mode('deploy')
 
         # Create subscribers
@@ -172,9 +213,20 @@ class FlightCommand(Node):
         self.vehicle_rates_setpoint_publisher = self.create_publisher(VehicleRatesSetpoint, drone_prefix+'/fmu/in/vehicle_rates_setpoint', qos_drone)
 
         # Initialize CLIPSeg Model
-        self.vision_processor = vp.CLIPSegONNXModel(
-            onnx_path=os.path.join(workspace_path,"cohorts","clipseg.onnx"),
-            hf_model="CIDAS/clipseg-rd64-refined"
+        self.prompt = mission_config.get('prompt', '')
+        print(f"Query Set to: {self.prompt}")
+        self.hf_model = mission_config.get('hf_model', 'CIDAS/clipseg-rd64-refined')
+        self.onnx_model_path = mission_config.get('onnx_model_path')
+
+        if self.onnx_model_path is None:
+            print("Initializing CLIPSegHFModel...")
+            self.vision_model = vp.CLIPSegHFModel(hf_model=self.hf_model)
+        else:
+            print("Initializing ONNX CLIPSegHFModel (this may export ONNX)...")
+            self.vision_model = vp.CLIPSegHFModel(
+                hf_model=self.hf_model,
+                onnx_model_path=self.onnx_model_path,
+                onnx_model_fp16_path=mission_config.get('onnx_model_fp16_path', None)
         )
 
         # Initalize camera (if exists)
@@ -184,15 +236,41 @@ class FlightCommand(Node):
         else:
             self.cam_dim,self.cam_fps = [0,0,0],0
 
+#NOTE streamline testing non-mpc pilots
+        if not self.isNN:
+            # MPC case: unpack the precomputed trajectory exactly as you do today
+            self.Tpi = tXUi[0, :]                             # time vector
+            self.obj = th.tXU_to_obj(tXUi)                    # your “object” vector
+            self.q0, self.z0 = tXUi[7:11,0], tXUi[3,0]         # initial quaternion & altitude
+            self.xref = tXUi[1:11,0]                          # 10-state at t=0
+            mean_u = np.mean(tXUi[14:18,:], axis=0).reshape(1,-1)
+            self.uref = np.vstack((-mean_u, tXUi[11:14,:]))    # reference inputs over time
+
+            # seed your odometry messages to match the first pose in the traj
+            self.vo_est.q[0], self.vo_est.q[1:4] = tXUi[10,0], tXUi[7:10,0]
+            self.vo_ext.q[0], self.vo_ext.q[1:4] = tXUi[10,0], tXUi[7:10,0]
+
+            # record for the full traj duration + linger
+            record_duration = self.Tpi[-1] + self.t_lg
+
+        else:
+            # non-MPC (neural) case: give everything a neutral default
+            dt = 1.0 / hz          # hz (control rate)
+            self.Tpi = np.arange(0.0, 15.0 + dt, dt)
+            self.obj = np.zeros((18,1))
+            self.q0 = np.array([0.0, 0.0, -0.70710678, 0.70710678])          # 
+            self.z0 = -0.50                                    # init altitude offset
+            self.xref = np.zeros(10)                          # no reference state
+            self.uref = -6.90*np.ones((4,))                   # reference input
+            record_duration = self.Tpi[-1] + self.t_lg        # 
+
+
         # Initialize control variables
-        #NOTE commented out variables don't exist for RRT* generated tXUi
+#NOTE commented out variables don't exist for RRT* generated tXUi
         self.node_start = False                                 # Node start flag
         self.node_status_informed = False                       # Node status informed flag
-        # self.Tpi,self.CPi = Tpi,CPi                             # trajectory time and control points
-        self.Tpi = tXUi[0,:]                                    # trajectory time
+
         self.drone_config = drone_config                        # drone configuration
-        self.obj = th.tXU_to_obj(tXUi)                          # objective
-        # self.k_sm,self.N_sm = 0, len(Tpi)-1                     # current segment index and total number of segments
         self.k_rdy = 0                                          # ready counter
         self.t_tr0 = 0.0                                        # trajectory start time
         self.vo_est = VehicleOdometry()                         # current state vector (estimated)
@@ -200,52 +278,41 @@ class FlightCommand(Node):
         self.vrs = VehicleRatesSetpoint()                       # current vehicle rates setpoint
         self.znn = (torch.zeros(self.ctl.model.Nz)              # current visual feature vector
                     if isinstance(self.ctl,Pilot) else None)   
-        
-        # Initialize Quaternions with starting reference quaternion (note: tXUi convention is qx,qy,qz,qw while vo_est is qw,qx,qy,qz)
-        self.vo_est.q[0],self.vo_est.q[1:4] = tXUi[10,0],tXUi[7:10,0]
-        self.vo_ext.q[0],self.vo_ext.q[1:4] = tXUi[10,0],tXUi[7:10,0]
 
         # State Machine and Failsafe variables
         self.sm = StateMachine.INIT                                    # state machine
-        self.xref = tXUi[1:11,0]                                       # reference state
-        #NOTE referring to something used in main loop here
-        # u_ref = np.hstack((-np.mean(xu_ref[13:17]),xu_ref[10:13]))
-        # print(f"mean of tXUi[14:18,0]: {np.mean(tXUi[14:18,:],axis=0)}")
-        mean_tXUi = np.mean(tXUi[14:18, :], axis=0)
-        mean_tXUi = mean_tXUi.reshape(1, -1)
-        print(f"mean_tXUi: {mean_tXUi.shape}")
-        print(f"tXUi[11:14,0]: {tXUi[11:14,:].shape}")
-        self.uref = np.vstack((-mean_tXUi,tXUi[11:14,:])) # reference input
         
-        self.q0,self.z0 = tXUi[7:11,0],tXUi[3,0]                       # initial attitude and altitude
+        # self.q0,self.z0 = tXUi[7:11,0],tXUi[3,0]                       # initial attitude and altitude
         self.q0_tol,self.z0_tol = q0_tol,z0_tol                        # attitude and altitude tolerances
-        self.t_lg = t_lg                                               # linger time
 
         # Create Variables for logging.
-        self.recorder = rf.FlightRecorder(drone_config["nx_br"],drone_config["nu_br"],
-                                          self.ctl.hz,tXUi[0,-1]+self.t_lg,
-                                          cam_dim,
-                                          self.obj,
-                                          mission_config["cohort"],mission_config["course"],mission_config["pilot"],
-                                          Nimps=mission_config["images_per_second"])
+        self.recorder = rf.FlightRecorder(
+            drone_config["nx"],
+            drone_config["nu"],
+            self.ctl.hz,
+            record_duration,
+            cam_dim,
+            self.obj,
+            mission_config["cohort"],
+            mission_config["scene"],
+            mission_config["pilot"],
+            Nimps=mission_config["images_per_second"]
+        )
 
         self.cohort_name = mission_config["cohort"]
-        self.course_name = mission_config["course"]
+        self.scene_name = mission_config["scene"]
         self.pilot_name = mission_config["pilot"]
 
         # Create a timer to publish control commands
-        self.cmdLoop = self.create_timer(1/self.ctl.hz, self.commander)
+        # self.cmdLoop = self.create_timer(1/self.ctl.hz, self.commander)
+        self.cmdLoop = self.create_timer(
+            1.0/self.ctl.hz,
+            self.commander,
+            callback_group=cb_control
+        )
 
         # Earth to World Pose
         self.T_e2w = np.eye(4)
-
-        # Diagnostics Variables
-        #NOTE Maybe save the nodes from RRT* here? could be useful for diagnostics
-        # table = []
-        # for idx,item in enumerate(course_config["keyframes"].values()):
-        #     FOkf = np.array(item['fo'],dtype=float)
-        #     data = np.hstack((self.Tpi[idx],FOkf[:,0]))
-        #     table.append(data)
 
         # Print Diagnostics
         print('=====================================================================')
@@ -253,7 +320,7 @@ class FlightCommand(Node):
         print("---------------------------------------------------------------------")
         print('-----------------------> Node Configuration <------------------------')
         print('Cohort Name      :',mission_config["cohort"])
-        print('Course Name      :',mission_config["course"])
+        print('Scene Name      :',mission_config["scene"])
         print('Pilot Name       :',mission_config["pilot"])
         print('Quad Name        :',drone_config["name"])
         print('Control Frequency:',self.ctl.hz)
@@ -281,17 +348,18 @@ class FlightCommand(Node):
 
         print('--------------------> Trajectory Information <-----------------------')
         # print('Number of Segments :',self.N_sm)
-        print('Trajectory Duration:',tXUi[0,-1],'s')
+        # print('Trajectory Duration:',tXUi[0,-1],'s')
         print('---------------------------------------------------------------------')
         # print('Keyframes:')
-        print('Starting Location:')
-        print('xref',self.xref)
-        # print(tabulate(table, headers=["Time","x (m)", "y (m)", "z (m)", "yaw (rad)"]))
+        print('Starting Location & Orientation:')
+        x0_est = zch.vo2x(self.vo_est,self.T_e2w)[0:10]
+        x0_est[6:10] = th.obedient_quaternion(x0_est[6:10],self.xref[6:10])
+        print('xref: ',x0_est[1:3])
+        print('qref: ',x0_est[6:10])
+        # print('xref',self.xref)
+        # print(tabulate(table, headers=["x (m)", "y (m)", "z (m)", "yaw (rad)"]))
         print('---------------------------------------------------------------------')
         print('=====================================================================')
-
-        # Plot Trajectory
-        # ps.CP_to_3D([self.Tpi],[self.CPi],n=50)
 
         # Wait for GCS clearance
         input("Press Enter to proceed...")
@@ -315,6 +383,22 @@ class FlightCommand(Node):
     def get_current_trajectory_time(self) -> float:
         """Get current trajectory time."""
         return self.get_clock().now().nanoseconds/1e9 - self.t_tr0
+    
+    def on_image_callback(self, msg: Image):
+        """Grab & run inference in its own thread."""
+        imgz, _ = zch.get_image(self.pipeline)
+        if imgz is None:
+            return
+        frame = cv2.cvtColor(imgz, cv2.COLOR_BGR2RGB)
+        # store last image (non-blocking for control)
+        self.latest_mask = self.vision_model.clipseg_hf_inference(
+            frame, self.prompt,
+            resize_output_to_input=True,
+            use_refinement=False,
+            use_smoothing=False,
+            scene_change_threshold=1.0,
+            verbose=False
+        )
 
     def commander(self) -> None:
         """Main control loop for generating commands."""
@@ -324,10 +408,29 @@ class FlightCommand(Node):
         x_est[6:10] = th.obedient_quaternion(x_est[6:10],self.xref[6:10])
         x_ext[6:10] = th.obedient_quaternion(x_ext[6:10],self.xref[6:10])
 
-        img,_ = zch.get_image(self.pipeline)
-        if img is None:
-            self.sm = StateMachine.LAND
-            print('Camera feed lost. Initiating landing sequence.')
+#FIXME: 
+        img = getattr(self, 'latest_mask', None)       # grab freshest available
+        
+        # imgz,_ = zch.get_image(self.pipeline)
+        # if imgz is None:
+        #     self.sm = StateMachine.LAND
+        #     print('Camera feed lost. Initiating landing sequence.')
+
+        # # Process Image
+        # frame_rgb = cv2.cvtColor(imgz, cv2.COLOR_BGR2RGB)
+        
+        # # Inference
+        # t0 = time.time()
+        # img = self.vision_model.clipseg_hf_inference(
+        #     frame_rgb,
+        #     self.prompt,
+        #     resize_output_to_input=True,
+        #     use_refinement=False,
+        #     use_smoothing=False,
+        #     scene_change_threshold=1.0,
+        #     verbose=False,
+        # )
+        
 
         zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
 
@@ -363,7 +466,6 @@ class FlightCommand(Node):
                 # Print State Information
                 print('=====================================================================')
                 print('Trajectory Started.')
-                # print('In Segment:',self.k_sm+1,'/',self.N_sm)
             else:
 
                 # Looping State Actions
@@ -380,22 +482,15 @@ class FlightCommand(Node):
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
 
             # Check if we are still in the trajectory
-            if t_tr <= (self.Tpi[-1]+self.t_lg):
+            if t_tr < (self.Tpi[-1]+self.t_lg):
                 # Compute the reference trajectory current point
                 t_ref = np.min((t_tr,self.Tpi[-1]))                             # Reference time (does not exceed ideal)
-                # if t_ref > self.Tpi[self.k_sm+1]:                               # Check if we are in a new segment
-                #     self.k_sm += 1
-                #     print('In Segment:',self.k_sm+1,'/',self.N_sm)
-
-                # xu_ref = th.TS_to_xu(t_ref,self.Tpi,self.CPi,self.drone_config)
-                # x_ref = np.hstack((xu_ref[0:6],th.obedient_quaternion(xu_ref[6:10],self.xref[6:10])))
-                # u_ref = np.hstack((-np.mean(xu_ref[13:17]),xu_ref[10:13]))
 
                 x_ref = self.xref
                 u_ref = self.uref
 
                 # Generate vrs command
-                u_act,self.znn,adv,t_sol_ctl = self.ctl.control(u_pr,x_est,u_pr,obj,img,znn)
+                u_act,self.znn,adv,t_sol_ctl = self.ctl.control(t_tr,x_est,u_pr,obj,img,znn)
 
                 # Send command
                 zch.publish_uvr_command(self.get_current_timestamp_time(),u_act,self.vehicle_rates_setpoint_publisher)
@@ -404,6 +499,7 @@ class FlightCommand(Node):
                 t_sol = np.hstack((t_sol_ctl,time.time()-t0_lp))
                 self.recorder.record(img,t_tr,u_act,x_ref,u_ref,x_est,x_ext,adv,t_sol)
             else:
+                self._policy_duration = t_tr
                 self.sm = StateMachine.LAND
                 print('Trajectory Finished.')
         else:
@@ -439,6 +535,7 @@ class FlightCommand(Node):
                 hz_min = 1/np.max(Tcmd)
 
                 print("Controller Computation Time Statistics")
+                print(f"Policy was active for {self._policy_duration:.2f} seconds.")
                 print("Policy Component Compute Time (s): ", mu_t_cmp)
                 print("Policy Total Compute Frequency (hz):", hz_cmp)
                 print("Total Command Loop Frequency (hz): ", hz_cmd)
@@ -457,19 +554,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Flight Command Node.")
 
     # Add arguments
-    parser.add_argument('--mission', type=str, help='Mission Config Name')
+    parser.add_argument(
+        '--mission',
+        type=str,
+        required=True,
+        help='Mission config name (without .json)'
+    )
 
     # Parse the command line arguments
     args = parser.parse_args()
 
     rclpy.init()
     controller = FlightCommand(args.mission)
-    rclpy.spin(controller)
+    executor = MultiThreadedExecutor()
+    executor.add_node(controller)
+    executor.spin(controller)
     controller.destroy_node()
     rclpy.shutdown()
 
 if __name__ == '__main__':
-    try:
-        main()
-    except Exception as e:
-        print(e)
+    main()

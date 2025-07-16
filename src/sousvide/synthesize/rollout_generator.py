@@ -15,7 +15,7 @@ import figs.tsplines.min_snap as ms
 import figs.tsampling.build_rrt_dataset as bd
 import sousvide.synthesize.synthesize_helper as sh
 import sousvide.synthesize.data_utils as du
-import sousvide.flight.vision_preprocess as vp
+import sousvide.flight.vision_preprocess_alternate as vp
 
 
 from figs.simulator import Simulator
