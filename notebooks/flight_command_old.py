@@ -11,8 +11,8 @@ import time
 from enum import Enum
 
 import cv2
+import albumentations as A
 
-import threading
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
@@ -226,11 +226,6 @@ class FlightCommand(Node):
             self.cam_dim,self.cam_fps = [0,0,0],0
         self.img_times = []
 
-        self.vision_thread     = None
-        self.vision_shutdown   = False
-        self.vision_started    = False
-        self.latest_mask       = None
-
 #NOTE streamline testing non-mpc pilots
         if not self.isNN:
             # MPC case: unpack the precomputed trajectory exactly as you do today
@@ -253,7 +248,7 @@ class FlightCommand(Node):
             dt = 1.0 / hz          # hz (control rate)
             self.Tpi = np.arange(0.0, 15.0 + dt, dt)
             self.obj = np.zeros((18,1))
-            self.q0 = np.array([0.0, 0.0, 0.70710678, 0.70710678])          # 
+            self.q0 = np.array([0.0, 0.0, -0.70710678, 0.70710678])          # 
             self.z0 = -0.50                                    # init altitude offset
             self.xref = np.zeros(10)                          # no reference state
             self.uref = -6.90*np.ones((4,))                   # reference input
@@ -401,29 +396,6 @@ class FlightCommand(Node):
         """Get current trajectory time."""
         return self.get_clock().now().nanoseconds/1e9 - self.t_tr0
 
-    def async_vision_loop(self):
-        """Continuously grab + infer, store only the newest mask."""
-        while not self.vision_shutdown:
-            imgz, _ = zch.get_image(self.pipeline)
-            if imgz is None:
-                time.sleep(0.01)
-                continue
-            t0_img = time.time()
-            frame = cv2.cvtColor(imgz, cv2.COLOR_BGR2RGB)
-            mask = self.vision_model.clipseg_hf_inference(
-                frame,
-                self.prompt,
-                resize_output_to_input=True,
-                use_refinement=False,
-                use_smoothing=False,
-                scene_change_threshold=1.0,
-                verbose=False
-            )
-            self.latest_mask = mask
-            t_elap = time.time() - t0_img
-            self.img_times.append(t_elap)
-
-
     def commander(self) -> None:
         """Main control loop for generating commands."""
         # Looping Callback Actions
@@ -432,7 +404,27 @@ class FlightCommand(Node):
         x_est[6:10] = th.obedient_quaternion(x_est[6:10],self.xref[6:10])
         x_ext[6:10] = th.obedient_quaternion(x_ext[6:10],self.xref[6:10])
 
-        img = self.latest_mask
+        imgz,_ = zch.get_image(self.pipeline)
+        if imgz is None:
+            self.sm = StateMachine.LAND
+            print('Camera feed lost. Initiating landing sequence.')
+
+        # Process Image
+        t0_img = time.time()
+        frame_rgb = cv2.cvtColor(imgz, cv2.COLOR_BGR2RGB)
+        
+        # Inference
+        img = self.vision_model.clipseg_hf_inference(
+            frame_rgb,
+            self.prompt,
+            resize_output_to_input=True,
+            use_refinement=False,
+            use_smoothing=False,
+            scene_change_threshold=1.0,
+            verbose=False,
+        )
+        tf_img = time.time() - t0_img
+        self.img_times.append(tf_img)
 
         zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
 
@@ -447,18 +439,6 @@ class FlightCommand(Node):
 
                 self.k_rdy = 0
                 self.sm = StateMachine.READY
-                
-                print("Starting Zed Vision Thread")
-                if not self.vision_started and self.pipeline is not None:
-                    self.vision_shutdown = False
-                    self.vision_thread = threading.Thread(
-                        target=self.async_vision_loop,
-                        daemon=True,
-                        name="ZedVisionThread"
-                    )
-                    self.vision_thread.start()
-                    self.vision_started = True
-                print("Vision Thread Online")
 
                 # Print State Information
                 print('---------------------------------------------------------------------')
@@ -527,12 +507,6 @@ class FlightCommand(Node):
         else:
             # State Actions
             zch.land(self.get_current_timestamp_time(),self.vehicle_command_publisher)
-            
-            print("Closing Vision Thread")
-            self.vision_shutdown = True
-            self.vision_thread.join(timeout=1.0)
-            self.vision_started = False
-            print("Vision Thread Offline")
             
             # Close the camera (if exists)
             if self.pipeline is not None:

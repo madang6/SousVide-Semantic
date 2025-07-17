@@ -11,11 +11,15 @@ import time
 from enum import Enum
 
 import cv2
+import albumentations as A
 
-import threading
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from rclpy.executors import MultiThreadedExecutor
+
+from sensor_msgs.msg import Image
 
 from px4_msgs.msg import (
     VehicleCommand,
@@ -99,10 +103,13 @@ class FlightCommand(Node):
         # ---------------------------------------------------------------------------------------
         # Some useful constants & variables -----------------------------------------------------
         # ---------------------------------------------------------------------------------------
-        hz = 20
+        hz = 10
 
         # Camera Parameters
         cam_dim,cam_fps, = [376,672,3],30           # we use the convention: [height,width,channels]
+
+        cb_sensor = ReentrantCallbackGroup()
+        cb_control = ReentrantCallbackGroup()
 
         # QoS Profile
         qos_drone = QoSProfile(
@@ -117,8 +124,22 @@ class FlightCommand(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
+        qos_cam = QoSProfile(
+             reliability=ReliabilityPolicy.BEST_EFFORT,
+             durability=DurabilityPolicy.VOLATILE,
+             history=HistoryPolicy.KEEP_LAST,
+             depth=1
+         )
 
-#FIXME
+        # subscribe to raw images—depth=1 keeps only latest frame
+        self.create_subscription(
+            Image,
+            'camera/image_raw',
+            self.on_image_callback,
+            qos_cam,
+            callback_group=cb_sensor
+        )
+
         print("Loading Configs")
         # Load Configs
         workspace_path = os.path.dirname(os.path.dirname(__file__))
@@ -129,10 +150,8 @@ class FlightCommand(Node):
                 mission_config = json.load(json_file)
         else:
             raise FileNotFoundError(f"Mission file not found: {mission_name}.json")
-#FIXME
         print("Loading Courses")
-        # with open(os.path.join(workspace_path,"configs","courses",mission_config["course"]+".json")) as json_file:
-            # mission_config = json.load(json_file)
+
 #NOTE modified this approach to load the RRT* generated tXUi from the pickle file
         # Check for trajectory file, skip if it doesn't exist
         loaded_tXUi = None
@@ -148,16 +167,8 @@ class FlightCommand(Node):
                 frame_config = json.load(json_file)
         else:
             raise FileNotFoundError(f"Drone frame file not found, please provide one")
-#FIXME
         print("Loaded Frame")
-        #NOTE RRT*/SSV precomputes the trajectory, we load it from a saved file
-        # # Unpack trajectories
-        # output = ms.solve(course_config)
-        # if output is not False:
-        #     Tpi, CPi = output
-        # else:
-        #     raise ValueError("Trajectory not feasible. Aborting.")
-        # tXUi = th.ts_to_tXU(Tpi,CPi,None,hz)
+
         if loaded_tXUi is not None:
             tXUi = deepcopy(loaded_tXUi)
 
@@ -172,7 +183,6 @@ class FlightCommand(Node):
         # ---------------------------------------------------------------------------------------
         # Class Variables -----------------------------------------------------------------------
         # ---------------------------------------------------------------------------------------
-#FIXME:
         print("Loading Pilot")
         # Controller
         if mission_config["pilot"] == "mpc":
@@ -186,6 +196,7 @@ class FlightCommand(Node):
         else:
             self.isNN = True
             self.ctl = Pilot(mission_config["cohort"],mission_config["pilot"])
+            print(f"Using Pilot: {mission_config['pilot']}")
             self.ctl.set_mode('deploy')
 
         # Create subscribers
@@ -217,6 +228,7 @@ class FlightCommand(Node):
                 onnx_model_path=self.onnx_model_path,
                 onnx_model_fp16_path=mission_config.get('onnx_model_fp16_path', None)
         )
+        self.clipseg_times: list[float] = []
 
         # Initalize camera (if exists)
         self.pipeline = zch.get_camera(cam_dim[0],cam_dim[1],cam_fps)
@@ -224,12 +236,6 @@ class FlightCommand(Node):
             self.cam_dim,self.cam_fps = cam_dim,cam_fps
         else:
             self.cam_dim,self.cam_fps = [0,0,0],0
-        self.img_times = []
-
-        self.vision_thread     = None
-        self.vision_shutdown   = False
-        self.vision_started    = False
-        self.latest_mask       = None
 
 #NOTE streamline testing non-mpc pilots
         if not self.isNN:
@@ -253,11 +259,10 @@ class FlightCommand(Node):
             dt = 1.0 / hz          # hz (control rate)
             self.Tpi = np.arange(0.0, 15.0 + dt, dt)
             self.obj = np.zeros((18,1))
-            self.q0 = np.array([0.0, 0.0, 0.70710678, 0.70710678])          # 
+            self.q0 = np.array([0.0, 0.0, -0.70710678, 0.70710678])          # 
             self.z0 = -0.50                                    # init altitude offset
             self.xref = np.zeros(10)                          # no reference state
             self.uref = -6.90*np.ones((4,))                   # reference input
-            # leave vo_est/.vo_ext.q alone so they start at whatever your first callback gives
             record_duration = self.Tpi[-1] + self.t_lg        # 
 
 
@@ -265,10 +270,8 @@ class FlightCommand(Node):
 #NOTE commented out variables don't exist for RRT* generated tXUi
         self.node_start = False                                 # Node start flag
         self.node_status_informed = False                       # Node status informed flag
-        # self.Tpi,self.CPi = Tpi,CPi                             # trajectory time and control points
 
         self.drone_config = drone_config                        # drone configuration
-        # self.k_sm,self.N_sm = 0, len(Tpi)-1                     # current segment index and total number of segments
         self.k_rdy = 0                                          # ready counter
         self.t_tr0 = 0.0                                        # trajectory start time
         self.vo_est = VehicleOdometry()                         # current state vector (estimated)
@@ -276,22 +279,9 @@ class FlightCommand(Node):
         self.vrs = VehicleRatesSetpoint()                       # current vehicle rates setpoint
         self.znn = (torch.zeros(self.ctl.model.Nz)              # current visual feature vector
                     if isinstance(self.ctl,Pilot) else None)   
-#FIXME
-        # Initialize Quaternions with starting reference quaternion (note: tXUi convention is qx,qy,qz,qw while vo_est is qw,qx,qy,qz)
-        # self.vo_est.q[0],self.vo_est.q[1:4] = tXUi[10,0],tXUi[7:10,0]
-        # self.vo_ext.q[0],self.vo_ext.q[1:4] = tXUi[10,0],tXUi[7:10,0]
 
         # State Machine and Failsafe variables
         self.sm = StateMachine.INIT                                    # state machine
-        # self.xref = tXUi[1:11,0]                                       # reference state
-#NOTE referring to something used in main loop here
-        # u_ref = np.hstack((-np.mean(xu_ref[13:17]),xu_ref[10:13]))
-        # print(f"mean of tXUi[14:18,0]: {np.mean(tXUi[14:18,:],axis=0)}")
-        # mean_tXUi = np.mean(tXUi[14:18, :], axis=0)
-        # mean_tXUi = mean_tXUi.reshape(1, -1)
-        # print(f"mean_tXUi: {mean_tXUi.shape}")
-        # print(f"tXUi[11:14,0]: {tXUi[11:14,:].shape}")
-        # self.uref = np.vstack((-mean_tXUi,tXUi[11:14,:])) # reference input
         
         # self.q0,self.z0 = tXUi[7:11,0],tXUi[3,0]                       # initial attitude and altitude
         self.q0_tol,self.z0_tol = q0_tol,z0_tol                        # attitude and altitude tolerances
@@ -315,18 +305,15 @@ class FlightCommand(Node):
         self.pilot_name = mission_config["pilot"]
 
         # Create a timer to publish control commands
-        self.cmdLoop = self.create_timer(1/self.ctl.hz, self.commander)
+        # self.cmdLoop = self.create_timer(1/self.ctl.hz, self.commander)
+        self.cmdLoop = self.create_timer(
+            1.0/self.ctl.hz,
+            self.commander,
+            callback_group=cb_control
+        )
 
         # Earth to World Pose
         self.T_e2w = np.eye(4)
-
-        # Diagnostics Variables
-#NOTE Maybe save the nodes from RRT* here? could be useful for diagnostics
-        # table = []
-        # for idx,item in enumerate(course_config["keyframes"].values()):
-        #     FOkf = np.array(item['fo'],dtype=float)
-        #     data = np.hstack((self.Tpi[idx],FOkf[:,0]))
-        #     table.append(data)
 
         # Print Diagnostics
         print('=====================================================================')
@@ -375,9 +362,6 @@ class FlightCommand(Node):
         print('---------------------------------------------------------------------')
         print('=====================================================================')
 
-        # Plot Trajectory
-        # ps.CP_to_3D([self.Tpi],[self.CPi],n=50)
-
         # Wait for GCS clearance
         input("Press Enter to proceed...")
 
@@ -400,29 +384,25 @@ class FlightCommand(Node):
     def get_current_trajectory_time(self) -> float:
         """Get current trajectory time."""
         return self.get_clock().now().nanoseconds/1e9 - self.t_tr0
-
-    def async_vision_loop(self):
-        """Continuously grab + infer, store only the newest mask."""
-        while not self.vision_shutdown:
-            imgz, _ = zch.get_image(self.pipeline)
-            if imgz is None:
-                time.sleep(0.01)
-                continue
-            t0_img = time.time()
-            frame = cv2.cvtColor(imgz, cv2.COLOR_BGR2RGB)
-            mask = self.vision_model.clipseg_hf_inference(
-                frame,
-                self.prompt,
-                resize_output_to_input=True,
-                use_refinement=False,
-                use_smoothing=False,
-                scene_change_threshold=1.0,
-                verbose=False
-            )
-            self.latest_mask = mask
-            t_elap = time.time() - t0_img
-            self.img_times.append(t_elap)
-
+    
+    def on_image_callback(self, msg: Image):
+        """Grab & run inference in its own thread."""
+        imgz, _ = zch.get_image(self.pipeline)
+        if imgz is None:
+            return
+        t0_img = time.time()
+        frame = cv2.cvtColor(imgz, cv2.COLOR_BGR2RGB)
+        # store last image (non-blocking for control)
+        self.latest_mask = self.vision_model.clipseg_hf_inference(
+            frame, self.prompt,
+            resize_output_to_input=True,
+            use_refinement=False,
+            use_smoothing=False,
+            scene_change_threshold=1.0,
+            verbose=False
+        )
+        dt_inf = time.time() - t0_inf
+        self.clipseg_times.append(dt_inf)
 
     def commander(self) -> None:
         """Main control loop for generating commands."""
@@ -432,7 +412,29 @@ class FlightCommand(Node):
         x_est[6:10] = th.obedient_quaternion(x_est[6:10],self.xref[6:10])
         x_ext[6:10] = th.obedient_quaternion(x_ext[6:10],self.xref[6:10])
 
-        img = self.latest_mask
+#FIXME: 
+        img = getattr(self, 'latest_mask', None)       # grab freshest available
+        
+        # imgz,_ = zch.get_image(self.pipeline)
+        # if imgz is None:
+        #     self.sm = StateMachine.LAND
+        #     print('Camera feed lost. Initiating landing sequence.')
+
+        # # Process Image
+        # frame_rgb = cv2.cvtColor(imgz, cv2.COLOR_BGR2RGB)
+        
+        # # Inference
+        # t0 = time.time()
+        # img = self.vision_model.clipseg_hf_inference(
+        #     frame_rgb,
+        #     self.prompt,
+        #     resize_output_to_input=True,
+        #     use_refinement=False,
+        #     use_smoothing=False,
+        #     scene_change_threshold=1.0,
+        #     verbose=False,
+        # )
+        
 
         zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
 
@@ -447,18 +449,6 @@ class FlightCommand(Node):
 
                 self.k_rdy = 0
                 self.sm = StateMachine.READY
-                
-                print("Starting Zed Vision Thread")
-                if not self.vision_started and self.pipeline is not None:
-                    self.vision_shutdown = False
-                    self.vision_thread = threading.Thread(
-                        target=self.async_vision_loop,
-                        daemon=True,
-                        name="ZedVisionThread"
-                    )
-                    self.vision_thread.start()
-                    self.vision_started = True
-                print("Vision Thread Online")
 
                 # Print State Information
                 print('---------------------------------------------------------------------')
@@ -480,7 +470,6 @@ class FlightCommand(Node):
                 # Print State Information
                 print('=====================================================================')
                 print('Trajectory Started.')
-                # print('In Segment:',self.k_sm+1,'/',self.N_sm)
             else:
 
                 # Looping State Actions
@@ -500,13 +489,6 @@ class FlightCommand(Node):
             if t_tr < (self.Tpi[-1]+self.t_lg):
                 # Compute the reference trajectory current point
                 t_ref = np.min((t_tr,self.Tpi[-1]))                             # Reference time (does not exceed ideal)
-                # if t_ref > self.Tpi[self.k_sm+1]:                               # Check if we are in a new segment
-                #     self.k_sm += 1
-                #     print('In Segment:',self.k_sm+1,'/',self.N_sm)
-
-                # xu_ref = th.TS_to_xu(t_ref,self.Tpi,self.CPi,self.drone_config)
-                # x_ref = np.hstack((xu_ref[0:6],th.obedient_quaternion(xu_ref[6:10],self.xref[6:10])))
-                # u_ref = np.hstack((-np.mean(xu_ref[13:17]),xu_ref[10:13]))
 
                 x_ref = self.xref
                 u_ref = self.uref
@@ -527,12 +509,6 @@ class FlightCommand(Node):
         else:
             # State Actions
             zch.land(self.get_current_timestamp_time(),self.vehicle_command_publisher)
-            
-            print("Closing Vision Thread")
-            self.vision_shutdown = True
-            self.vision_thread.join(timeout=1.0)
-            self.vision_started = False
-            print("Vision Thread Offline")
             
             # Close the camera (if exists)
             if self.pipeline is not None:
@@ -563,15 +539,23 @@ class FlightCommand(Node):
                 hz_min = 1/np.max(Tcmd)
 
                 print("Controller Computation Time Statistics")
-                print(f"Policy was active for {self._policy_duration:.2f} seconds.")
-                print("Policy Component Compute Time (s): ", mu_t_cmp)
-                print("Policy Total Compute Frequency (hz):", hz_cmp)
-                print("Total Command Loop Frequency (hz): ", hz_cmd)
-                print("Controller Minimum Frequency (hz): ", hz_min)
-                print("CLIPSeg Inference Statistics")
-                print(f"Average CLIPSeg Inference Time (s): {np.mean(self.img_times):.4f}")
-                print(f"CLIPSeg frequency (hz): {1/np.mean(self.img_times):.2f}")
+                print(f"  Policy was active for {self._policy_duration:.2f} seconds.")
+                print("  Policy Component Compute Time (s):  ", mu_t_cmp)
+                print("  Policy Total Compute Frequency (hz):", hz_cmp)
+                print("  Total Command Loop Frequency (hz):  ", hz_cmd)
+                print("  Controller Minimum Frequency (hz):  ", hz_min)
                 print('=====================================================================')
+                if len(self.clipseg_times) > 0:
+                    mu_inf    = np.mean(self.clipseg_times)
+                    hz_inf    = 1.0 / mu_inf
+                    hz_inf_min= 1.0 / np.max(self.clipseg_times)
+
+                    print('---------------------------------------------------------------------')
+                    print("CLIPSeg Inference Statistics")
+                    print(f"  Mean Inference Time (s):       {mu_inf:.4f}")
+                    print(f"  Mean Inference Frequency (Hz): {hz_inf:.1f}")
+                    print(f"  Min Inference Frequency (Hz):  {hz_inf_min:.1f}")
+
             
             # Wait for GCS clearance
             input("Press Enter to close node...")
@@ -597,7 +581,9 @@ def main() -> None:
 
     rclpy.init()
     controller = FlightCommand(args.mission)
-    rclpy.spin(controller)
+    executor = MultiThreadedExecutor()
+    executor.add_node(controller)
+    executor.spin(controller)
     controller.destroy_node()
     rclpy.shutdown()
 
