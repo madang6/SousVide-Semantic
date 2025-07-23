@@ -1,8 +1,8 @@
-# queries: ["microwave","ladder","armchair"]
+queries: ["microwave","ladder","armchair"]
 # queries: ["microwave", "armchair"]
 # queries: ["nothing"]
 # queries: ["ladder"]
-queries: ["microwave"]
+# queries: ["microwave"]
 # queries: ["armchair"]
 # semantic_target: "mannequin"
 
@@ -12,23 +12,23 @@ queries: ["microwave"]
 
 radii:
   - [ 1.75,  0.4]   # for "microwave"
-  # - [ 1.75,  0.4]   # for "ladder"
-  # - [ 1.75,  0.4]   # for "armchair"
+  - [ 1.75,  0.4]   # for "ladder"
+  - [ 1.75,  0.4]   # for "armchair"
 
 altitudes:
   - -1.0            # flight height for “microwave”
-  # - -1.1            # flight height for "ladder”
-  # - -1.0            # flight height for "armchair"
+  - -1.1            # flight height for "ladder”
+  - -1.0            # flight height for "armchair"
 
 similarities:
   - [ 0.90, 0.025 ]  # threshold, filter radius
-  # - [ 0.90, 0.025 ]
-  # - [ 0.75, 0.075 ]
+  - [ 0.90, 0.025 ]
+  - [ 0.75, 0.075 ]
 
 nbranches:
-  - 110
-  # - 110
-  # - 110
+  - 55
+  - 55
+  - 55
 
 hoverMode: False
 numTraj: all

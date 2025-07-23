@@ -147,22 +147,6 @@ class CLIPSegHFModel:
             opset_version=17,
             do_constant_folding=True,
         )
-    
-    # def _convert_to_fp16(self, onnx_path: str, fp16_path: str):
-    #     import onnx
-    #     from onnxconverter_common import float16
-
-    #     model = onnx.load("clipseg_model.onnx")
-
-    #     model_fp16 = float16.convert_float_to_float16(
-    #         model,
-    #         keep_io_types=False,       # keep inputs/outputs in float32
-    #         disable_shape_infer=True,  # skip ONNX shape inference
-    #         op_block_list=[],
-    #         check_fp16_ready=False
-    #     )
-
-    #     onnx.save_model(model_fp16, "clipseg_model_fp16.onnx")
 
     def _convert_to_fp16(self, onnx_path: str, fp16_path: str):
         import onnx
@@ -194,28 +178,6 @@ class CLIPSegHFModel:
         else:
             scaled = (arr - self.running_min) / span
         return scaled
-    
-    # def _run_onnx_model(self, img: Image.Image, prompt: str) -> np.ndarray:
-    #     """
-    #     Runs forward pass via onnxruntime and returns the raw logits as a float32 numpy array.
-    #     """
-    #     # 1) Get PyTorch tensors from the HF processor...
-    #     torch_inputs = self.processor(images=img, text=prompt, return_tensors="pt")
-    #     # 2) Move them to CPU & convert to numpy for ONNX runtime
-    #     ort_inputs = {}
-    #     for inp in self.ort_session.get_inputs():
-    #         name = inp.name
-    #         tensor = torch_inputs.get(name)
-    #         if tensor is None:
-    #             continue
-    #         # detach, move to CPU, numpy
-    #         ort_inputs[name] = tensor.cpu().numpy()
-    #     # 3) Run the ONNX session
-    #     ort_outs = self.ort_session.run(None, ort_inputs)
-    #     # assume first output is logits [1,1,H,W]
-    #     logits = ort_outs[0]
-    #     return logits.squeeze().astype(np.float32)
-
 
     def _run_onnx_model(self, img: Image.Image, prompt: str) -> np.ndarray:
         import numpy as np
@@ -346,10 +308,31 @@ class CLIPSegHFModel:
                 logits = self.model(**torch_inputs).logits
             arr = logits.cpu().squeeze().numpy().astype(np.float32)
 
-        skip_norm = prompt.strip().lower() == "null"
+        # skip_norm = prompt.strip().lower() == "null"
+        skip_norm = True
         if skip_norm:
-            prob = 1.0 / (1.0 + np.exp(-arr))
-            mask_u8 = (prob * 255).astype(np.uint8)
+            # prob = 1.0 / (1.0 + np.exp(-arr))
+            # mask_u8 = (prob * 255).astype(np.uint8)
+           # —– 1) raw sigmoid probability
+           prob = 1.0 / (1.0 + np.exp(-arr))
+    
+           # —– 2) update & track the global max logit seen so far
+           cur_max = float(arr.max())
+           # first time: _max_logit = cur_max
+           # thereafter: max of previous and current
+           self._max_logit = max(getattr(self, "_max_logit", cur_max), cur_max)
+    
+           # —– 3) compute what the max “full-bright” probability is
+           global_max_prob = 1.0 / (1.0 + np.exp(-self._max_logit))
+    
+           # —– 4) scale your current mask so that
+           #      prob == global_max_prob → 1.0 (full brightness),
+           #      lower probs → proportionally dimmer
+           scaled = prob / (global_max_prob + 1e-8)
+           scaled = np.clip(scaled, 0.0, 1.0)
+    
+           # —– 5) to 8-bit mask
+           mask_u8 = (scaled * 255).astype(np.uint8)
         else:
             scaled = self._rescale_global(arr)
             mask_u8 = (scaled * 255).astype(np.uint8)
@@ -417,7 +400,7 @@ def colorize_mask_fast(mask_np, lut):
 
 def blend_overlay_gpu(base: np.ndarray,
                       overlay: np.ndarray,
-                      alpha: float = 1.00) -> np.ndarray:
+                      alpha: float = 0.85) -> np.ndarray:
     """
     Convert `base`→mono-gray on GPU (if needed), resize `overlay` on GPU,
     then blend:  result = α·overlay + (1−α)·gray_base.  Entirely on CUDA.

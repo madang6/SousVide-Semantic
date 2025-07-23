@@ -5,8 +5,8 @@ CONFIG="/home/admin/StanfordMSL/SousVide-Semantic/configs/experiment/ssv_multi3d
 TMP="/home/admin/StanfordMSL/SousVide-Semantic/configs/experiment/ssv_multi3dgs.tmp.yml"
 
 # reverse order
-# FLIGHTS=( "sv_917_3_left_gemsplat" "flightroom_lowres" "spheres" "indooroutdoor" "packardpark")
-FLIGHTS=("flightroom_lowres")
+FLIGHTS=( "sv_917_3_left_gemsplat" "flightroom_lowres" "spheres" "indooroutdoor" "packardpark")
+# FLIGHTS=("flightroom_lowres") 
 
 for flight in "${FLIGHTS[@]}"; do
   echo "=== Running flight = $flight ==="
@@ -23,13 +23,12 @@ for flight in "${FLIGHTS[@]}"; do
 
   # args+=( --use-wandb --wandb-project ssv )
   args+=( --use-wandb --wandb-project ssv \
-          --wandb-run-id cnij8j81 --wandb-resume allow )
+          --wandb-run-id 92v7jjgf --wandb-resume allow )
 
   python ssv_multi3dgs_campaign.py "${args[@]}"
 done
 
 rm -f "$TMP"
-
 
 # #!/usr/bin/env bash
 # set -euo pipefail

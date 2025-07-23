@@ -1,5 +1,5 @@
 {
   "input_video_path": "/home/admin/StanfordMSL/SousVide-Semantic/notebooks/test_space/sim_video_packardpark_traffic cone_expert_rgb.mp4",
-  "prompt": "a green car",
+  "prompt": "bicycles",
   "hf_model": "CIDAS/clipseg-rd64-refined"
 }

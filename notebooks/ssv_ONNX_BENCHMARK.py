@@ -106,33 +106,40 @@ def main():
         print("Live camera benchmarking completed. Saving processed frames...")
 
     else:
-        # File-based video benchmarking
+        # ——— File-based video benchmarking via imageio[ffmpeg] ———
         input_video_path = cfg['input_video_path']
         video_dir = os.path.dirname(input_video_path)
-        base, ext = os.path.splitext(os.path.basename(input_video_path))
-        if onnx_model_path is None:
-            output_path = os.path.join(video_dir, f"{base}_default_benchmark{ext}")
-        else:
-            output_path = os.path.join(video_dir, f"{base}_onnx_benchmark{ext}")
+        base, _ = os.path.splitext(os.path.basename(input_video_path))
+        suffix = "_onnx_benchmark" if onnx_model_path else "_default_benchmark"
+        output_path = os.path.join(video_dir, f"{base}{suffix}.mp4")
 
         cap = cv2.VideoCapture(input_video_path)
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open video: {input_video_path}")
 
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        fps    = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+        # Create an imageio writer for H.264-encoded MP4 with yuv420p pixel format
+        writer = imageio.get_writer(
+            output_path,
+            fps=fps,
+            codec='libx264',
+            # ffmpeg_params=['-pix_fmt', 'yuv420p'],
+            # output_params=[]
+        )
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        print(f"Processing {total_frames} frames at {fps:.2f} FPS...")
+        print(f"Processing {total_frames} frames at {fps:.2f} FPS…")
 
+        times, frame_count = [], 0
         while True:
             ret, frame_bgr = cap.read()
             if not ret:
                 break
 
+            # Convert to RGB for your inference call
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
             t0 = time.time()
@@ -146,22 +153,21 @@ def main():
                 verbose=False,
             )
             t1 = time.time()
+
             times.append(t1 - t0)
             frame_count += 1
 
-            if overlay.ndim == 3 and overlay.shape[2] == 3:
-                out_frame = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
-            else:
-                out_frame = overlay
-            out.write(out_frame)
+            # imageio expects an RGB array
+            writer.append_data(overlay)
 
             if frame_count % 50 == 0:
-                avg_ms = statistics.mean(times[-50:]) * 1000
-                print(f"  Frame {frame_count}/{total_frames}  avg {avg_ms:.1f} ms/frame")
+                avg_ms = statistics.mean(times[-50:]) * 1e3
+                print(f"  Frame {frame_count}/{total_frames}: avg {avg_ms:.1f} ms/frame")
 
         cap.release()
-        out.release()
-        print(f"Output video: {output_path}")
+        writer.close()
+
+        print(f"Output video saved to: {output_path}")
         print("File-based video benchmark completed.")
 
     # Print timing stats

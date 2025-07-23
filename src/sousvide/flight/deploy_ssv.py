@@ -44,6 +44,7 @@ def simulate_roster(cohort_name:str,method_name:str,
                     roster:List[str],
                     use_flight_recorder:bool=False,
                     review:bool=False,
+                    filename:str=None,
                     verbose:bool=False):
                     # visualize_rrt:bool=False):
     
@@ -178,6 +179,7 @@ def simulate_roster(cohort_name:str,method_name:str,
                 )
 
                 # Obstacle centroids and rings
+#FIXME
                 if loitering:
                     rings, obstacles = th.process_obstacle_clusters_and_sample(
                         epcds_arr, env_bounds)
@@ -188,6 +190,7 @@ def simulate_roster(cohort_name:str,method_name:str,
                         scene_cfg_file, simulator, epcds_list, epcds_arr, objectives,
                         goal_poses, obj_centroids, env_bounds, rings, obstacles, n_iter_rrt
                     )
+#
                 else:
                     # Generate RRT paths
                     raw_rrt_paths = bd.generate_rrt_paths(
@@ -225,14 +228,13 @@ def simulate_roster(cohort_name:str,method_name:str,
                         pickle.dump(combined_data, f)
                     
                     trajectory_dataset[obj_name] = combined_data
-                
+#FIXME
                 if loitering:
                     for idx in range(len(obstacles)):
                         print(f"Rings for loiter: {[rings[idx]]}")
                         all_trajectories[f"loiter_{idx}"], _ = th.parameterize_RRT_trajectories(
                             [rings[idx]], obstacles[idx], constant_velocity=1.0, sampling_frequency=20, loiter=True)
                     objectives.extend([f"null" for _ in range(len(obstacles))])
-
                     idx = np.random.randint(len(obstacles))
                     print(f"Selected loiter index for obstacles: {idx}")
                     # Take the first element of rings and create a new list with just that element
@@ -251,6 +253,7 @@ def simulate_roster(cohort_name:str,method_name:str,
                     with open(combined_file, "wb") as f:
                         pickle.dump(combined_data, f)
                     trajectory_dataset[f"loiter_{idx}"] = combined_data
+#
     else:
         # Load trajectory dataset from files
         print("Review mode enabled. Loading trajectory dataset from files.")
@@ -267,7 +270,10 @@ def simulate_roster(cohort_name:str,method_name:str,
 
             for objective in objectives:
                 combined_prefix = os.path.join(scenes_cfg_dir, scene_name)
-                combined_file_path = f"{combined_prefix}_{objective}.pkl"
+                if filename is not None:
+                    combined_file_path = filename
+                else:
+                    combined_file_path = f"{combined_prefix}_{objective}.pkl"
                 with open(combined_file_path, "rb") as f:
                     data = pickle.load(f)
                     trajectory_dataset[objective] = data
@@ -330,12 +336,14 @@ def simulate_roster(cohort_name:str,method_name:str,
                 simulator.load_frame(frame)
 
                 # Simulate Trajectory
+#FIXME
                 if obj_name.startswith("loiter_"):
                     # For loiter trajectories, simulate with special loiter parameters
                     print(f"simulating loiter trajectory with query: null")
                     Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
                         policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),
                         query="null",clipseg=vision_processor,verbose=verbose)
+#
                 else:
                     # Normal simulation for non-loiter trajectories
                     Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(

@@ -193,8 +193,11 @@ def get_data_paths(cohort_name: str,
         val_files.sort()
 
         # split the normal data_files into train/test
-        if len(data_files) == 0:
+        if len(data_files) == 0 and len(val_files) == 0 and len(rollout_files) == 0:
+            # print(f"Warning: No observation files found in {course_path}")
             raise ValueError(f"No observation files in {course_path}")
+        elif len(data_files) == 0 and (len(val_files) > 0 or len(rollout_files) > 0):
+            print(f"Warning: No training observation files found in {course_path}")
         elif len(data_files) == 1:
             train_paths.append(data_files[0])
             test_paths.append(data_files[0])

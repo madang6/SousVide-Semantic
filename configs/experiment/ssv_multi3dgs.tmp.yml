@@ -20,7 +20,7 @@ flights:
   # - ["spheres", "spheres"]
   # - ["indooroutdoor", "indooroutdoor"]
   # - ["packardpark", "packardpark"]
-  - ["sv_917_3_left_gemsplat", "sv_917_3_left_gemsplat"]
+- ["sv_917_3_left_gemsplat", "sv_917_3_left_gemsplat"]
 
 # List of policy identifiers
 roster: #[]
