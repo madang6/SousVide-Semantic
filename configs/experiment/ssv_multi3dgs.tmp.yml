@@ -5,6 +5,7 @@
 # cohort: "ssv_CLIPSEG_NORMAL"
 # cohort: "ssv_CLIPSEG_ONE-ENV-FOUR-OBJ"
 cohort: "ssv_CLIPSEG_LOITER_V2"
+# cohort: "ssv_CLIPSEG_SIGMOID"
 # cohort: "ssv_CLIPSEG_SUPERPIXELS"
 method: "rrt"
 

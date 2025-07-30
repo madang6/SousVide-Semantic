@@ -7,6 +7,8 @@ import copy
 import torch
 import re
 
+from scipy.spatial.transform import Rotation as R, Slerp
+
 from typing import Dict,Union,Tuple,List,Optional
 from tqdm.notebook import trange
 from tqdm import tqdm
@@ -18,7 +20,7 @@ import sousvide.synthesize.synthesize_helper as sh
 import sousvide.synthesize.data_utils as du
 import sousvide.flight.vision_preprocess_alternate as vp
 
-
+import sousvide.flight.deploy_ssv as df
 from figs.simulator import Simulator
 from figs.control.vehicle_rate_mpc import VehicleRateMPC
 from figs.dynamics.model_specifications import generate_specifications
@@ -62,6 +64,7 @@ def generate_rollout_data(cohort_name:str,method_name:str,
     
     sample_set_config = method_config["sample_set"]
     trajectory_set_config = method_config["trajectory_set"]
+    loiter_set_config = method_config["loiter_set"]
     frame_set_config = method_config["frame_set"]
     test_set_config = method_config["test_set"]
 
@@ -210,146 +213,187 @@ def generate_rollout_data(cohort_name:str,method_name:str,
             )
 #FIXME
             print("Generating loitering trajectories...")
-            loiter_id = 0
             if loitering:
-                total_batches = int(sum(
-                np.ceil((Nro_tp * (int(tXUi[0,-1]) // int(Tdt_ro))) / Nro_sv)
-                for course in all_trajectories
-                for tXUi in all_trajectories[course]
-                ))
-                batch_pbar = tqdm(total=total_batches, desc="Solving Loiter Batches")
-                for course_idx, course in enumerate(all_trajectories):
-                    trajectories = all_trajectories[course]
-                    loiter_trajectories = []
-                    for traj_idx, tXUi in enumerate(trajectories):
-                        duration = int(tXUi[0][-1])
-                        splits = duration // int(Tdt_ro)
-                        n_time = splits
-                        n_samples = Nro_tp * n_time
-                        times = np.tile(
-                            np.linspace(tXUi[0][0], tXUi[0][-1], n_time + 1)[:-1],
-                            Nro_tp
-                        )
-                        times += np.random.uniform(
-                            -1 / Ntp_sc,
-                            1 / Ntp_sc,
-                            n_samples
-                        )
-                        times = np.clip(times, tXUi[0][0], tXUi[0][-1])
-                        np.random.shuffle(times)
-                        batches = np.split(
-                            times,
-                            np.arange(Nro_sv, n_samples, Nro_sv)
-                        )
+                rollout_loiter(
+                    all_trajectories, objectives,
+                    Nro_tp, Tdt_ro, Ntp_sc, Nro_sv,
+                    Trep, base_frame_specs, course_cfg_path,
+                    combined_prefix, cohort_name, method_name, flights
+                )
+#             orig_courses = list(all_trajectories.keys())
+#             orig_name = dict(zip(orig_courses, objectives))
+#             loiter_id = 0
+#             if loitering:
+#                 total_batches = int(sum(
+#                 np.ceil((Nro_tp * (int(tXUi[0,-1]) // int(Tdt_ro))) / Nro_sv)
+#                 for course in orig_courses
+#                 for tXUi in all_trajectories[course]
+#                 ))
+#                 batch_pbar = tqdm(total=total_batches, desc="Solving Loiter Batches")
 
-                        for batch_idx, batch_times in enumerate(batches):
-                            loiter_tXUd = generate_loiter_trajectories(
-                                tXUd_rrt=tXUi, Tpd = tXUi[0], Tsps=Trep, base_frame_specs=base_frame_specs,
-                                course_cfg_path=course_cfg_path
-                            )
-                            batch_pbar.update()
-                            # all_trajectories[f"loiter_{course_idx}"].extend(loiter_tXUd)
-                            loiter_trajectories.extend(loiter_tXUd)
-#FIXME verifies we're doing
-#      the right thing here
-                            if loiter_id == 0:
-                                print(f"Simulating loitering trajectory for course '{course}'.")
-                                combined_data = {
-                                    "tXUi": loiter_tXUd[0]
-                                }
-                                combined_file = f"{combined_prefix}_verify_loiter_{course}.pkl"
-                                with open(combined_file, "wb") as f:
-                                    pickle.dump(combined_data, f)
+#                 for course_idx, course in enumerate(orig_courses):
+#                     trajectories = all_trajectories[course]
+#                     loiter_key = f"loiter_{course}"
+#                     all_trajectories[loiter_key] = []
+#                     loiter_trajectories = []
 
-                                import sousvide.flight.deploy_ssv as df
-                                df.simulate_roster(cohort_name=cohort_name,
-                                                   method_name=method_name,
-                                                   flights=flights,
-                                                   roster=[],
-                                                   review=True,
-                                                   filename=combined_file
-                                                   )
-                            loiter_id += 1
-                    all_trajectories[course].extend(loiter_trajectories)
-                batch_pbar.close()
+#                     for traj_idx, tXUi in enumerate(trajectories):
+#                         duration = int(tXUi[0][-1])
+#                         splits = duration // int(Tdt_ro)
+#                         n_time = splits
+#                         n_samples = Nro_tp * n_time
+#                         times = np.tile(
+#                             np.linspace(tXUi[0][0], tXUi[0][-1], n_time + 1)[:-1],
+#                             Nro_tp
+#                         )
+#                         times += np.random.uniform(
+#                             -1 / Ntp_sc,
+#                             1 / Ntp_sc,
+#                             n_samples
+#                         )
+#                         times = np.clip(times, tXUi[0][0], tXUi[0][-1])
+#                         np.random.shuffle(times)
+#                         batches = np.split(
+#                             times,
+#                             np.arange(Nro_sv, n_samples, Nro_sv)
+#                         )
+
+#                         for batch_idx, batch_times in enumerate(batches):
+#                             loiter_tXUd = generate_loiter_trajectories(
+#                                 tXUd_rrt=tXUi, Tpd = tXUi[0], Tsps=Trep, base_frame_specs=base_frame_specs,
+#                                 course_cfg_path=course_cfg_path
+#                             )
+#                             batch_pbar.update()
+#                             loiter_trajectories.extend(loiter_tXUd)
+# #FIXME verifies we're doing
+# #      the right thing here
+#                             if loiter_id == 0:
+#                                 print(f"Simulating loitering trajectory for course '{course}'.")
+#                                 combined_data = {
+#                                     "tXUi": loiter_tXUd[0]
+#                                 }
+#                                 combined_file = f"{combined_prefix}_verify_loiter_{course}.pkl"
+#                                 with open(combined_file, "wb") as f:
+#                                     pickle.dump(combined_data, f)
+
+#                                 import sousvide.flight.deploy_ssv as df
+#                                 df.simulate_roster(cohort_name=cohort_name,
+#                                                    method_name=method_name,
+#                                                    flights=flights,
+#                                                    roster=[],
+#                                                    review=True,
+#                                                    filename=combined_file
+#                                                    )
+#                             loiter_id += 1
+#                     all_trajectories[loiter_key].extend(loiter_trajectories)
+#                 batch_pbar.close()
 
             # Simulate and save rollouts
-            stack_id = 0
-            batch_pbar = tqdm(total=total_batches, desc="Rollout Data Batches")
-            for course_idx, course in tqdm(enumerate(all_trajectories),desc=f"Objects"):
-                trajectories = all_trajectories[course]
-                total = Nro_tp * len(trajectories)
-                print(f"Preparing {total} samples for course '{course}'")
+            print("Simulating and saving rollouts...")
+            rollout_trajectories(
+                all_trajectories, dict(zip(list(all_trajectories.keys()), objectives)),
+                sample_set_config, Tdt_ro, err_tol, Ntp_sc, Nro_sv,
+                Trep, base_frame_config, frame_set_config,
+                trajectory_set_config, loiter_set_config,
+                simulator, policy_config,
+                vision_processor,
+                cohort_path, course_name
+            )
+            # stack_id = 0
+            # batch_pbar = tqdm(total=total_batches, desc="Rollout Data Batches")
+            # for course_idx, course in tqdm(enumerate(all_trajectories),desc=f"Objects"):
+            #     if course.startswith("loiter_"):
+            #         base = course[len("loiter_"):]
+            #         is_loiter = True
+            #     else:
+            #         base = course
+            #         is_loiter = False
+            #     trajectories = all_trajectories[course]
+            #     total = Nro_tp * len(trajectories)
+            #     print(f"Preparing {total} samples for course '{course}', query: {orig_name[base]}")
+            #     if course.startswith("loiter_"):
+            #         Nro_tp = sample_set_config["reps"]
+            #     else:
+            #         Nro_tp = sample_set_config["reps"]
 
-                if course.startswith("loiter_"):
-                    Nro_tp = sample_set_config["reps"]
-                else:
-                    Nro_tp = sample_set_config["reps"]
+            #     for traj_idx, tXUi in enumerate(trajectories):                
+            #         duration = int(tXUi[0][-1])
+            #         splits = duration // int(Tdt_ro)
+            #         n_time = splits
 
-                for traj_idx, tXUi in enumerate(trajectories):                
-                    duration = int(tXUi[0][-1])
-                    splits = duration // int(Tdt_ro)
-                    n_time = splits
+            #         n_samples = Nro_tp * n_time
 
-                    n_samples = Nro_tp * n_time
+            #         times = np.tile(
+            #             np.linspace(tXUi[0][0], tXUi[0][-1], n_time + 1)[:-1],
+            #             Nro_tp
+            #         )
+            #         times += np.random.uniform(
+            #             -1 / Ntp_sc,
+            #             1 / Ntp_sc,
+            #             n_samples
+            #         )
+            #         times = np.clip(times, tXUi[0][0], tXUi[0][-1])
+            #         np.random.shuffle(times)
+            #         batches = np.split(
+            #             times,
+            #             np.arange(Nro_sv, n_samples, Nro_sv)
+            #         )
 
-                    times = np.tile(
-                        np.linspace(tXUi[0][0], tXUi[0][-1], n_time + 1)[:-1],
-                        Nro_tp
-                    )
-                    times += np.random.uniform(
-                        -1 / Ntp_sc,
-                        1 / Ntp_sc,
-                        n_samples
-                    )
-                    times = np.clip(times, tXUi[0][0], tXUi[0][-1])
-                    np.random.shuffle(times)
-                    batches = np.split(
-                        times,
-                        np.arange(Nro_sv, n_samples, Nro_sv)
-                    )
+            #         data_count = 0
+            #         for batch_idx, batch_times in enumerate(batches):
+            #             if course.startswith("loiter_"):
+            #                 Frames = generate_frames(
+            #                     Tsps=Trep, base_frame_config=base_frame_config, frame_set_config=frame_set_config
+            #                 )
+            #                 Perturbations = generate_perturbations(
+            #                     Tsps=Trep, tXUi=tXUi, trajectory_set_config=loiter_set_config
+            #                 )
+            #             else:
+            #                 Frames = generate_frames(
+            #                     Tsps=Trep, base_frame_config=base_frame_config, frame_set_config=frame_set_config
+            #                 )
+            #                 Perturbations = generate_perturbations(
+            #                     Tsps=Trep, tXUi=tXUi, trajectory_set_config=trajectory_set_config
+            #                 )
 
-                    data_count = 0
-                    for batch_idx, batch_times in enumerate(batches):
-                        Frames = generate_frames(
-                            Tsps=Trep, base_frame_config=base_frame_config, frame_set_config=frame_set_config
-                        )
-                        Perturbations = generate_perturbations(
-                            Tsps=Trep, tXUi=tXUi, trajectory_set_config=trajectory_set_config
-                        )
+            #             Trajectories,Images,Img_data = generate_rollouts(
+            #             simulator, sample_set_config,
+            #             tXUd=tXUi, 
+            #             objective=orig_name[base],
+            #             policy_config=policy_config,
+            #             Frames=Frames,
+            #             Perturbations=Perturbations,
+            #             Tdt_ro=Tdt_ro, err_tol=err_tol,
+            #             vision_processor=vision_processor,
+            #             )
 
-                        Trajectories,Images,Img_data = generate_rollouts(
-                        simulator, sample_set_config,
-                        tXUd=tXUi, 
-                        objective=objectives[course_idx],
-                        policy_config=policy_config,
-                        Frames=Frames,
-                        Perturbations=Perturbations,
-                        Tdt_ro=Tdt_ro, err_tol=err_tol,
-                        vision_processor=vision_processor,
-                        )
+            #             save_rollouts(
+            #                 cohort_path, course_name, 
+            #                 Trajectories, Images, Img_data, 
+            #                 tXUi, stack_id
+            #             )
+            #             stack_id += 1
+            #             data_count += sum(r["Ndata"] for r in Trajectories)
+            #             batch_pbar.update()
 
-                        save_rollouts(
-                            cohort_path, course_name, 
-                            Trajectories, Images, Img_data, 
-                            tXUi, stack_id
-                        )
-                        stack_id += 1
-                        data_count += sum(r["Ndata"] for r in Trajectories)
-                        batch_pbar.update()
-
-                    print(f"Trajectory {traj_idx} generated {data_count} data points")
-            batch_pbar.close()
+            #         print(f"Trajectory {traj_idx} generated {data_count} data points")
+            # batch_pbar.close()
+            
     elif validation_mode:
         Nro_tp = 1
         for scene_name,course_name in flights:
             scene_cfg_file = os.path.join(scenes_cfg_dir, f"{scene_name}.yml")
+            combined_prefix = os.path.join(scenes_cfg_dir, scene_name)
             with open(scene_cfg_file) as f:
                 scene_cfg = yaml.safe_load(f)
 
             objectives      = scene_cfg["queries"]
             radii           = scene_cfg["radii"]
-            n_branches = [nb // 10 for nb in scene_cfg["nbranches"]]
+            if loitering:
+                n_branches = [nb // 5 for nb in scene_cfg["nbranches"]]
+            else:
+                n_branches = [nb // 10 for nb in scene_cfg["nbranches"]]
+                
             print(f"n_branches: {n_branches}")
             hover_mode      = scene_cfg["hoverMode"]
             visualize_flag = scene_cfg["visualize"]
@@ -423,133 +467,37 @@ def generate_rollout_data(cohort_name:str,method_name:str,
             )
 #FIXME
             print("Generating loitering trajectories...")
-            loiter_id = 0
             if loitering:
-                total_batches = int(sum(
-                np.ceil((Nro_tp * (int(tXUi[0,-1]) // int(Tdt_ro))) / Nro_sv)
-                for course in all_trajectories
-                for tXUi in all_trajectories[course]
-                ))
-                batch_pbar = tqdm(total=total_batches, desc="Solving Loiter Batches")
-                for course_idx, course in enumerate(all_trajectories):
-                    trajectories = all_trajectories[course]
-                    loiter_trajectories = []
-                    for traj_idx, tXUi in enumerate(trajectories):
-                        duration = int(tXUi[0][-1])
-                        splits = duration // int(Tdt_ro)
-                        n_time = splits
-                        n_samples = Nro_tp * n_time
-                        times = np.tile(
-                            np.linspace(tXUi[0][0], tXUi[0][-1], n_time + 1)[:-1],
-                            Nro_tp
-                        )
-                        times += np.random.uniform(
-                            -1 / Ntp_sc,
-                            1 / Ntp_sc,
-                            n_samples
-                        )
-                        times = np.clip(times, tXUi[0][0], tXUi[0][-1])
-                        np.random.shuffle(times)
-                        batches = np.split(
-                            times,
-                            np.arange(Nro_sv, n_samples, Nro_sv)
-                        )
-
-                        for batch_idx, batch_times in enumerate(batches):
-                            loiter_tXUd = generate_loiter_trajectories(
-                                tXUd_rrt=tXUi, Tpd = tXUi[0], Tsps=Trep, base_frame_specs=base_frame_specs,
-                                course_cfg_path=course_cfg_path
-                            )
-                            batch_pbar.update()
-                            # all_trajectories[f"loiter_{course_idx}"].extend(loiter_tXUd)
-                            loiter_trajectories.extend(loiter_tXUd)
-#FIXME verifies we're doing
-#      the right thing here
-                            if loiter_id == 0:
-                                print(f"Simulating loitering trajectory for course '{course}'.")
-                                combined_data = {
-                                    "tXUi": loiter_tXUd[0]
-                                }
-                                combined_file = f"{combined_prefix}_verify_loiter_{course}.pkl"
-                                with open(combined_file, "wb") as f:
-                                    pickle.dump(combined_data, f)
-
-                                import sousvide.flight.deploy_ssv as df
-                                df.simulate_roster(cohort_name=cohort_name,
-                                                   method_name=method_name,
-                                                   flights=flights[0],
-                                                   roster=[],
-                                                   review=True,
-                                                   filename=combined_file
-                                                   )
-                            loiter_id += 1
-                    all_trajectories[course].extend(loiter_trajectories)
-                batch_pbar.close()
+                rollout_loiter(
+                    all_trajectories, objectives,
+                    Nro_tp, Tdt_ro, Ntp_sc, Nro_sv,
+                    Trep, base_frame_specs, course_cfg_path,
+                    combined_prefix, cohort_name, method_name, flights
+                )
 #
             # Simulate and save rollouts
-            stack_id = 0
-            batch_pbar = tqdm(total=total_batches, desc="Rollout Data Batches")
-            for course_idx, course in enumerate(all_trajectories):
-                trajectories = all_trajectories[course]
-                total = Nro_tp * len(trajectories)
-                print(f"Preparing {total} samples for course '{course}'")
-                print(f"Query: {objectives[course_idx]}")
+            print("Simulating and saving rollouts...")
+            rollout_trajectories(
+                all_trajectories=all_trajectories,
+                objectives=dict(zip(list(all_trajectories.keys()), objectives)),
+                sample_set_config=sample_set_config,
+                Tdt_ro=Tdt_ro,
+                err_tol=err_tol,                   
+                Ntp_sc=Ntp_sc,
+                Nro_sv=Nro_sv,
+                Trep=Trep,
+                base_frame_config=base_frame_config,
+                frame_set_config=frame_set_config,
+                trajectory_set_config=trajectory_set_config,
+                loiter_set_config=loiter_set_config,
+                simulator=simulator,
+                policy_config=policy_config,
+                vision_processor=vision_processor,
+                cohort_path=cohort_path,
+                course_name=course_name,
+                validation_mode=validation_mode
+                )
 
-                for traj_idx, tXUi in enumerate(trajectories):
-                    duration = int(tXUi[0][-1])
-                    splits = duration // int(Tdt_ro)
-                    n_time = splits
-                    n_samples = Nro_tp * n_time
-
-                    times = np.tile(
-                        np.linspace(tXUi[0][0], tXUi[0][-1], n_time + 1)[:-1],
-                        Nro_tp
-                    )
-                    times += np.random.uniform(
-                        -1 / Ntp_sc,
-                        1 / Ntp_sc,
-                        n_samples
-                    )
-                    times = np.clip(times, tXUi[0][0], tXUi[0][-1])
-                    np.random.shuffle(times)
-                    batches = np.split(
-                        times,
-                        np.arange(Nro_sv, n_samples, Nro_sv)
-                    )
-
-                    data_count = 0
-                    for batch_idx, batch_times in enumerate(batches):
-                        Frames = generate_frames(
-                            Tsps=Trep, base_frame_config=base_frame_config, frame_set_config=frame_set_config
-                        )
-                        Perturbations = generate_perturbations(
-                            Tsps=Trep, tXUi=tXUi, trajectory_set_config=trajectory_set_config
-                        )
-
-                        Trajectories,Images,Img_data = generate_rollouts(
-                        simulator, sample_set_config,
-                        tXUd=tXUi, 
-                        objective=objectives[course_idx],
-                        policy_config=policy_config,
-                        Frames=Frames,
-                        Perturbations=Perturbations,
-#NOTE Tdt_ro is not None for validation mode                        
-                        Tdt_ro=None, err_tol=err_tol,
-                        vision_processor=vision_processor,
-                        validation_mode=validation_mode
-                        )
-
-                        save_rollouts(
-                            cohort_path, course_name, 
-                            Trajectories, Images, Img_data, 
-                            tXUi, stack_id, validation_mode=validation_mode
-                        )
-                        stack_id += 1
-                        data_count += sum(r["Ndata"] for r in Trajectories)
-                        batch_pbar.update()
-
-                    print(f"Trajectory {traj_idx} generated {data_count} data points")
-            batch_pbar.close()
     else:   
         # Generate rollouts for each course
         for scene_name,course_name in flights:
@@ -626,6 +574,142 @@ def generate_rollout_data(cohort_name:str,method_name:str,
             print("Generated ",Ndata," points of data.")
             print("--------------------------------------------------------------------------")
 
+def compute_batches(tXUi, reps, Tdt_ro, Ntp_sc, Nro_sv):
+    """
+    Given a trajectory tXUi and sampling parameters, return a list of
+    arrays of sample times (each of length ≤ Nro_sv).
+    """
+    t0, t1 = tXUi[0][0], tXUi[0][-1]
+    duration = int(t1 - t0)
+    n_time = duration // int(Tdt_ro)
+    n_samples = reps * n_time
+
+    # uniform grid then jitter, clip, shuffle, split
+    times = np.tile(np.linspace(t0, t1, n_time + 1)[:-1], reps)
+    times += np.random.uniform(-1 / Ntp_sc, 1 / Ntp_sc, n_samples)
+    times = np.clip(times, t0, t1)
+    np.random.shuffle(times)
+    return np.split(times, np.arange(Nro_sv, n_samples, Nro_sv))
+
+def rollout_loiter(all_trajectories, objectives,
+                 Nro_tp, Tdt_ro, Ntp_sc, Nro_sv,
+                 Trep, base_frame_specs, course_cfg_path,
+                 combined_prefix, cohort_name, method_name, flights):
+    orig_courses = list(all_trajectories.keys())
+    orig_name = dict(zip(orig_courses, objectives))
+    total_batches = sum(
+        len(compute_batches(tXUi, Nro_tp, Tdt_ro, Ntp_sc, Nro_sv))
+        for c in orig_courses
+        for tXUi in all_trajectories[c]
+    )
+
+    loiter_id = 0
+    with tqdm(total=total_batches, desc="Solving Loiter Batches") as pbar:
+        for course in orig_courses:
+            loiter_key = f"loiter_{course}"
+            loiter_list = []
+            for tXUi in all_trajectories[course]:
+                for _batch in compute_batches(tXUi, Nro_tp, Tdt_ro, Ntp_sc, Nro_sv):
+                    # generate and collect
+                    loiter_tXUd = generate_loiter_trajectories(
+                        tXUd_rrt=tXUi,
+                        Tpd=tXUi[0],
+                        Tsps=Trep,
+                        base_frame_specs=base_frame_specs,
+                        course_cfg_path=course_cfg_path
+                    )
+                    pbar.update()
+                    loiter_list.extend(loiter_tXUd)
+
+                    # one‐time verify dump + simulate
+                    if loiter_id == 0:
+                        print(f"Simulating loitering trajectory for course '{course}'.")
+                        randix = np.random.randint(0, len(loiter_tXUd))
+                        combined_data = {"tXUi": loiter_tXUd[randix]}
+                        fname = f"{combined_prefix}_verify_loiter_{course}.pkl"
+                        with open(fname, "wb") as f:
+                            pickle.dump(combined_data, f)
+                        df.simulate_roster(
+                            cohort_name=cohort_name,
+                            method_name=method_name,
+                            flights=flights,
+                            roster=[],
+                            review=True,
+                            filename=fname
+                        )
+                    loiter_id += 1
+
+            all_trajectories[loiter_key] = loiter_list
+
+def rollout_trajectories(all_trajectories, objectives,
+                sample_set_config, Tdt_ro, err_tol, Ntp_sc, Nro_sv,
+                Trep, base_frame_config, frame_set_config,
+                trajectory_set_config, loiter_set_config,
+                simulator, policy_config,
+                vision_processor,
+                cohort_path, course_name,
+                validation_mode=False):
+    orig_courses = [c.replace("loiter_", "") for c in objectives.keys()]
+    orig_name = dict(zip(orig_courses, objectives))
+
+    total_batches = sum(
+        len(compute_batches(tXUi,
+                            sample_set_config["reps"],
+                            Tdt_ro, Ntp_sc, Nro_sv))
+        for c in all_trajectories
+        for tXUi in all_trajectories[c]
+    )
+    stack_id = 0
+
+    with tqdm(total=total_batches, desc="Rollout Data Batches") as pbar:
+        for course in all_trajectories:
+            base = course[len("loiter_"):] if course.startswith("loiter_") else course
+            is_loiter = course.startswith("loiter_")
+            reps = sample_set_config["reps"]
+
+            print(f"Preparing {reps * len(all_trajectories[course])} samples "
+                  f"for course '{course}', query: {orig_name[base]}")
+
+            for traj_idx, tXUi in enumerate(all_trajectories[course]):
+                for _batch in compute_batches(tXUi, reps, Tdt_ro, Ntp_sc, Nro_sv):
+                    # shared frame generation
+                    Frames = generate_frames(
+                        Tsps=Trep,
+                        base_frame_config=base_frame_config,
+                        frame_set_config=frame_set_config
+                    )
+                    # pick correct perturbation config
+                    cfg = loiter_set_config if is_loiter else trajectory_set_config
+                    Perturbations = generate_perturbations(
+                        Tsps=Trep,
+                        tXUi=tXUi,
+                        trajectory_set_config=cfg
+                    )
+
+                    # actual rollout + save
+                    Trajectories, Images, Img_data = generate_rollouts(
+                        simulator, sample_set_config,
+                        tXUd=tXUi,
+                        objective=orig_name[base],
+                        policy_config=policy_config,
+                        Frames=Frames,
+                        Perturbations=Perturbations,
+                        Tdt_ro=Tdt_ro,
+                        err_tol=err_tol,
+                        vision_processor=vision_processor,
+                        validation_mode=validation_mode
+                    )
+                    save_rollouts(
+                        cohort_path, course_name,
+                        Trajectories, Images, Img_data,
+                        tXUi, stack_id,
+                        validation_mode=validation_mode
+                    )
+                    stack_id += 1
+                    pbar.update()
+
+    print("All rollouts complete.")
+
 def generate_frames(Tsps:np.ndarray,
                     base_frame_config:Dict[str,Union[int,float,List[float]]],
                     frame_set_config:Dict[str,Union[float,List[float]]],
@@ -684,7 +768,7 @@ def generate_loiter_trajectories(tXUd_rrt: np.ndarray,
                                  Tsps: np.ndarray,
                                  base_frame_specs,
                                  course_cfg_path: str = None,
-                                 spin_duration: float = 5.0,
+                                 spin_duration: float = 4.0,
                                  smooth_duration: float = 1.0,
                                  Nco: int = 6,
                                  hz: int = 20,
@@ -703,6 +787,7 @@ def generate_loiter_trajectories(tXUd_rrt: np.ndarray,
     
     loiter_trajs = []
 
+    idx = 0
     for t0 in Tsps:
         # 1) find index in RRT trajectory
         idx0 = np.searchsorted(Tpd, t0) - 1
@@ -715,7 +800,27 @@ def generate_loiter_trajectories(tXUd_rrt: np.ndarray,
 
         # 3) pick a random start yaw, and the RRT yaw as final
         yaw0    = np.random.uniform(0, 2*np.pi)
+        # yaw0 = quat_to_yaw(q_rrt)
         yaw1    = quat_to_yaw(q_rrt)
+
+        # dθ        = ((yaw1 - yaw0 + np.pi) % (2*np.pi)) - np.pi
+        # direction = np.sign(dθ) if dθ != 0 else 1.0
+        # abs_dθ    = abs(dθ)
+        # total_ang = abs_dθ + 2*np.pi
+
+        # # 3) your expected θ_end:
+        # theta_end = yaw0 + direction * total_ang
+
+        # print(f"""\
+        # DEBUG SPIN KEYS:
+        # yaw0      = {yaw0:.4f} rad
+        # yaw1      = {yaw1:.4f} rad
+        # dθ         = {dθ:.4f} rad  (should be yaw1–yaw0 in (–π,π])
+        # total_ang = {total_ang:.4f} rad (|Δθ|+2π)
+        # theta_end = {theta_end:.4f} rad
+        # theta_end mod2π = {theta_end % (2*np.pi):.4f} rad
+        # yaw1     mod2π = {yaw1 % (2*np.pi):.4f} rad
+        # """)
 
         # 4) build the spin keyframe config
         cfg = th.generate_spin_keyframes(
@@ -727,7 +832,7 @@ def generate_loiter_trajectories(tXUd_rrt: np.ndarray,
             time=spin_duration
         )
 
-        if course_cfg_path is not None:
+        if idx == 0 and course_cfg_path is not None:
             import os, json
             # ensure the directory exists
             os.makedirs(course_cfg_path, exist_ok=True)
@@ -745,71 +850,31 @@ def generate_loiter_trajectories(tXUd_rrt: np.ndarray,
             raise RuntimeError(f"Spin QP failed at t0={t0:.2f}")
         Tps, CPs = out
         tXUd_spin = th.TS_to_tXU(Tps, CPs, base_frame_specs, hz)
+
+        if idx == 0 and course_cfg_path is not None:
+            # ensure the directory exists (in case it wasn’t created yet)
+            os.makedirs(course_cfg_path, exist_ok=True)
+
+            # JSON was:   /.../<course_cfg_path>/<cfg['name']>.json
+            # let’s put the pickle in the same dir:
+            pkl_fname = f"loiter_tXUd_{t0:.2f}.pkl"
+            pkl_path  = os.path.join(course_cfg_path, pkl_fname)
+
+            with open(pkl_path, "wb") as f:
+                pickle.dump(tXUd_spin, f)
+
+            # print(f"Wrote spin rollout to {pkl_path}")
+
 #FIXME
-        # 6) build a little linear “smoothing” ramp from spin‐end → RRT‐state
-        t_end        = tXUd_spin[0, -1]
-        nsmooth      = int(np.ceil(smooth_duration * hz))
-        tsmooth      = np.linspace(0, smooth_duration, nsmooth)
-        pos_spin_end = tXUd_spin[1:4, -1]
-        vel_spin_end = tXUd_spin[4:7, -1]
+        tXUd_full = th.build_loiter_fragment(
+            tXUd_spin=tXUd_spin,
+            tXUd_rrt=tXUd_rrt,
+            t0=t0,
+            smooth_duration=smooth_duration,
+            tail_duration=3.0,
+            hz=hz
+        )
 
-        # linear interp for pos & vel
-        alpha    = tsmooth / smooth_duration
-        pos_smo   = (1-alpha)*pos_spin_end[:,None] + alpha*pos_rrt[:,None]
-        vel_smo   = (1-alpha)*vel_spin_end[:,None] + alpha*vel_rrt[:,None]
-        quat_smo  = np.repeat(q_rrt[:,None], nsmooth, axis=1)
-
-        # assemble tXUd_smooth
-        n_input_rows = tXUd_rrt.shape[0]
-        n_spin_rows  = tXUd_spin.shape[0]
-        n_cols_spin  = tXUd_spin.shape[1]
-        n_extra_spin = n_input_rows - n_spin_rows
-
-        if n_extra_spin > 0:
-            # grab exactly those extra rows from the original RRT state
-            extra_vals_spin = tXUd_rrt[n_spin_rows : n_spin_rows + n_extra_spin, idx0][:, None]  # (n_extra_spin,1)
-            # repeat them across all spin columns
-            extra_spin      = np.repeat(extra_vals_spin, n_cols_spin, axis=1)                  # (n_extra_spin, n_cols_spin)
-            # stack underneath
-            tXUd_spin      = np.vstack([tXUd_spin, extra_spin])
-
-        tXUd_smooth = np.vstack([
-            t_end + tsmooth,  # time
-            pos_smo,          # x,y,z
-            vel_smo,          # dx,dy,dz
-            quat_smo          # quaternion
-        ])
-        n_smooth_rows = tXUd_smooth.shape[0]
-        n_cols_smooth = tXUd_smooth.shape[1]
-        n_extra_smooth = n_input_rows - n_smooth_rows
-
-        if n_extra_smooth > 0:
-            extra_vals_smooth = tXUd_rrt[n_smooth_rows : n_smooth_rows + n_extra_smooth, idx0][:, None]
-            extra_smooth      = np.repeat(extra_vals_smooth, n_cols_smooth, axis=1)
-            tXUd_smooth      = np.vstack([tXUd_smooth, extra_smooth])
-
-        tXUd_loiter = np.hstack([tXUd_spin, tXUd_smooth])
-
-        t_end_loiter = tXUd_smooth[0, -1]        # absolute time at end of the smooth blend
-        # find first index strictly after the original sample time t0
-        idx_after = np.searchsorted(tXUd_rrt[0], t0, side="right")
-
-        # slice off everything from idx_after onward
-        tXUd_tail = tXUd_rrt[:, idx_after:].copy()
-        t_start_tail = tXUd_rrt[0, idx_after]
-
-        # find the last index within Ns of the splice point
-        t_cutoff     = t_start_tail + 3.0
-        idx_tail_end = np.searchsorted(tXUd_rrt[0], t_cutoff, side="right")
-
-        # slice just that 2 s window
-        tXUd_tail_Ns = tXUd_rrt[:, idx_after:idx_tail_end].copy()
-
-        # shift its time‐column so it picks up right after t_end_loiter
-        tXUd_tail_Ns[0] += (t_end_loiter - t_start_tail)
-
-        # concatenate
-        tXUd_full = np.hstack([tXUd_loiter, tXUd_tail_Ns])
         loiter_trajs.append(tXUd_full)
 
     return loiter_trajs

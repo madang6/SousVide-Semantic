@@ -26,9 +26,10 @@ similarities:
   - [ 0.75, 0.075 ]
 
 nbranches:
-  - 55
-  - 55
-  - 55
+  - 20
+  - 20
+  - 20
+  # - 20
 
 hoverMode: False
 numTraj: all

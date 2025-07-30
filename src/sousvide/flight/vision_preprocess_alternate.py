@@ -309,7 +309,7 @@ class CLIPSegHFModel:
             arr = logits.cpu().squeeze().numpy().astype(np.float32)
 
         # skip_norm = prompt.strip().lower() == "null"
-        skip_norm = True
+        skip_norm = False
         if skip_norm:
             # prob = 1.0 / (1.0 + np.exp(-arr))
             # mask_u8 = (prob * 255).astype(np.uint8)
@@ -400,7 +400,7 @@ def colorize_mask_fast(mask_np, lut):
 
 def blend_overlay_gpu(base: np.ndarray,
                       overlay: np.ndarray,
-                      alpha: float = 0.85) -> np.ndarray:
+                      alpha: float = 1.00) -> np.ndarray:
     """
     Convert `base`→mono-gray on GPU (if needed), resize `overlay` on GPU,
     then blend:  result = α·overlay + (1−α)·gray_base.  Entirely on CUDA.
@@ -536,6 +536,50 @@ def warp_mask(prev_rgb, curr_rgb, prev_mask):
     remap = flow_map + flow
     warped = cv2.remap(prev_mask, remap[..., 0], remap[..., 1], interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
     return warped.astype(np.uint8)
+
+#TODO: Integrate this with the state machine to track when the trajectory should end.
+def has_large_region_with_color(image: np.ndarray, target_rgb=(220, 20, 60),
+                                 color_thresh=30, area_thresh=0.05):
+    """
+    Returns True if any superpixel is close in color to `target_rgb`
+    and covers at least `area_thresh` of the image.
+    
+    Params:
+        image        : H x W x 3 RGB image
+        target_rgb   : RGB triplet to match (e.g., red)
+        color_thresh : Max Euclidean distance in RGB
+        area_thresh  : Fraction of image area (e.g., 0.05 = 5%)
+
+    Returns:
+        True/False
+    """
+    h, w = image.shape[:2]
+    seeds = cv2.ximgproc.createSuperpixelSEEDS(
+        w, h, image.shape[2],
+        num_superpixels=500,
+        num_levels=3,
+        prior=2,
+        histogram_bins=5,
+        double_step=False
+    )
+    seeds.iterate(image, num_iterations=2)
+    labels = seeds.getLabels()
+    output_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+
+    found_pixels = 0
+    target = np.array(target_rgb, dtype=np.float32)
+
+    for label in np.unique(labels):
+        mask = labels == label
+        region = image[mask]
+        mean_rgb = region.mean(axis=0)
+        dist = np.linalg.norm(mean_rgb - target)
+
+        if dist < color_thresh:
+            found_pixels += mask.sum()
+
+    area_frac = found_pixels / (h * w)
+    return area_frac > area_thresh
 
 
 def render_rescale(self, srgb_mono):
