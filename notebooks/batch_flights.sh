@@ -5,7 +5,9 @@ CONFIG="/home/admin/StanfordMSL/SousVide-Semantic/configs/experiment/ssv_multi3d
 TMP="/home/admin/StanfordMSL/SousVide-Semantic/configs/experiment/ssv_multi3dgs.tmp.yml"
 
 # reverse order
+# FLIGHTS=( "flightroom_lowres" "sv_917_3_left_gemsplat" "spheres" "indooroutdoor" "packardpark")
 FLIGHTS=( "sv_917_3_left_gemsplat" "spheres" "indooroutdoor" "packardpark")
+# FLIGHTS=( "spheres" "indooroutdoor" "packardpark")
 # FLIGHTS=("flightroom_lowres") 
 
 for flight in "${FLIGHTS[@]}"; do
@@ -19,7 +21,7 @@ for flight in "${FLIGHTS[@]}"; do
   # build the args in an array
   args=( generate-rollouts --config-file "$TMP" )
   
-  # args+=( --validation-mode )
+  args+=( --validation-mode )
 
   # args+=( --use-wandb --wandb-project ssv )
   args+=( --use-wandb --wandb-project ssv \

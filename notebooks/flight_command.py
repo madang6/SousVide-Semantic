@@ -1,3 +1,4 @@
+import sys, select, termios, tty, threading
 from copy import deepcopy
 import pickle
 import numpy as np
@@ -30,6 +31,7 @@ from px4_msgs.msg import (
 
 from sousvide.control.pilot import Pilot
 import figs.control.vehicle_rate_mpc as vr_mpc
+import figs.tsplines.min_snap as ms
 
 import sousvide.flight.vision_preprocess_alternate as vp
 import sousvide.flight.zed_command_helper as zch
@@ -46,6 +48,8 @@ class StateMachine(Enum):
     READY  = 1
     ACTIVE = 2
     LAND   = 3
+    HOLD   = 4
+    SPIN   = 5
 
 class FlightCommand(Node):
     """Node for generating commands from SFTI."""
@@ -96,7 +100,12 @@ class FlightCommand(Node):
             recorder (FlightRecorder):      Flight recorder object.
         """
         super().__init__('outdoor_command_node')
-
+#FIXME
+        self._orig_tty = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
+        self.key_pressed = None
+        threading.Thread(target=self._kb_loop, daemon=True).start()
+#
         print("=====================================================================")
         print("---------------------------------------------------------------------")
 
@@ -214,6 +223,11 @@ class FlightCommand(Node):
 
         # Initialize CLIPSeg Model
         self.prompt = mission_config.get('prompt', '')
+#FIXME
+        self.hold_prompt = self.prompt
+        self.spin_ready = False
+        self.spin_thread_started = False
+#
         print(f"Query Set to: {self.prompt}")
         self.hf_model = mission_config.get('hf_model', 'CIDAS/clipseg-rd64-refined')
         self.onnx_model_path = mission_config.get('onnx_model_path')
@@ -235,10 +249,16 @@ class FlightCommand(Node):
             self.cam_dim,self.cam_fps = cam_dim,cam_fps
         else:
             self.cam_dim,self.cam_fps = [0,0,0],0
+        self.img_times = []
+
+        self.vision_thread     = None
+        self.vision_shutdown   = False
+        self.vision_started    = False
+        self.latest_mask       = None
 
 #NOTE streamline testing non-mpc pilots
         if not self.isNN:
-            # MPC case: unpack the precomputed trajectory exactly as you do today
+            # MPC case: unpack the precomputed trajectory
             self.Tpi = tXUi[0, :]                             # time vector
             self.obj = th.tXU_to_obj(tXUi)                    # your “object” vector
             self.q0, self.z0 = tXUi[7:11,0], tXUi[3,0]         # initial quaternion & altitude
@@ -363,7 +383,19 @@ class FlightCommand(Node):
 
         # Wait for GCS clearance
         input("Press Enter to proceed...")
+#FIXME
+    def destroy_node(self):
+        # restore terminal so we don’t break your shell
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_tty)
+        super().destroy_node()
 
+    def kb_loop(self):
+        """Runs in background, grabs single chars without blocking."""
+        while rclpy.ok():
+            # wait up to 0.1s for a key
+            if select.select([sys.stdin], [], [], 0.1)[0]:
+                self.key_pressed = sys.stdin.read(1)
+#
     def internal_estimator_callback(self, vehicle_odometry:VehicleOdometry):
         """Callback function for internal vehicle_odometry topic subscriber."""
         self.vo_est = vehicle_odometry
@@ -399,6 +431,64 @@ class FlightCommand(Node):
             scene_change_threshold=1.0,
             verbose=False
         )
+#FIXME
+    def send_hold_mode(self):
+        """Tell PX4 to enter its built-in HOLD flight mode (hover in place)."""
+        cmd = VehicleCommand()
+        cmd.timestamp = self.get_current_timestamp_time()
+        cmd.command   = VehicleCommand.VEHICLE_CMD_DO_SET_MODE
+        cmd.param1    = 1    # MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+        cmd.param2    = 4    # PX4_CUSTOM_MAIN_MODE_HOLD
+        # params 3–7 left at 0
+        self.vehicle_command_publisher.publish(cmd)
+
+    def quat_to_yaw(q):
+        x, y, z, w = q
+        return np.arctan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
+
+    def build_yaw_qp(self, xyz, yaw0, t0):
+        """Background build of the spin trajectory."""
+        cfg = th.generate_spin_keyframes(
+            name=f"loiter_spin_{t0:.2f}",
+            Nco=self.Nco,
+            xyz=xyz,
+            theta0=yaw0, theta1=yaw0,
+            time=self.spin_duration
+        )
+        out = ms.solve(cfg)
+        if out is False:
+            print(f"Spin QP failed at t0={t0:.2f}")
+            return
+        Tps, CPs = out
+        self.tXUd_spin       = th.TS_to_tXU(Tps, CPs,
+                                            self.base_frame_specs,
+                                            self.hz)
+        self.spin_start_time = t0
+        self.spin_ready     = True
+        print("Spin QP ready.")
+#
+    def async_vision_loop(self):
+        """Continuously grab + infer, store only the newest mask."""
+        while not self.vision_shutdown:
+            imgz, _ = zch.get_image(self.pipeline)
+            if imgz is None:
+                time.sleep(0.01)
+                continue
+            t0_img = time.time()
+            frame = cv2.cvtColor(imgz, cv2.COLOR_BGR2RGB)
+            mask = self.vision_model.clipseg_hf_inference(
+                frame,
+                self.prompt,
+                resize_output_to_input=True,
+                use_refinement=False,
+                use_smoothing=False,
+                scene_change_threshold=1.0,
+                verbose=False
+            )
+            self.latest_mask = mask
+            t_elap = time.time() - t0_img
+            self.img_times.append(t_elap)
+
 
     def commander(self) -> None:
         """Main control loop for generating commands."""
@@ -408,29 +498,7 @@ class FlightCommand(Node):
         x_est[6:10] = th.obedient_quaternion(x_est[6:10],self.xref[6:10])
         x_ext[6:10] = th.obedient_quaternion(x_ext[6:10],self.xref[6:10])
 
-#FIXME: 
-        img = getattr(self, 'latest_mask', None)       # grab freshest available
-        
-        # imgz,_ = zch.get_image(self.pipeline)
-        # if imgz is None:
-        #     self.sm = StateMachine.LAND
-        #     print('Camera feed lost. Initiating landing sequence.')
-
-        # # Process Image
-        # frame_rgb = cv2.cvtColor(imgz, cv2.COLOR_BGR2RGB)
-        
-        # # Inference
-        # t0 = time.time()
-        # img = self.vision_model.clipseg_hf_inference(
-        #     frame_rgb,
-        #     self.prompt,
-        #     resize_output_to_input=True,
-        #     use_refinement=False,
-        #     use_smoothing=False,
-        #     scene_change_threshold=1.0,
-        #     verbose=False,
-        # )
-        
+        img = self.latest_mask
 
         zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
 
@@ -445,6 +513,18 @@ class FlightCommand(Node):
 
                 self.k_rdy = 0
                 self.sm = StateMachine.READY
+                
+                print("Starting Zed Vision Thread")
+                if not self.vision_started and self.pipeline is not None:
+                    self.vision_shutdown = False
+                    self.vision_thread = threading.Thread(
+                        target=self.async_vision_loop,
+                        daemon=True,
+                        name="ZedVisionThread"
+                    )
+                    self.vision_thread.start()
+                    self.vision_started = True
+                print("Vision Thread Online")
 
                 # Print State Information
                 print('---------------------------------------------------------------------')
@@ -466,6 +546,7 @@ class FlightCommand(Node):
                 # Print State Information
                 print('=====================================================================')
                 print('Trajectory Started.')
+                # print('In Segment:',self.k_sm+1,'/',self.N_sm)
             else:
 
                 # Looping State Actions
@@ -498,13 +579,128 @@ class FlightCommand(Node):
                 # Record data
                 t_sol = np.hstack((t_sol_ctl,time.time()-t0_lp))
                 self.recorder.record(img,t_tr,u_act,x_ref,u_ref,x_est,x_ext,adv,t_sol)
+#FIXME            
             else:
-                self._policy_duration = t_tr
-                self.sm = StateMachine.LAND
-                print('Trajectory Finished.')
+                # trajectory has ended → HOLD Position
+                self.policy_duration      = t_tr
+                self.hold_prompt          = self.prompt
+                self.spin_ready           = False
+                self.spin_thread_started  = False   # ← reset here
+                self.sm                   = StateMachine.HOLD
+                print('Trajectory Finished → HOLDing Position')
+        # else:
+        elif self.sm == StateMachine.HOLD:
+            # self._policy_duration = t_tr
+            # self.sm = StateMachine.LAND
+            # print('Trajectory Finished.')
+    #FIXME
+            #     # switch to HOLD instead of LAND
+            #     self.sm = StateMachine.HOLD
+            #     self.hold_prompt = self.prompt
+            #     print('Trajectory Finished. Switching to position HOLD mode.')
+            #     self.send_hold_mode()
+
+            # if self.prompt != self.hold_prompt:
+            #     print('New user command received. Resuming ACTIVE automatic control.')
+            #     self.t_tr0 = self.get_clock().now().nanoseconds / 1e9
+            #     self.sm = StateMachine.ACTIVE
+            # # if user hit Escape, go to LAND
+            # elif self.key_pressed == '\x1b':
+            #     print('Escape pressed: switching to LAND.')
+            #     self.key_pressed = None
+            #     self.sm = StateMachine.LAND
+            # # otherwise keep hovering
+            # else:
+            #     self.send_hold_mode()
+    #
+            zch.send_hold_mode(self.get_current_timestamp_time(),
+                            self.vehicle_command_publisher)
+            
+            if not self.spin_thread_started:
+                self.spin_thread_started = True
+                t0   = self.get_clock().now().nanoseconds / 1e9
+                xyz  = x_est[0:3]
+                yaw0 = self.quat_to_yaw(x_est[6:10])
+                threading.Thread(
+                    target=self.build_yaw_qp,
+                    args=(xyz, yaw0, t0),
+                    daemon=True
+                ).start()
+            # once QP is ready and prompt changed → go SPIN
+            elif self.prompt != self.hold_prompt and self.spin_ready:
+                print("Query changed → SPINning to acquire...")
+                self.sm = StateMachine.SPIN
+            # Esc pressed → LAND
+            elif self.key_pressed == '\x1b':
+                print("Esc. Pressed → LANDing...")
+                self.key_pressed = None
+                self.sm           = StateMachine.LAND
+
+        elif self.sm == StateMachine.SPIN:
+            now   = self.get_clock().now().nanoseconds / 1e9
+            t_rel = now - self.spin_start_time
+            t_end = self.tXUd_spin[0, -1] + self.t_lg
+
+            if t_rel <= t_end:
+                # Prepare spin‐trajectory references
+                spin_Tpi, spin_CPi = self.tXUd_spin[0], self.tXUd_spin[1:]
+                self.k_sm, self.N_sm = 0, spin_CPi.shape[1] - 1
+
+                t_ref = min(t_rel, spin_Tpi[-1])
+                if t_ref > spin_Tpi[self.k_sm + 1]:
+                    self.k_sm += 1
+
+                xu_ref = th.TS_to_xu(
+                    t_ref, spin_Tpi, spin_CPi, self.drone_config
+                )
+                x_ref = np.hstack((
+                    xu_ref[0:6],
+                    th.obedient_quaternion(xu_ref[6:10],
+                                        self.xref[6:10])
+                ))
+                u_ref = np.hstack((
+                    -np.mean(xu_ref[13:17]),
+                    xu_ref[10:13]
+                ))
+                self.xref, self.uref = x_ref, u_ref
+
+                # Call controller
+                u_act, self.znn, adv, t_sol_ctl = self.ctl.control(
+                    u_pr, t_ref, x_est, obj, img, znn
+                )
+
+                # 3) Publish & record
+                zch.publish_uvr_command(
+                    self.get_current_timestamp_time(),
+                    u_act,
+                    self.vehicle_rates_setpoint_publisher
+                )
+                t_sol = np.hstack((t_sol_ctl, time.time() - t0_lp))
+                self.recorder.record(
+                    img, t_ref, u_act, x_ref, u_ref,
+                    x_est, x_ext, adv, t_sol
+                )
+            else:
+                # spin finished; check vision
+                if vp.has_large_region_with_color():
+                    print('Query acquired → switching to ACTIVE autonomy')
+                    # reset your main trajectory timer
+                    self.t_tr0 = now
+                    self.sm = StateMachine.ACTIVE
+                else:
+                    print('Spin complete, no flag → HOLDing position')
+                    self.hold_prompt = self.prompt
+                    self.sm = StateMachine.HOLD
+#        
         else:
             # State Actions
             zch.land(self.get_current_timestamp_time(),self.vehicle_command_publisher)
+            
+            print("Closing Vision Thread")
+            self.vision_shutdown = True
+            self.vision_thread.join(timeout=1.0)
+            self.vision_started = False
+            print("Vision Thread Offline")
             
             # Close the camera (if exists)
             if self.pipeline is not None:
@@ -540,6 +736,9 @@ class FlightCommand(Node):
                 print("Policy Total Compute Frequency (hz):", hz_cmp)
                 print("Total Command Loop Frequency (hz): ", hz_cmd)
                 print("Controller Minimum Frequency (hz): ", hz_min)
+                print("CLIPSeg Inference Statistics")
+                print(f"Average CLIPSeg Inference Time (s): {np.mean(self.img_times):.4f}")
+                print(f"CLIPSeg frequency (hz): {1/np.mean(self.img_times):.2f}")
                 print('=====================================================================')
             
             # Wait for GCS clearance
