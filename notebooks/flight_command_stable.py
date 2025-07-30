@@ -12,7 +12,6 @@ from enum import Enum
 
 import cv2
 
-import sys, select, termios, tty
 import threading
 import rclpy
 from rclpy.node import Node
@@ -33,7 +32,6 @@ import sousvide.flight.zed_command_helper as zch
 import figs.dynamics.model_equations as me
 import figs.dynamics.model_specifications as qc
 import figs.utilities.trajectory_helper as th
-import figs.tsplines.min_snap as ms
 import sousvide.visualize.plot_synthesize as ps
 import sousvide.visualize.record_flight as rf
 # import sousvide.visualize.plot_flight as pf
@@ -44,8 +42,6 @@ class StateMachine(Enum):
     READY  = 1
     ACTIVE = 2
     LAND   = 3
-    HOLD   = 4
-    SPIN   = 5
 
 class FlightCommand(Node):
     """Node for generating commands from SFTI."""
@@ -96,21 +92,15 @@ class FlightCommand(Node):
             recorder (FlightRecorder):      Flight recorder object.
         """
         super().__init__('outdoor_command_node')
-#FIXME
-        self._orig_tty = termios.tcgetattr(sys.stdin)
-        tty.setcbreak(sys.stdin.fileno())
-        self.key_pressed = None
-        threading.Thread(target=self.kb_loop, daemon=True).start()
-#
+
         print("=====================================================================")
         print("---------------------------------------------------------------------")
 
         # ---------------------------------------------------------------------------------------
         # Some useful constants & variables -----------------------------------------------------
         # ---------------------------------------------------------------------------------------
-#TODO should this really be 20 or should it be 10?
         hz = 20
-#
+
         # Camera Parameters
         cam_dim,cam_fps, = [376,672,3],30           # we use the convention: [height,width,channels]
 
@@ -214,13 +204,6 @@ class FlightCommand(Node):
         # Initialize CLIPSeg Model
         self.prompt = mission_config.get('prompt', '')
         print(f"Query Set to: {self.prompt}")
-#FIXME
-        self.hold_prompt           = self.prompt
-        self.spin_ready            = False
-        self.spin_thread_started   = False
-        self.prompt_thread_started = False
-        self.prompt_buffer         = None
-#
         self.hf_model = mission_config.get('hf_model', 'CIDAS/clipseg-rd64-refined')
         self.onnx_model_path = mission_config.get('onnx_model_path')
 
@@ -268,7 +251,7 @@ class FlightCommand(Node):
         else:
             # non-MPC (neural) case: give everything a neutral default
             dt = 1.0 / hz          # hz (control rate)
-            self.Tpi = np.arange(0.0, 4.0 + dt, dt)
+            self.Tpi = np.arange(0.0, 15.0 + dt, dt)
             self.obj = np.zeros((18,1))
             self.q0 = np.array([0.0, 0.0, 0.70710678, 0.70710678])          # 
             self.z0 = -0.50                                    # init altitude offset
@@ -398,19 +381,6 @@ class FlightCommand(Node):
         # Wait for GCS clearance
         input("Press Enter to proceed...")
 
-#FIXME
-    def destroy_node(self):
-        # restore terminal so we don’t break your shell
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_tty)
-        super().destroy_node()
-
-    def kb_loop(self):
-        """Runs in background, grabs single chars without blocking."""
-        while rclpy.ok():
-            # wait up to 0.1s for a key
-            if select.select([sys.stdin], [], [], 0.1)[0]:
-                self.key_pressed = sys.stdin.read(1)
-#
     def internal_estimator_callback(self, vehicle_odometry:VehicleOdometry):
         """Callback function for internal vehicle_odometry topic subscriber."""
         self.vo_est = vehicle_odometry
@@ -452,40 +422,7 @@ class FlightCommand(Node):
             self.latest_mask = mask
             t_elap = time.time() - t0_img
             self.img_times.append(t_elap)
-#FIXME
-    def quat_to_yaw(self,q):
-        x, y, z, w = q
-        return np.arctan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
 
-    def build_yaw_qp(self, xyz, yaw0, t0):
-        """Background build of the spin trajectory."""
-        cfg = th.generate_spin_keyframes(
-            name=f"loiter_spin_{t0:.2f}",
-            Nco=6,
-            xyz=xyz,
-            theta0=yaw0, theta1=yaw0,
-            time=4.0
-        )
-        out = ms.solve(cfg)
-        if out is False:
-            print(f"Spin QP failed at t0={t0:.2f}")
-            return
-        Tps, CPs = out
-        self.tXUd_spin       = th.TS_to_tXU(Tps, CPs,
-                                            self.drone_config,
-                                            self.ctl.hz)
-        self.spin_start_time = t0
-        self.spin_ready     = True
-        print("Spin QP ready")
-
-    def wait_for_prompt(self):
-        """Blocking call to gather one line of user input.
-        Runs in its own daemon thread so it won't stop the HOLD loop."""
-        print()
-        line = input("Type your query and press Enter: ")
-        # stash it so the HOLD loop can see prompt_buffer != hold_prompt
-        self.prompt_buffer = line
-#
 
     def commander(self) -> None:
         """Main control loop for generating commands."""
@@ -537,6 +474,7 @@ class FlightCommand(Node):
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
                 self.k_rdy = 0                                                  # Reset ready counter
                 zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
+
                 self.sm = StateMachine.ACTIVE
                 
                 # Print State Information
@@ -583,109 +521,9 @@ class FlightCommand(Node):
                 t_sol = np.hstack((t_sol_ctl,time.time()-t0_lp))
                 self.recorder.record(img,t_tr,u_act,x_ref,u_ref,x_est,x_ext,adv,t_sol)
             else:
-                # trajectory has ended → HOLD Position
-                self.policy_duration       = t_tr
-                self.hold_prompt           = self.prompt
-                self.spin_ready            = False
-                self.spin_thread_started   = False
-                self.prompt_thread_started = False
-                self.prompt_buffer         = None
-                self.sm                    = StateMachine.HOLD
-                print('Trajectory Finished → HOLDing Position')
-
-                # self._policy_duration = t_tr
-                # self.sm = StateMachine.LAND
-                # print('Trajectory Finished.')
-        elif self.sm == StateMachine.HOLD:
-            zch.send_hold_mode(self.get_current_timestamp_time(),
-                            self.vehicle_command_publisher)
-#FIXME
-            if not self.spin_thread_started:
-                self.k_rdy = 0
-                self.spin_thread_started = True
-                t0   = self.get_clock().now().nanoseconds / 1e9
-                xyz  = x_est[0:3]
-                yaw0 = self.quat_to_yaw(x_est[6:10])
-                threading.Thread(
-                    target=self.build_yaw_qp,
-                    args=(xyz, yaw0, t0),
-                    daemon=True
-                ).start()
-
-            if not self.prompt_thread_started:
-                self.prompt_thread_started = True
-                threading.Thread(
-                    target=self.wait_for_prompt,
-                    daemon=True
-                ).start()
-
-            if self.spin_ready and np.linalg.norm(x_est[6:10]-self.q0) < self.q0_tol and np.abs(x_est[2]-self.z0) < self.z0_tol:
-                print("Query changed → SPINning to acquire...")
-                self.sm = StateMachine.SPIN
-#
-            elif self.key_pressed == '\x1b':
-                print("Esc. Pressed → LANDing...")
-                self.key_pressed = None
-                self.sm           = StateMachine.LAND
-#FIXME
-            else:
-                self.k_rdy += 1
-                if self.k_rdy % 10 == 0:
-                    z0ds,z0cr = np.around(self.z0,2),np.around(x_est[2],2)
-                    q0ds,q0cr = np.around(self.q0,2),np.around(x_est[6:10],2)
-                    print(f"Desired/Current Altitude+Attitude: ({z0ds}/{z0cr})({q0ds}/{q0cr})")
-
-        elif self.sm == StateMachine.SPIN:
-            now   = self.get_clock().now().nanoseconds / 1e9
-            t_rel = now - self.spin_start_time
-            t_end = self.tXUd_spin[0, -1] + self.t_lg
-
-            if t_rel <= t_end:
-                # Prepare spin‐trajectory references
-                spin_Tpi, spin_CPi = self.tXUd_spin[0], self.tXUd_spin[1:]
-                self.k_sm, self.N_sm = 0, spin_CPi.shape[1] - 1
-
-                t_ref = min(t_rel, spin_Tpi[-1])
-                if t_ref > spin_Tpi[self.k_sm + 1]:
-                    self.k_sm += 1
-
-                xu_ref = th.TS_to_xu(
-                    t_ref, spin_Tpi, spin_CPi, self.drone_config
-                )
-                x_ref = np.hstack((
-                    xu_ref[0:6],
-                    th.obedient_quaternion(xu_ref[6:10],
-                                        self.xref[6:10])
-                ))
-                u_ref = np.hstack((
-                    -np.mean(xu_ref[13:17]),
-                    xu_ref[10:13]
-                ))
-                self.xref, self.uref = x_ref, u_ref
-
-                # Call controller
-                u_act, self.znn, adv, t_sol_ctl = self.ctl.control(
-                    u_pr, t_ref, x_est, obj, img, znn
-                )
-
-                # 3) Publish & record
-                zch.publish_uvr_command(
-                    self.get_current_timestamp_time(),
-                    u_act,
-                    self.vehicle_rates_setpoint_publisher
-                )
-                t_sol = np.hstack((t_sol_ctl, time.time() - t0_lp))
-                self.recorder.record(
-                    img, t_ref, u_act, x_ref, u_ref,
-                    x_est, x_ext, adv, t_sol
-                )
-            else:
-                self.spin_thread_started   = False
-                self.prompt_thread_started = False
-                self.prompt_buffer         = None
-                self.sm                    = StateMachine.HOLD
-                print('Trajectory Finished → HOLDing Position')
-#
+                self._policy_duration = t_tr
+                self.sm = StateMachine.LAND
+                print('Trajectory Finished.')
         else:
             # State Actions
             zch.land(self.get_current_timestamp_time(),self.vehicle_command_publisher)
@@ -725,7 +563,7 @@ class FlightCommand(Node):
                 hz_min = 1/np.max(Tcmd)
 
                 print("Controller Computation Time Statistics")
-                print(f"Policy was active for {self.policy_duration:.2f} seconds.")
+                print(f"Policy was active for {self._policy_duration:.2f} seconds.")
                 print("Policy Component Compute Time (s): ", mu_t_cmp)
                 print("Policy Total Compute Frequency (hz):", hz_cmp)
                 print("Total Command Loop Frequency (hz): ", hz_cmd)

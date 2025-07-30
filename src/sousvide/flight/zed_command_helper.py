@@ -136,6 +136,19 @@ def engage_offboard_control_mode(timestamp:int,vc_publisher:Publisher) -> None:
 
     vc_publisher.publish(vehicle_command)
 
+def send_hold_mode(timestamp: int, vc_publisher: Publisher) -> None:
+    """Switch PX4 into builtin autonomous HOLD (hover) mode."""
+    vehicle_command = VehicleCommand(
+        command=VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
+        param1=1.0,  # MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+        param2=3.0,  # PX4_CUSTOM_MAIN_MODE_POSITION
+        param3=0.0, param4=0.0, param5=0.0, param6=0.0, param7=0.0,
+        target_system=1, target_component=1,
+        source_system=1, source_component=1, from_external=True,
+        timestamp=timestamp
+    )
+    vc_publisher.publish(vehicle_command)
+
 def land(timestamp:int,vc_publisher:Publisher) -> None:
     """Switch to land mode."""
 
