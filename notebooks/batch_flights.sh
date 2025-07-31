@@ -5,9 +5,10 @@ CONFIG="/home/admin/StanfordMSL/SousVide-Semantic/configs/experiment/ssv_multi3d
 TMP="/home/admin/StanfordMSL/SousVide-Semantic/configs/experiment/ssv_multi3dgs.tmp.yml"
 
 # reverse order
-# FLIGHTS=( "flightroom_lowres" "sv_917_3_left_gemsplat" "spheres" "indooroutdoor" "packardpark")
-FLIGHTS=( "sv_917_3_left_gemsplat" "spheres" "indooroutdoor" "packardpark")
+FLIGHTS=( "flightroom_lowres" "sv_917_3_left_gemsplat" "spheres" "indooroutdoor" "packardpark")
+# FLIGHTS=( "sv_917_3_left_gemsplat" "spheres" "indooroutdoor" "packardpark")
 # FLIGHTS=( "spheres" "indooroutdoor" "packardpark")
+# FLIGHTS = ( "spheres" ) 
 # FLIGHTS=("flightroom_lowres") 
 
 for flight in "${FLIGHTS[@]}"; do
