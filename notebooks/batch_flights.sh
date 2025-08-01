@@ -22,11 +22,11 @@ for flight in "${FLIGHTS[@]}"; do
   # build the args in an array
   args=( generate-rollouts --config-file "$TMP" )
   
-  args+=( --validation-mode )
+  # args+=( --validation-mode )
 
-  # args+=( --use-wandb --wandb-project ssv )
-  args+=( --use-wandb --wandb-project ssv \
-          --wandb-run-id clbyewvn --wandb-resume allow )
+  args+=( --use-wandb --wandb-project ssv )
+  # args+=( --use-wandb --wandb-project ssv \
+  #         --wandb-run-id clbyewvn --wandb-resume allow )
 
   python ssv_multi3dgs_campaign.py "${args[@]}"
 done
