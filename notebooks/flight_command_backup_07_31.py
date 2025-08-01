@@ -1,4 +1,3 @@
-import curses, builtins
 from copy import deepcopy
 import pickle
 import numpy as np
@@ -98,37 +97,8 @@ class FlightCommand(Node):
         """
         super().__init__('outdoor_command_node')
 #FIXME
-        # --- curses setup ---
-        # self.stdscr = curses.initscr()
-        # curses.noecho()
-        # curses.cbreak()
-        # self.stdscr.keypad(True)
-
-        # h, w = self.stdscr.getmaxyx()
-        # # status window (all your print()s go here)
-        # self.status_win = curses.newwin(h - 3, w, 0, 0)
-        # self.status_win.scrollok(True)
-
-        # self._orig_stdout = sys.stdout
-        # self._orig_stderr = sys.stderr
-        # sys.stdout = sys.stderr = self
-
-        # # input window (bottom 3 lines)
-        # self.input_win = curses.newwin(3, w, h - 3, 0)
-        # self.input_win.border()
-        # # make getch() non-blocking on this window
-        # self.input_win.nodelay(True)
-        # self.input_win.refresh()
-
-        # # monkey-patch print → status_win
-        # self._orig_print = builtins.print
-        # builtins.print = self.curses_print
-
-        # (optional? - for the non-curses implementation)
-        # Save and configure terminal for raw (unbuffered) input
         self._orig_tty = termios.tcgetattr(sys.stdin)
-        tty.setcbreak(sys.stdin.fileno())      # Make reads return immediately
-        
+        tty.setcbreak(sys.stdin.fileno())
         self.key_pressed = None
         threading.Thread(target=self.kb_loop, daemon=True).start()
 #
@@ -298,7 +268,7 @@ class FlightCommand(Node):
         else:
             # non-MPC (neural) case: give everything a neutral default
             dt = 1.0 / hz          # hz (control rate)
-            self.Tpi = np.arange(0.0, 1.0 + dt, dt)
+            self.Tpi = np.arange(0.0, 4.0 + dt, dt)
             self.obj = np.zeros((18,1))
             self.q0 = np.array([0.0, 0.0, 0.70710678, 0.70710678])          # 
             self.z0 = -0.50                                    # init altitude offset
@@ -426,24 +396,6 @@ class FlightCommand(Node):
         # ps.CP_to_3D([self.Tpi],[self.CPi],n=50)
 
         # Wait for GCS clearance
-#FIXME
-        # self.input_win.clear()
-        # self.input_win.border()
-        # self.input_win.addstr(1, 2, "Press Enter to proceed…")
-        # self.input_win.refresh()
-
-        # # turn blocking on just for this prompt
-        # self.input_win.nodelay(False)
-        # while True:
-        #     ch = self.input_win.getch()
-        #     if ch in (10, 13):   # Enter
-        #         break
-        # # go back to non-blocking for the rest of the run
-        # self.input_win.nodelay(True)
-        # self.input_win.clear()
-        # self.input_win.border()
-        # self.input_win.refresh()
-#
         input("Press Enter to proceed...")
 
 #FIXME
@@ -500,7 +452,7 @@ class FlightCommand(Node):
             self.latest_mask = mask
             t_elap = time.time() - t0_img
             self.img_times.append(t_elap)
-
+#FIXME
     def quat_to_yaw(self,q):
         x, y, z, w = q
         return np.arctan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
@@ -512,114 +464,31 @@ class FlightCommand(Node):
             Nco=6,
             xyz=xyz,
             theta0=yaw0, theta1=yaw0,
-            time=5.0
+            time=4.0
         )
         out = ms.solve(cfg)
         if out is False:
             print(f"Spin QP failed at t0={t0:.2f}")
             return
-        self.Tps_spin, self.CPs_spin = out
-        self.tXUd_spin       = th.TS_to_tXU(self.Tps_spin, self.CPs_spin,
+        Tps, CPs = out
+        self.tXUd_spin       = th.TS_to_tXU(Tps, CPs,
                                             self.drone_config,
                                             self.ctl.hz)
-        # self.spin_start_time = t0
+        self.spin_start_time = t0
         self.spin_ready     = True
         print("Spin QP ready")
 
-#FIXME
-    def curses_print(self, *args, **kwargs):
-        msg = ' '.join(str(a) for a in args)
-        self.status_win.addstr(msg + "\n")
-        self.status_win.refresh()
-
-    def write_input(self):
-        self.input_win.clear()
-        self.input_win.border()
-        # Always show prompt label
-        label = "Query: "
-        display = self.input_text
-        max_x = self.input_win.getmaxyx()[1] - len(label) - 4
-        if len(display) > max_x:
-            display = display[-max_x:]
-        self.input_win.addstr(1, 2, label + display)
-        self.input_win.refresh()
-
-    def write(self, msg):
-        # this gets called for every .write() to stdout/stderr
-        self.status_win.addstr(msg)
-        self.status_win.refresh()
-
-    def flush(self):
-        # called for .flush(), can be a no-op
-        pass
-
-    def destroy_node(self):
-        # restore terminal so we don’t break your shell
-        # os.dup2(self._stdout_fd_dup, 1)
-        # os.dup2(self._stderr_fd_dup, 2)
-        # os.close(self._stdout_fd_dup)
-        # os.close(self._stderr_fd_dup)
-
-        # sys.stdout = self._orig_stdout
-        # sys.stderr = self._orig_stderr
-        # sys.stdout = self._orig_stdout
-        # sys.stderr = self._orig_stderr
-        # builtins.print = self._orig_print
-
-        # curses.nocbreak()
-        # curses.echo()
-        # curses.endwin()
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_tty)
-        super().destroy_node()
-
     def wait_for_prompt(self):
-        """Daemon thread: only prompt/get a line while in HOLD."""
-        while True:
-            # 1) spin-wait until we're in HOLD
-            if self.sm != StateMachine.HOLD:
-                time.sleep(0.1)
-                continue
-
-            # 2) now we’re in HOLD → actually prompt
-            self.input_win.clear(); self.input_win.border()
-            prompt = "Type your query and press Enter: "
-            self.input_win.addstr(1, 2, prompt)
-            self.input_win.refresh()
-            curses.echo()
-            s = self.input_win.getstr(1, len(prompt) + 2).decode()
-            curses.noecho()
-
-            # 3) stash it for the HOLD→SPIN transition
-            self.prompt_buffer = s
-
-            # 4) clear the box, then loop back (won’t re‐prompt until we re‐enter HOLD)
-            self.input_win.clear(); self.input_win.border()
-            self.input_win.refresh()
-
-            # small pause so we don’t immediately re‐prompt on the same keypress
-            time.sleep(0.1)
+        """Blocking call to gather one line of user input.
+        Runs in its own daemon thread so it won't stop the HOLD loop."""
+        print()
+        line = input("Type your query and press Enter: ")
+        # stash it so the HOLD loop can see prompt_buffer != hold_prompt
+        self.prompt_buffer = line
 #
+
     def commander(self) -> None:
         """Main control loop for generating commands."""
-#FIXME        
-        if self.key_pressed == '\x1b':    # ESC
-            print("ESC detected, landing…")
-            self.sm = StateMachine.LAND
-            self.key_pressed = None        # reset
-
-        # ch = self.input_win.getch()
-        # if ch != curses.ERR:
-        #     if ch == 27:
-        #         self.key_pressed = '\x1b'
-        #     elif ch in (10, 13):
-        #         self.key_pressed = '\n'
-        #     else:
-        #         # if you ever care about other single-char keys:
-        #         try:
-        #             self.key_pressed = chr(ch)
-        #         except ValueError:
-        #             self.key_pressed = None
-#
         # Looping Callback Actions
         x_est,u_pr = zch.vo2x(self.vo_est,self.T_e2w)[0:10],zch.vrs2uvr(self.vrs)
         x_ext,znn,obj = zch.vo2x(self.vo_ext)[0:10],self.znn,self.obj
@@ -743,52 +612,46 @@ class FlightCommand(Node):
                     daemon=True
                 ).start()
 
-            # if not self.prompt_thread_started:
-            #     self.prompt_thread_started = True
-            #     threading.Thread(
-            #         target=self.wait_for_prompt,
-            #         daemon=True
-            #     ).start()
-#FIXME
-            # if self.spin_ready and self.prompt_buffer != self.hold_prompt and np.linalg.norm(x_est[6:10]-self.q0) < self.q0_tol and np.abs(x_est[2]-self.z0) < self.z0_tol:
-            # if self.spin_ready and np.linalg.norm(x_est[6:10]-self.q0) < self.q0_tol and np.abs(x_est[2]-self.z0) < self.z0_tol:    
-            #     # self.hold_prompt = self.prompt_buffer
-            #     print("Query changed → SPINning to acquire...")
-            #     self.t_tr0 = self.get_clock().now().nanoseconds / 1e9
-            #     zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
-            #     self.sm = StateMachine.SPIN
+            if not self.prompt_thread_started:
+                self.prompt_thread_started = True
+                threading.Thread(
+                    target=self.wait_for_prompt,
+                    daemon=True
+                ).start()
+
+            if self.spin_ready and np.linalg.norm(x_est[6:10]-self.q0) < self.q0_tol and np.abs(x_est[2]-self.z0) < self.z0_tol:
+                print("Query changed → SPINning to acquire...")
+                self.sm = StateMachine.SPIN
 #
-            # elif self.key_pressed == '\x1b':
-            #     print("Esc. Pressed → LANDing...")
-            #     self.key_pressed = None
-            #     self.sm           = StateMachine.LAND
+            elif self.key_pressed == '\x1b':
+                print("Esc. Pressed → LANDing...")
+                self.key_pressed = None
+                self.sm           = StateMachine.LAND
 #FIXME
-            # else:
-            #     self.k_rdy += 1
-            #     if self.k_rdy % 10 == 0:
-            #         z0ds,z0cr = np.around(self.z0,2),np.around(x_est[2],2)
-            #         q0ds,q0cr = np.around(self.q0,2),np.around(x_est[6:10],2)
-            #         print(f"Desired/Current Altitude+Attitude: ({z0ds}/{z0cr})({q0ds}/{q0cr})")
+            else:
+                self.k_rdy += 1
+                if self.k_rdy % 10 == 0:
+                    z0ds,z0cr = np.around(self.z0,2),np.around(x_est[2],2)
+                    q0ds,q0cr = np.around(self.q0,2),np.around(x_est[6:10],2)
+                    print(f"Desired/Current Altitude+Attitude: ({z0ds}/{z0cr})({q0ds}/{q0cr})")
 
         elif self.sm == StateMachine.SPIN:
-            t0_lp = time.time()                               # for compute-time logging
-            t_tr  = self.get_current_trajectory_time()
+            now   = self.get_clock().now().nanoseconds / 1e9
+            t_rel = now - self.spin_start_time
+            t_end = self.tXUd_spin[0, -1] + self.t_lg
 
-
-            if t_tr <= (self.Tps_spin[-1] + self.t_lg):
+            if t_rel <= t_end:
                 # Prepare spin‐trajectory references
-                # spin_Tpi, spin_CPi = self.tXUd_spin[0], self.tXUd_spin[1:]
-                # self.k_sm, self.N_sm = 0, spin_CPi.shape[1] - 1
+                spin_Tpi, spin_CPi = self.tXUd_spin[0], self.tXUd_spin[1:]
+                self.k_sm, self.N_sm = 0, spin_CPi.shape[1] - 1
 
-                t_ref = min(t_tr, self.Tps_spin[-1])
-                # if t_ref > spin_Tpi[self.k_sm + 1]:
-                #     self.k_sm += 1
+                t_ref = min(t_rel, spin_Tpi[-1])
+                if t_ref > spin_Tpi[self.k_sm + 1]:
+                    self.k_sm += 1
 
-                # xu_ref = th.TS_to_xu(
-                #     t_ref, spin_Tpi, spin_CPi, self.drone_config
-                # )
-
-                xu_ref = th.TS_to_xu(t_ref,self.Tps_spin,self.CPs_spin,self.drone_config)
+                xu_ref = th.TS_to_xu(
+                    t_ref, spin_Tpi, spin_CPi, self.drone_config
+                )
                 x_ref = np.hstack((
                     xu_ref[0:6],
                     th.obedient_quaternion(xu_ref[6:10],
@@ -802,7 +665,7 @@ class FlightCommand(Node):
 
                 # Call controller
                 u_act, self.znn, adv, t_sol_ctl = self.ctl.control(
-                    t_tr, x_est, u_pr, obj, img, znn
+                    u_pr, t_ref, x_est, obj, img, znn
                 )
 
                 # 3) Publish & record
@@ -875,9 +738,6 @@ class FlightCommand(Node):
             # Wait for GCS clearance
             input("Press Enter to close node...")
             print("Closing node...")
-            # self.destroy_node()
-            # rclpy.shutdown()
-            # sys.exit(0)
             exit()
 
 def main() -> None:

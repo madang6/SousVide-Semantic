@@ -11,6 +11,7 @@ from px4_msgs.msg import (
     OffboardControlMode,
     VehicleOdometry,
     VehicleRatesSetpoint,
+    TrajectorySetpoint,
     ActuatorMotors
 )
 
@@ -108,6 +109,60 @@ def vrs2uvr(vr:VehicleRatesSetpoint) -> np.ndarray:
     """Convert vehicle rates setpoint to vehicle rates input."""
     return np.array([vr.thrust_body[2],vr.roll,vr.pitch,vr.yaw])
 
+
+def publish_position_hold(timestamp: int,
+                             x_est: np.ndarray,
+                             traj_sp_pub) -> None:
+    """
+    Hold current position & heading using TrajectorySetpoint only.
+    - x_est: 13-element state [x,y,z, vx,vy,vz, qx,qy,qz,qw, ...]
+    - traj_sp_pub: Publisher<TrajectorySetpoint>
+    """
+    sp = TrajectorySetpoint(timestamp=timestamp)
+
+    # current x, y, z
+    sp.x, sp.y, sp.z = x_est[0], x_est[1], x_est[2]
+
+    # extract yaw from quaternion (qx,qy,qz,qw in x_est[6..9])
+    qx, qy, qz, qw = x_est[6], x_est[7], x_est[8], x_est[9]
+    sp.yaw = np.atan2(2*(qw*qz + qx*qy),
+                        1 - 2*(qy*qy + qz*qz))
+
+    # ignore any feed-forward
+    sp.vx = sp.vy = sp.vz = float('nan')
+    sp.acceleration = [float('nan')] * 3
+
+    traj_sp_pub.publish(sp)
+
+def publish_position_hold_with_yaw_rate_sp(timestamp: int,
+                                           x_est: np.ndarray,
+                                           yaw_rate: float,
+                                           traj_sp_pub,
+                                           rates_sp_pub) -> None:
+    """
+    Hold x,y,z and command constant yaw rate.
+    - yaw_rate: radians/sec (+ = CCW looking down)
+    - traj_sp_pub:   Publisher<TrajectorySetpoint>
+    - rates_sp_pub:  Publisher<VehicleRatesSetpoint>
+    """
+    # publish hold-point TrajectorySetpoint
+    sp = TrajectorySetpoint(timestamp=timestamp)
+    sp.x, sp.y, sp.z = x_est[0], x_est[1], x_est[2]
+    sp.yaw = float('nan')  # use body-rate for yaw
+    sp.vx = sp.vy = sp.vz = float('nan')
+    sp.acceleration = [float('nan')] * 3
+    traj_sp_pub.publish(sp)
+
+    # publish yaw-rate command
+    vrs = VehicleRatesSetpoint(
+        thrust_body=np.array([0.0, 0.0, 0.0], dtype=np.float32),
+        roll=0.0,
+        pitch=0.0,
+        yaw=float(yaw_rate),
+        timestamp=timestamp
+    )
+    rates_sp_pub.publish(vrs)
+
 def publish_uvr_command(timestamp:int,uvr:np.ndarray,vrs_publisher:Publisher) -> None:
     """Publish vehicle rates input (as a vehicle rates setpoint message)."""
 
@@ -136,6 +191,7 @@ def engage_offboard_control_mode(timestamp:int,vc_publisher:Publisher) -> None:
 
     vc_publisher.publish(vehicle_command)
 
+#NOTE: unused - requires global position estimate
 def send_hold_mode(timestamp: int, vc_publisher: Publisher) -> None:
     """Switch PX4 into builtin autonomous HOLD (hover) mode."""
     vehicle_command = VehicleCommand(
