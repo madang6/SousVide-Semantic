@@ -120,21 +120,24 @@ def publish_position_hold(timestamp: int,
     """
     sp = TrajectorySetpoint(timestamp=timestamp)
 
-    # current x, y, z
-    sp.x, sp.y, sp.z = x_est[0], x_est[1], x_est[2]
+    # set position [x, y, z]
+    sp.position[0] = x_est[0]
+    sp.position[1] = x_est[1]
+    sp.position[2] = x_est[2]
 
     # extract yaw from quaternion (qx,qy,qz,qw in x_est[6..9])
     qx, qy, qz, qw = x_est[6], x_est[7], x_est[8], x_est[9]
-    sp.yaw = np.atan2(2*(qw*qz + qx*qy),
+    sp.yaw = np.arctan2(2*(qw*qz + qx*qy),
                         1 - 2*(qy*qy + qz*qz))
 
-    # ignore any feed-forward
-    sp.vx = sp.vy = sp.vz = float('nan')
+    # ignore velocity/acceleration/jerk feed-forward
+    sp.velocity = [float('nan')] * 3
     sp.acceleration = [float('nan')] * 3
+    sp.jerk = [float('nan')] * 3
 
     traj_sp_pub.publish(sp)
 
-def publish_position_hold_with_yaw_rate_sp(timestamp: int,
+def publish_position_hold_with_yaw_rate(timestamp: int,
                                            x_est: np.ndarray,
                                            yaw_rate: float,
                                            traj_sp_pub,
@@ -147,10 +150,14 @@ def publish_position_hold_with_yaw_rate_sp(timestamp: int,
     """
     # publish hold-point TrajectorySetpoint
     sp = TrajectorySetpoint(timestamp=timestamp)
-    sp.x, sp.y, sp.z = x_est[0], x_est[1], x_est[2]
-    sp.yaw = float('nan')  # use body-rate for yaw
-    sp.vx = sp.vy = sp.vz = float('nan')
+    sp.position[0] = x_est[0]
+    sp.position[1] = x_est[1]
+    sp.position[2] = x_est[2]
+    sp.yaw = float('nan')
+    sp.velocity = [float('nan')] * 3
     sp.acceleration = [float('nan')] * 3
+    sp.jerk = [float('nan')] * 3
+    sp.yawspeed = float('nan')
     traj_sp_pub.publish(sp)
 
     # publish yaw-rate command

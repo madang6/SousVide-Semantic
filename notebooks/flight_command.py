@@ -24,6 +24,7 @@ from px4_msgs.msg import (
     OffboardControlMode,
     VehicleOdometry,
     VehicleRatesSetpoint,
+    TrajectorySetpoint
 )
 
 from sousvide.control.pilot import Pilot
@@ -240,6 +241,7 @@ class FlightCommand(Node):
         self.vehicle_command_publisher = self.create_publisher(VehicleCommand,drone_prefix+'/fmu/in/vehicle_command', qos_drone)
         self.offboard_control_mode_publisher = self.create_publisher(OffboardControlMode,drone_prefix+'/fmu/in/offboard_control_mode', qos_drone)
         self.vehicle_rates_setpoint_publisher = self.create_publisher(VehicleRatesSetpoint, drone_prefix+'/fmu/in/vehicle_rates_setpoint', qos_drone)
+        self.trajectory_setpoint_publisher = self.create_publisher(TrajectorySetpoint, drone_prefix+'/fmu/in/trajectory_setpoint', qos_drone)
 
         # Initialize CLIPSeg Model
         self.prompt = mission_config.get('prompt', '')
@@ -601,10 +603,34 @@ class FlightCommand(Node):
 #
     def commander(self) -> None:
         """Main control loop for generating commands."""
+        # Looping Callback Actions
+        x_est,u_pr = zch.vo2x(self.vo_est,self.T_e2w)[0:10],zch.vrs2uvr(self.vrs)
+        x_ext,znn,obj = zch.vo2x(self.vo_ext)[0:10],self.znn,self.obj
+        x_est[6:10] = th.obedient_quaternion(x_est[6:10],self.xref[6:10])
+        x_ext[6:10] = th.obedient_quaternion(x_ext[6:10],self.xref[6:10])
+
+        img = self.latest_mask
+
+        zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
+
 #FIXME        
         if self.key_pressed == '\x1b':    # ESC
             print("ESC detected, landing…")
             self.sm = StateMachine.LAND
+            self.key_pressed = None        # reset
+        elif self.key_pressed == 'h':    # H key
+            print("H key detected, switching to HOLD mode…")
+            self.hold_state = x_est.copy()  # save current state
+            self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
+            zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
+            self.sm = StateMachine.HOLD
+            self.key_pressed = None        # reset
+        elif self.key_pressed == 's':    # H key
+            print("H key detected, switching to SPIN mode…")
+            self.hold_state = x_est.copy()  # save current state
+            self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
+            zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
+            self.sm = StateMachine.SPIN
             self.key_pressed = None        # reset
 
         # ch = self.input_win.getch()
@@ -620,15 +646,6 @@ class FlightCommand(Node):
         #         except ValueError:
         #             self.key_pressed = None
 #
-        # Looping Callback Actions
-        x_est,u_pr = zch.vo2x(self.vo_est,self.T_e2w)[0:10],zch.vrs2uvr(self.vrs)
-        x_ext,znn,obj = zch.vo2x(self.vo_ext)[0:10],self.znn,self.obj
-        x_est[6:10] = th.obedient_quaternion(x_est[6:10],self.xref[6:10])
-        x_ext[6:10] = th.obedient_quaternion(x_ext[6:10],self.xref[6:10])
-
-        img = self.latest_mask
-
-        zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
 
         # State Machine
         if self.sm == StateMachine.INIT:
@@ -693,13 +710,6 @@ class FlightCommand(Node):
             if t_tr < (self.Tpi[-1]+self.t_lg):
                 # Compute the reference trajectory current point
                 t_ref = np.min((t_tr,self.Tpi[-1]))                             # Reference time (does not exceed ideal)
-                # if t_ref > self.Tpi[self.k_sm+1]:                               # Check if we are in a new segment
-                #     self.k_sm += 1
-                #     print('In Segment:',self.k_sm+1,'/',self.N_sm)
-
-                # xu_ref = th.TS_to_xu(t_ref,self.Tpi,self.CPi,self.drone_config)
-                # x_ref = np.hstack((xu_ref[0:6],th.obedient_quaternion(xu_ref[6:10],self.xref[6:10])))
-                # u_ref = np.hstack((-np.mean(xu_ref[13:17]),xu_ref[10:13]))
 
                 x_ref = self.xref
                 u_ref = self.uref
@@ -721,27 +731,44 @@ class FlightCommand(Node):
                 self.spin_thread_started   = False
                 self.prompt_thread_started = False
                 self.prompt_buffer         = None
+
+                self.hold_state = x_est.copy()
+                self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
                 self.sm                    = StateMachine.HOLD
                 print('Trajectory Finished → HOLDing Position')
-
+#NOTE deprecated
                 # self._policy_duration = t_tr
                 # self.sm = StateMachine.LAND
                 # print('Trajectory Finished.')
         elif self.sm == StateMachine.HOLD:
-            zch.send_hold_mode(self.get_current_timestamp_time(),
-                            self.vehicle_command_publisher)
+            t0_lp  = time.time()                                                # Algorithm start time
+            t_tr = self.get_current_trajectory_time()                           # Current trajectory time
+
+            if t_tr < 5.0:
+                zch.publish_position_hold(self.get_current_timestamp_time(), self.hold_state, self.trajectory_setpoint_publisher)
+                # t_sol = np.hstack((time.time()-t0_lp,time.time()-t0_lp))    
+                # self.recorder.record(img,t_tr,[0.0,0.0,0.0,0.0],self.hold_state,u_ref,x_est,x_ext,adv,t_sol)
+#FIXME            
+            # else:
+            #     # time to flip into SPIN
+            #     self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
+            #     self.sm = StateMachine.SPIN
+            #     print('Trajectory Finished → SPINning to acquire...')
+            else:
+                self.sm = StateMachine.LAND
+                print('Trajectory Finished → Landing...')
 #FIXME
-            if not self.spin_thread_started:
-                self.k_rdy = 0
-                self.spin_thread_started = True
-                t0   = self.get_clock().now().nanoseconds / 1e9
-                xyz  = x_est[0:3]
-                yaw0 = self.quat_to_yaw(x_est[6:10])
-                threading.Thread(
-                    target=self.build_yaw_qp,
-                    args=(xyz, yaw0, t0),
-                    daemon=True
-                ).start()
+            # if not self.spin_thread_started:
+            #     self.k_rdy = 0
+            #     self.spin_thread_started = True
+            #     t0   = self.get_clock().now().nanoseconds / 1e9
+            #     xyz  = x_est[0:3]
+            #     yaw0 = self.quat_to_yaw(x_est[6:10])
+            #     threading.Thread(
+            #         target=self.build_yaw_qp,
+            #         args=(xyz, yaw0, t0),
+            #         daemon=True
+            #     ).start()
 
             # if not self.prompt_thread_started:
             #     self.prompt_thread_started = True
@@ -758,68 +785,19 @@ class FlightCommand(Node):
             #     zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
             #     self.sm = StateMachine.SPIN
 #
-            # elif self.key_pressed == '\x1b':
-            #     print("Esc. Pressed → LANDing...")
-            #     self.key_pressed = None
-            #     self.sm           = StateMachine.LAND
-#FIXME
-            # else:
-            #     self.k_rdy += 1
-            #     if self.k_rdy % 10 == 0:
-            #         z0ds,z0cr = np.around(self.z0,2),np.around(x_est[2],2)
-            #         q0ds,q0cr = np.around(self.q0,2),np.around(x_est[6:10],2)
-            #         print(f"Desired/Current Altitude+Attitude: ({z0ds}/{z0cr})({q0ds}/{q0cr})")
-
         elif self.sm == StateMachine.SPIN:
-            t0_lp = time.time()                               # for compute-time logging
             t_tr  = self.get_current_trajectory_time()
 
-
-            if t_tr <= (self.Tps_spin[-1] + self.t_lg):
-                # Prepare spin‐trajectory references
-                # spin_Tpi, spin_CPi = self.tXUd_spin[0], self.tXUd_spin[1:]
-                # self.k_sm, self.N_sm = 0, spin_CPi.shape[1] - 1
-
-                t_ref = min(t_tr, self.Tps_spin[-1])
-                # if t_ref > spin_Tpi[self.k_sm + 1]:
-                #     self.k_sm += 1
-
-                # xu_ref = th.TS_to_xu(
-                #     t_ref, spin_Tpi, spin_CPi, self.drone_config
-                # )
-
-                xu_ref = th.TS_to_xu(t_ref,self.Tps_spin,self.CPs_spin,self.drone_config)
-                x_ref = np.hstack((
-                    xu_ref[0:6],
-                    th.obedient_quaternion(xu_ref[6:10],
-                                        self.xref[6:10])
-                ))
-                u_ref = np.hstack((
-                    -np.mean(xu_ref[13:17]),
-                    xu_ref[10:13]
-                ))
-                self.xref, self.uref = x_ref, u_ref
-
-                # Call controller
-                u_act, self.znn, adv, t_sol_ctl = self.ctl.control(
-                    t_tr, x_est, u_pr, obj, img, znn
-                )
-
-                # 3) Publish & record
-                zch.publish_uvr_command(
-                    self.get_current_timestamp_time(),
-                    u_act,
-                    self.vehicle_rates_setpoint_publisher
-                )
-                t_sol = np.hstack((t_sol_ctl, time.time() - t0_lp))
-                self.recorder.record(
-                    img, t_ref, u_act, x_ref, u_ref,
-                    x_est, x_ext, adv, t_sol
-                )
+            if t_tr < 5.0:
+                zch.publish_position_hold_with_yaw_rate(self.get_current_timestamp_time(),
+                                                        self.hold_state, 1.257,
+                                                        self.trajectory_setpoint_publisher,
+                                                        self.vehicle_rates_setpoint_publisher)
             else:
                 self.spin_thread_started   = False
                 self.prompt_thread_started = False
                 self.prompt_buffer         = None
+                self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
                 self.sm                    = StateMachine.HOLD
                 print('Trajectory Finished → HOLDing Position')
 #
