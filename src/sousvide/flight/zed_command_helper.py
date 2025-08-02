@@ -137,6 +137,16 @@ def publish_position_hold(timestamp: int,
 
     traj_sp_pub.publish(sp)
 
+def publish_velocity_hold(timestamp: int, traj_sp_pub) -> None:
+    ts = TrajectorySetpoint(timestamp=timestamp)
+    ts.velocity     = [0.0, 0.0, 0.0]     # hold zero velocity
+    ts.position     = [float('nan')]*3
+    ts.acceleration = [float('nan')]*3
+    ts.jerk         = [float('nan')]*3
+    ts.yaw          = float('nan')
+    ts.yawspeed     = float('nan')
+    traj_sp_pub.publish(ts)
+
 def publish_position_hold_with_yaw_rate(timestamp: int,
                                            x_est: np.ndarray,
                                            yaw_rate: float,
