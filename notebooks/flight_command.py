@@ -612,7 +612,7 @@ class FlightCommand(Node):
         img = self.latest_mask
 
         # zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
-        if self.sm in (StateMachine.ACTIVE, StateMachine.SPIN):
+        if self.sm in (StateMachine.ACTIVE):
             # Active/Spin: use body-rate control
             zch.heartbeat_offboard_control_mode(
                 self.get_current_timestamp_time(),
@@ -628,6 +628,14 @@ class FlightCommand(Node):
                 self.offboard_control_mode_publisher,
                 body_rate=False,
                 velocity=True
+            )
+
+        elif self.sm == StateMachine.SPIN:
+            # for yaw-in-place: hold position via zero velocity, spin via body_rate
+            zch.heartbeat_offboard_control_mode(
+                t, self.offboard_control_mode_publisher,
+                body_rate=True,  # drive the yaw-rate loop
+                velocity=True   # drive the XY/Z velocity loops
             )
         
         else:
