@@ -147,6 +147,30 @@ def publish_velocity_hold(timestamp: int, traj_sp_pub) -> None:
     ts.yawspeed     = float('nan')
     traj_sp_pub.publish(ts)
 
+def publish_velocity_hold_with_yaw_rate(timestamp: int,
+                                        traj_sp_pub,
+                                        rates_sp_pub,
+                                        yaw_rate: float) -> None:
+    # 1) zero-velocity setpoint → holds X/Y/Z
+    ts = TrajectorySetpoint(timestamp=timestamp)
+    ts.velocity     = [0.0, 0.0, 0.0]
+    ts.position     = [float('nan')] * 3
+    ts.acceleration = [float('nan')] * 3
+    ts.jerk         = [float('nan')] * 3
+    ts.yaw          = float('nan')
+    ts.yawspeed     = float('nan')
+    traj_sp_pub.publish(ts)
+
+    # 2) yaw-rate setpoint → spins at your chosen rate
+    vrs = VehicleRatesSetpoint(
+        thrust_body = np.array([0.0, 0.0, 0.0], dtype=np.float32),
+        roll        = 0.0,
+        pitch       = 0.0,
+        yaw         = yaw_rate,
+        timestamp   = timestamp
+    )
+    rates_sp_pub.publish(vrs)
+
 def publish_position_hold_with_yaw_rate(timestamp: int,
                                            x_est: np.ndarray,
                                            yaw_rate: float,
