@@ -823,10 +823,12 @@ class FlightCommand(Node):
             t_tr  = self.get_current_trajectory_time()
 
             if t_tr < 5.0:
-                zch.publish_position_hold_with_yaw_rate(self.get_current_timestamp_time(),
-                                                        self.hold_state, 1.257,
-                                                        self.trajectory_setpoint_publisher,
-                                                        self.vehicle_rates_setpoint_publisher)
+                zch.publish_velocity_hold_with_yaw_rate(
+                    self.get_current_timestamp_time(),
+                    self.trajectory_setpoint_publisher,
+                    self.vehicle_rates_setpoint_publisher,
+                    0.2
+                )
             else:
                 self.spin_thread_started   = False
                 self.prompt_thread_started = False
