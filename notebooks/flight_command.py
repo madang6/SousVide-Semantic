@@ -611,7 +611,33 @@ class FlightCommand(Node):
 
         img = self.latest_mask
 
-        zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
+        # zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
+        if self.sm in (StateMachine.ACTIVE, StateMachine.SPIN):
+            # Active/Spin: use body-rate control
+            zch.heartbeat_offboard_control_mode(
+                self.get_current_timestamp_time(),
+                self.offboard_control_mode_publisher,
+                body_rate=True,
+                velocity=False
+            )
+        
+        elif self.sm == StateMachine.HOLD:
+            # Hold: use velocity control for smooth hover
+            zch.heartbeat_offboard_control_mode(
+                self.get_current_timestamp_time(),
+                self.offboard_control_mode_publisher,
+                body_rate=False,
+                velocity=True
+            )
+        
+        else:
+            # INIT, READY, LAND, etc.—default to body-rate so commands don’t break
+            zch.heartbeat_offboard_control_mode(
+                self.get_current_timestamp_time(),
+                self.offboard_control_mode_publisher,
+                body_rate=True,
+                velocity=False
+            )
 
 #FIXME        
         if self.key_pressed == '\x1b':    # ESC
