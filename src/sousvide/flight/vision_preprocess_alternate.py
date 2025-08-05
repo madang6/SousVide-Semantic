@@ -716,6 +716,42 @@ def warp_mask(prev_rgb, curr_rgb, prev_mask):
     warped = cv2.remap(prev_mask, remap[..., 0], remap[..., 1], interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
     return warped.astype(np.uint8)
 
+def has_one_large_high_sim_region(
+    image: np.ndarray,
+    similarity_map: np.ndarray,
+    sim_thresh: float = 0.5,
+    area_thresh: float = 0.05,
+    num_superpixels: int = 500,
+    num_levels: int = 3,
+    prior: int = 2,
+    histogram_bins: int = 5,
+    num_iterations: int = 2,
+) -> bool:
+    """
+    Returns True if there exists *one* superpixel whose
+    mean similarity ≥ sim_thresh *and* whose size ≥ area_thresh of the image.
+    """
+    h, w = image.shape[:2]
+
+    # create & run SEEDS to get labels
+    seeds = cv2.ximgproc.createSuperpixelSEEDS(
+        w, h, image.shape[2],
+        num_superpixels, num_levels, prior,
+        histogram_bins, False
+    )
+    seeds.iterate(image, num_iterations=num_iterations)
+    labels = seeds.getLabels()
+
+    # check each superpixel individually
+    for sp_id in np.unique(labels):
+        mask = (labels == sp_id)
+        mean_sim = float(similarity_map[mask].mean())
+        area_frac = mask.sum() / (h * w)
+
+        if mean_sim >= sim_thresh and area_frac >= area_thresh:
+            return True
+
+    return False
 
 def render_rescale(self, srgb_mono):
     '''This function takes a single channel semantic similarity and rescales it globally'''
