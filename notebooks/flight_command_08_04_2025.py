@@ -1,4 +1,3 @@
-import os
 import sys, signal, atexit
 import curses, builtins
 from copy import deepcopy
@@ -100,6 +99,40 @@ class FlightCommand(Node):
             recorder (FlightRecorder):      Flight recorder object.
         """
         super().__init__('outdoor_command_node')
+        self._cleanup_done = False
+        # ---------------------------------
+        # Register cleanup routines
+        sys.excepthook = self._handle_exception
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, self._handle_signal)
+        atexit.register(self._cleanup)
+        # ---------------------------------
+#FIXME
+        # --- curses setup ---
+        # self.stdscr = curses.initscr()
+        # curses.noecho()
+        # curses.cbreak()
+        # self.stdscr.keypad(True)
+
+        # h, w = self.stdscr.getmaxyx()
+        # # status window (all your print()s go here)
+        # self.status_win = curses.newwin(h - 3, w, 0, 0)
+        # self.status_win.scrollok(True)
+
+        # self._orig_stdout = sys.stdout
+        # self._orig_stderr = sys.stderr
+        # sys.stdout = sys.stderr = self
+
+        # # input window (bottom 3 lines)
+        # self.input_win = curses.newwin(3, w, h - 3, 0)
+        # self.input_win.border()
+        # # make getch() non-blocking on this window
+        # self.input_win.nodelay(True)
+        # self.input_win.refresh()
+
+        # # monkey-patch print → status_win
+        # self._orig_print = builtins.print
+        # builtins.print = self.curses_print
 
         # (optional? - for the non-curses implementation)
         # Save and configure terminal for raw (unbuffered) input
@@ -150,7 +183,9 @@ class FlightCommand(Node):
             raise FileNotFoundError(f"Mission file not found: {mission_name}.json")
 #FIXME
         print("Loading Courses")
-
+        # with open(os.path.join(workspace_path,"configs","courses",mission_config["course"]+".json")) as json_file:
+            # mission_config = json.load(json_file)
+#NOTE modified this approach to load the RRT* generated tXUi from the pickle file
         # Check for trajectory file, skip if it doesn't exist
         loaded_tXUi = None
         if mission_config.get("course") is not None:
@@ -167,6 +202,14 @@ class FlightCommand(Node):
             raise FileNotFoundError(f"Drone frame file not found, please provide one")
 #FIXME
         print("Loaded Frame")
+        #NOTE RRT*/SSV precomputes the trajectory, we load it from a saved file
+        # # Unpack trajectories
+        # output = ms.solve(course_config)
+        # if output is not False:
+        #     Tpi, CPi = output
+        # else:
+        #     raise ValueError("Trajectory not feasible. Aborting.")
+        # tXUi = th.ts_to_tXU(Tpi,CPi,None,hz)
         if loaded_tXUi is not None:
             tXUi = deepcopy(loaded_tXUi)
 
@@ -294,9 +337,22 @@ class FlightCommand(Node):
         self.vrs = VehicleRatesSetpoint()                       # current vehicle rates setpoint
         self.znn = (torch.zeros(self.ctl.model.Nz)              # current visual feature vector
                     if isinstance(self.ctl,Pilot) else None)   
+#FIXME
+        # Initialize Quaternions with starting reference quaternion (note: tXUi convention is qx,qy,qz,qw while vo_est is qw,qx,qy,qz)
+        # self.vo_est.q[0],self.vo_est.q[1:4] = tXUi[10,0],tXUi[7:10,0]
+        # self.vo_ext.q[0],self.vo_ext.q[1:4] = tXUi[10,0],tXUi[7:10,0]
 
         # State Machine and Failsafe variables
         self.sm = StateMachine.INIT                                    # state machine
+        # self.xref = tXUi[1:11,0]                                       # reference state
+#NOTE referring to something used in main loop here
+        # u_ref = np.hstack((-np.mean(xu_ref[13:17]),xu_ref[10:13]))
+        # print(f"mean of tXUi[14:18,0]: {np.mean(tXUi[14:18,:],axis=0)}")
+        # mean_tXUi = np.mean(tXUi[14:18, :], axis=0)
+        # mean_tXUi = mean_tXUi.reshape(1, -1)
+        # print(f"mean_tXUi: {mean_tXUi.shape}")
+        # print(f"tXUi[11:14,0]: {tXUi[11:14,:].shape}")
+        # self.uref = np.vstack((-mean_tXUi,tXUi[11:14,:])) # reference input
         
         # self.q0,self.z0 = tXUi[7:11,0],tXUi[3,0]                       # initial attitude and altitude
         self.q0_tol,self.z0_tol = q0_tol,z0_tol                        # attitude and altitude tolerances
@@ -324,6 +380,14 @@ class FlightCommand(Node):
 
         # Earth to World Pose
         self.T_e2w = np.eye(4)
+
+        # Diagnostics Variables
+#NOTE Maybe save the nodes from RRT* here? could be useful for diagnostics
+        # table = []
+        # for idx,item in enumerate(course_config["keyframes"].values()):
+        #     FOkf = np.array(item['fo'],dtype=float)
+        #     data = np.hstack((self.Tpi[idx],FOkf[:,0]))
+        #     table.append(data)
 
         # Print Diagnostics
         print('=====================================================================')
@@ -358,21 +422,63 @@ class FlightCommand(Node):
             print('=====================================================================')
 
         print('--------------------> Trajectory Information <-----------------------')
+        # print('Number of Segments :',self.N_sm)
+        # print('Trajectory Duration:',tXUi[0,-1],'s')
         print('---------------------------------------------------------------------')
+        # print('Keyframes:')
         print('Starting Location & Orientation:')
         x0_est = zch.vo2x(self.vo_est,self.T_e2w)[0:10]
         x0_est[6:10] = th.obedient_quaternion(x0_est[6:10],self.xref[6:10])
         print('xref: ',x0_est[1:3])
         print('qref: ',x0_est[6:10])
+        # print('xref',self.xref)
+        # print(tabulate(table, headers=["x (m)", "y (m)", "z (m)", "yaw (rad)"]))
         print('---------------------------------------------------------------------')
         print('=====================================================================')
 
+        # Plot Trajectory
+        # ps.CP_to_3D([self.Tpi],[self.CPi],n=50)
+
+        # Wait for GCS clearance
+#FIXME
+        # self.input_win.clear()
+        # self.input_win.border()
+        # self.input_win.addstr(1, 2, "Press Enter to proceed…")
+        # self.input_win.refresh()
+
+        # # turn blocking on just for this prompt
+        # self.input_win.nodelay(False)
+        # while True:
+        #     ch = self.input_win.getch()
+        #     if ch in (10, 13):   # Enter
+        #         break
+        # # go back to non-blocking for the rest of the run
+        # self.input_win.nodelay(True)
+        # self.input_win.clear()
+        # self.input_win.border()
+        # self.input_win.refresh()
+#
         input("Press Enter to proceed...")
 
 #FIXME
+    def _handle_exception(self, exc_type, exc_value, exc_traceback):
+        # Called on any uncaught exception
+        self._cleanup()
+        # then show the normal Python traceback
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+    def _handle_signal(self, signum, frame):
+        # Called on Ctrl-C or kill
+        self._cleanup()
+        sys.exit(0)
 
     def _cleanup(self):
-        # Stop & join threads
+        # only run once
+        if self._cleanup_done:
+            return
+        self._cleanup_done = True
+
+        # 2) Stop & join threads
         if getattr(self, 'vision_thread', None) and self.vision_started:
             print("Closing Vision Thread")
             self.vision_shutdown = True
@@ -386,20 +492,52 @@ class FlightCommand(Node):
             self.kb_thread.join(timeout=1.0)
             print("Keyboard Thread Offline")
 
-        # 3) Camera, controller
+        # 3) Camera, controller, recorder
         try:
             if self.pipeline:
                 zch.close_camera(self.pipeline)
             if not self.isNN:
                 self.ctl.clear_generated_code()
+            _ = self.recorder.save()
         except Exception as e:
             print(f"Error during device cleanup: {e}")
 
         # 4) Tear down ROS node & context
         try:
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_tty)
+            self.destroy_node()
         except Exception as e:
-            print(f"Terminal Restoration Bug: {e}")
+            print(f"Ignoring destroy_node error: {e}")
+        try:
+            rclpy.shutdown()
+        except Exception as e:
+            print(f"Ignoring rclpy.shutdown() error: {e}")
+    # def _cleanup(self):
+    #     try:
+    #         # State Actions
+    #         zch.land(self.get_current_timestamp_time(),
+    #                  self.vehicle_command_publisher)
+
+    #         if self.vision_thread is not None and self.vision_started:
+    #             print("Closing Vision Thread")
+    #             self.vision_shutdown = True
+    #             self.vision_thread.join(timeout=1.0)
+    #             self.vision_started = False
+    #             print("Vision Thread Offline")
+
+    #         # Close the camera (if exists)
+    #         if self.pipeline is not None:
+    #             zch.close_camera(self.pipeline)
+
+    #         # Close the controller (if mpc)
+    #         if not self.isNN:
+    #             self.ctl.clear_generated_code()
+
+    #         # Save data
+    #         output_path = self.recorder.save()
+
+    #     except Exception as e:
+    #         # if cleanup itself blows up, we still want to know
+    #         print(f"Error during cleanup: {e}")
 
     def kb_loop(self):
         """Runs in background, grabs single chars without blocking."""
@@ -475,6 +613,96 @@ class FlightCommand(Node):
         self.spin_ready     = True
         print("Spin QP ready")
 
+#FIXME
+    def curses_print(self, *args, **kwargs):
+        msg = ' '.join(str(a) for a in args)
+        self.status_win.addstr(msg + "\n")
+        self.status_win.refresh()
+
+    def write_input(self):
+        self.input_win.clear()
+        self.input_win.border()
+        # Always show prompt label
+        label = "Query: "
+        display = self.input_text
+        max_x = self.input_win.getmaxyx()[1] - len(label) - 4
+        if len(display) > max_x:
+            display = display[-max_x:]
+        self.input_win.addstr(1, 2, label + display)
+        self.input_win.refresh()
+
+    def write(self, msg):
+        # this gets called for every .write() to stdout/stderr
+        self.status_win.addstr(msg)
+        self.status_win.refresh()
+
+    def flush(self):
+        # called for .flush(), can be a no-op
+        pass
+
+    def destroy_node(self):
+        # once-only terminal restore + ROS‐publisher teardown
+        if getattr(self, '_destroyed', False):
+            return
+        self._destroyed = True
+
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_tty)
+        super().destroy_node()
+#NOTE REDUNDANT
+    # def destroy_node(self):
+    #     # restore terminal so we don’t break your shell
+    #     termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_tty)
+    #     super().destroy_node()
+
+    # def destroy_node(self):
+    #     # restore terminal so we don’t break your shell
+    #     # os.dup2(self._stdout_fd_dup, 1)
+    #     # os.dup2(self._stderr_fd_dup, 2)
+    #     # os.close(self._stdout_fd_dup)
+    #     # os.close(self._stderr_fd_dup)
+
+    #     # sys.stdout = self._orig_stdout
+    #     # sys.stderr = self._orig_stderr
+    #     # sys.stdout = self._orig_stdout
+    #     # sys.stderr = self._orig_stderr
+    #     # builtins.print = self._orig_print
+
+    #     # curses.nocbreak()
+    #     # curses.echo()
+    #     # curses.endwin()
+    #     if self._destroyed:
+    #         return
+    #     self._destroyed = True
+    #     termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_tty)
+    #     super().destroy_node()
+
+    def wait_for_prompt(self):
+        """Daemon thread: only prompt/get a line while in HOLD."""
+        while True:
+            # 1) spin-wait until we're in HOLD
+            if self.sm != StateMachine.HOLD:
+                time.sleep(0.1)
+                continue
+
+            # 2) now we’re in HOLD → actually prompt
+            self.input_win.clear(); self.input_win.border()
+            prompt = "Type your query and press Enter: "
+            self.input_win.addstr(1, 2, prompt)
+            self.input_win.refresh()
+            curses.echo()
+            s = self.input_win.getstr(1, len(prompt) + 2).decode()
+            curses.noecho()
+
+            # 3) stash it for the HOLD→SPIN transition
+            self.prompt_buffer = s
+
+            # 4) clear the box, then loop back (won’t re‐prompt until we re‐enter HOLD)
+            self.input_win.clear(); self.input_win.border()
+            self.input_win.refresh()
+
+            # small pause so we don’t immediately re‐prompt on the same keypress
+            time.sleep(0.1)
+#
     def commander(self) -> None:
         """Main control loop for generating commands."""
         # Looping Callback Actions
@@ -520,6 +748,7 @@ class FlightCommand(Node):
                 body_rate=True,
                 velocity=False
             )
+
 #FIXME        
         if self.key_pressed == '\x1b':    # ESC
             print("ESC detected, landing…")
@@ -527,18 +756,32 @@ class FlightCommand(Node):
             self.key_pressed = None        # reset
         elif self.key_pressed == 'h':    # H key
             print("H key detected, switching to HOLD mode…")
-            # self.hold_state = x_est.copy()  # save current state
+            self.hold_state = x_est.copy()  # save current state
             self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
             zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
             self.sm = StateMachine.HOLD
             self.key_pressed = None        # reset
         elif self.key_pressed == 's':    # s key
-            print("S key detected, switching to SPIN mode…")
-            # self.hold_state = x_est.copy()  # save current state
+            print("H key detected, switching to SPIN mode…")
+            self.hold_state = x_est.copy()  # save current state
             self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
             zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
             self.sm = StateMachine.SPIN
             self.key_pressed = None        # reset
+
+        # ch = self.input_win.getch()
+        # if ch != curses.ERR:
+        #     if ch == 27:
+        #         self.key_pressed = '\x1b'
+        #     elif ch in (10, 13):
+        #         self.key_pressed = '\n'
+        #     else:
+        #         # if you ever care about other single-char keys:
+        #         try:
+        #             self.key_pressed = chr(ch)
+        #         except ValueError:
+        #             self.key_pressed = None
+#
 
         # State Machine
         if self.sm == StateMachine.INIT:
@@ -625,10 +868,14 @@ class FlightCommand(Node):
                 self.prompt_thread_started = False
                 self.prompt_buffer         = None
 
-                # self.hold_state = x_est.copy()
+                self.hold_state = x_est.copy()
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
                 self.sm                    = StateMachine.HOLD
                 print('Trajectory Finished → HOLDing Position')
+#NOTE deprecated
+                # self._policy_duration = t_tr
+                # self.sm = StateMachine.LAND
+                # print('Trajectory Finished.')
         elif self.sm == StateMachine.HOLD:
             t0_lp  = time.time()                                                # Algorithm start time
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
@@ -639,10 +886,45 @@ class FlightCommand(Node):
                     self.get_current_timestamp_time(),
                     self.trajectory_setpoint_publisher
                 )
+                # t_sol = np.hstack((time.time()-t0_lp,time.time()-t0_lp))    
+                # self.recorder.record(img,t_tr,[0.0,0.0,0.0,0.0],self.hold_state,u_ref,x_est,x_ext,adv,t_sol)
+#FIXME            
+            # else:
+            #     # time to flip into SPIN
+            #     self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
+            #     self.sm = StateMachine.SPIN
+            #     print('Trajectory Finished → SPINning to acquire...')
             else:
                 self.sm = StateMachine.LAND
                 print('Trajectory Finished → Landing...')
+#FIXME
+            # if not self.spin_thread_started:
+            #     self.k_rdy = 0
+            #     self.spin_thread_started = True
+            #     t0   = self.get_clock().now().nanoseconds / 1e9
+            #     xyz  = x_est[0:3]
+            #     yaw0 = self.quat_to_yaw(x_est[6:10])
+            #     threading.Thread(
+            #         target=self.build_yaw_qp,
+            #         args=(xyz, yaw0, t0),
+            #         daemon=True
+            #     ).start()
 
+            # if not self.prompt_thread_started:
+            #     self.prompt_thread_started = True
+            #     threading.Thread(
+            #         target=self.wait_for_prompt,
+            #         daemon=True
+            #     ).start()
+#FIXME
+            # if self.spin_ready and self.prompt_buffer != self.hold_prompt and np.linalg.norm(x_est[6:10]-self.q0) < self.q0_tol and np.abs(x_est[2]-self.z0) < self.z0_tol:
+            # if self.spin_ready and np.linalg.norm(x_est[6:10]-self.q0) < self.q0_tol and np.abs(x_est[2]-self.z0) < self.z0_tol:    
+            #     # self.hold_prompt = self.prompt_buffer
+            #     print("Query changed → SPINning to acquire...")
+            #     self.t_tr0 = self.get_clock().now().nanoseconds / 1e9
+            #     zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
+            #     self.sm = StateMachine.SPIN
+#
         elif self.sm == StateMachine.SPIN:
             t_tr  = self.get_current_trajectory_time()
 
@@ -719,15 +1001,15 @@ class FlightCommand(Node):
             input("Press Enter to close node...")
             print("Closing node...")
             self._cleanup()
-            self.cmdLoop.cancel()
             # self.destroy_node()
             # # try:
             # #     super().destroy_node()
             # # except Exception:
             # #     pass
-            # rclpy.shutdown()
+            # self.destroy_node()
+            rclpy.shutdown()
             # # sys.exit(0)
-            exit()
+            # # exit()
             return
 
 def main() -> None:
@@ -750,14 +1032,6 @@ def main() -> None:
     rclpy.init()
     controller = FlightCommand(args.mission)
     rclpy.spin(controller)
-    controller.destroy_node()
-    rclpy.shutdown()
-
-    # rclpy.shutdown()
-    # try:
-    #     rclpy.shutdown()
-    # except Exception:
-    #     pass
     # controller.destroy_node()
     # rclpy.shutdown()
 

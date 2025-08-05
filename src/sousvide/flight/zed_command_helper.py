@@ -258,14 +258,33 @@ def land(timestamp:int,vc_publisher:Publisher) -> None:
     )
 
     vc_publisher.publish(vehicle_command)
-    
-def heartbeat_offboard_control_mode(timestamp:int,ocm_publisher:Publisher) -> None:
-    """Send offboard heartbeat message."""
 
+def heartbeat_offboard_control_mode(
+    timestamp: int,
+    ocm_publisher: Publisher,
+    *,
+    body_rate: bool = False,
+    velocity: bool  = False
+) -> None:
+    """Offboard heartbeat that can enable either body-rate or velocity control."""
     offboard_control_mode = OffboardControlMode(
-        timestamp = timestamp,
-        position = False,velocity = False,acceleration = False,
-        attitude = False,body_rate = True,actuator = False
+        timestamp   = timestamp,
+        position    = False,         
+        velocity    = velocity,      # control mode for instruments-only
+        acceleration= False,
+        attitude    = False,
+        body_rate   = body_rate,     # default control mode for Sous Vide
+        actuator    = False
     )
-
     ocm_publisher.publish(offboard_control_mode)
+
+# def heartbeat_offboard_control_mode(timestamp:int,ocm_publisher:Publisher) -> None:
+#     """Send offboard heartbeat message."""
+
+#     offboard_control_mode = OffboardControlMode(
+#         timestamp = timestamp,
+#         position = False,velocity = False,acceleration = False,
+#         attitude = False,body_rate = True,actuator = False
+#     )
+
+#     ocm_publisher.publish(offboard_control_mode)

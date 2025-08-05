@@ -399,10 +399,10 @@ class FlightCommand(Node):
         input("Press Enter to proceed...")
 
 #FIXME
-    def destroy_node(self):
-        # restore terminal so we don’t break your shell
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_tty)
-        super().destroy_node()
+    # def destroy_node(self):
+    #     # restore terminal so we don’t break your shell
+    #     termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_tty)
+    #     super().destroy_node()
 
     def kb_loop(self):
         """Runs in background, grabs single chars without blocking."""
