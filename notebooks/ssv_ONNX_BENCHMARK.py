@@ -19,8 +19,8 @@ import sousvide.flight.zed_command_helper as zed
 
 
 # Path to the external JSON config file
-CONFIG_PATH = (
-    "/home/coop/StanfordMSL/SousVide-Semantic/"
+CONFIG_PATH_RAW = (
+    "~/StanfordMSL/SousVide-Semantic/"
     "configs/perception/onnx_benchmark_config.json"
 )
 
@@ -41,10 +41,12 @@ def load_config(path):
 
 def main():
     # Load user configuration
+    CONFIG_PATH = os.path.expanduser(CONFIG_PATH_RAW)
     cfg = load_config(CONFIG_PATH)
     prompt = cfg.get('prompt', '')
     hf_model = cfg.get('hf_model', 'CIDAS/clipseg-rd64-refined')
-    onnx_model_path = cfg.get('onnx_model_path')
+    onnx_model_path_raw = cfg.get('onnx_model_path')
+    onnx_model_path = os.path.expanduser(onnx_model_path_raw)
     camera_mode = cfg.get('camera_mode', False)
 
     # Initialize CLIPSeg model (may export & load ONNX)

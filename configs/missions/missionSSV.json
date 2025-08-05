@@ -11,7 +11,7 @@
 
     "prompt": "ladder",
     "hf_model": "CIDAS/clipseg-rd64-refined",
-    "onnx_model_path": "/home/coop/StanfordMSL/SousVide-Semantic/notebooks/clipseg_model.onnx",
+    "onnx_model_path": "~/StanfordMSL/SousVide-Semantic/notebooks/clipseg_model.onnx",
 
     
     "linger": 5.0,

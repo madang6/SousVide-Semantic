@@ -254,7 +254,8 @@ class FlightCommand(Node):
         self.prompt_buffer         = None
 #
         self.hf_model = mission_config.get('hf_model', 'CIDAS/clipseg-rd64-refined')
-        self.onnx_model_path = mission_config.get('onnx_model_path')
+        self.onnx_model_path_raw = mission_config.get('onnx_model_path')
+        self.onnx_model_path = os.path.expanduser(self.onnx_model_path_raw) if self.onnx_model_path_raw else None
 
         if self.onnx_model_path is None:
             print("Initializing CLIPSegHFModel...")
@@ -612,7 +613,7 @@ class FlightCommand(Node):
         img = self.latest_mask
 
         # zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
-        if self.sm in (StateMachine.ACTIVE):
+        if self.sm == StateMachine.ACTIVE:
             # Active/Spin: use body-rate control
             zch.heartbeat_offboard_control_mode(
                 self.get_current_timestamp_time(),
@@ -633,7 +634,7 @@ class FlightCommand(Node):
         elif self.sm == StateMachine.SPIN:
             # for yaw-in-place: hold position via zero velocity, spin via body_rate
             zch.heartbeat_offboard_control_mode(
-                t, self.offboard_control_mode_publisher,
+                self.get_current_timestamp_time(), self.offboard_control_mode_publisher,
                 body_rate=True,  # drive the yaw-rate loop
                 velocity=True   # drive the XY/Z velocity loops
             )
@@ -659,7 +660,7 @@ class FlightCommand(Node):
             zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
             self.sm = StateMachine.HOLD
             self.key_pressed = None        # reset
-        elif self.key_pressed == 's':    # H key
+        elif self.key_pressed == 's':    # s key
             print("H key detected, switching to SPIN mode…")
             self.hold_state = x_est.copy()  # save current state
             self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time

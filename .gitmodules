@@ -1,8 +1,8 @@
 [submodule "FiGS-Semantic"]
 	path = FiGS-Semantic
 	url = https://github.com/madang6/FiGS-Semantic.git
-	branch = feature/gemsplat-compatibility
-[submodule "gemsplat"]
-	path = gemsplat
-	url = https://github.com/StanfordMSL/gemsplat.git
-	branch = semantic_field_v1
+	branch = feature/flight
+# [submodule "gemsplat"]
+# 	path = gemsplat
+# 	url = https://github.com/StanfordMSL/gemsplat.git
+# 	branch = semantic_field_v1
