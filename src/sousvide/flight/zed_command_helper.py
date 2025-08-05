@@ -196,7 +196,7 @@ def publish_position_hold_with_yaw_rate(timestamp: int,
 
     # publish yaw-rate command
     vrs = VehicleRatesSetpoint(
-        thrust_body=np.array([0.0, 0.0, 0.0], dtype=np.float32),
+        thrust_body=[0.0, 0.0, float('nan')].astype(np.float32),
         roll=0.0,
         pitch=0.0,
         yaw=float(yaw_rate),
