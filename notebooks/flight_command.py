@@ -248,6 +248,7 @@ class FlightCommand(Node):
         self.vision_shutdown   = False
         self.vision_started    = False
         self.latest_mask       = None
+        self.latest_similarity = None
 
 #NOTE streamline testing non-mpc pilots
         if not self.isNN:
@@ -437,7 +438,7 @@ class FlightCommand(Node):
                 continue
             t0_img = time.time()
             frame = cv2.cvtColor(imgz, cv2.COLOR_BGR2RGB)
-            mask = self.vision_model.clipseg_hf_inference(
+            mask, similarity = self.vision_model.clipseg_hf_inference(
                 frame,
                 self.prompt,
                 resize_output_to_input=True,
@@ -447,6 +448,7 @@ class FlightCommand(Node):
                 verbose=False
             )
             self.latest_mask = mask
+            self.latest_similarity = similarity
             t_elap = time.time() - t0_img
             self.img_times.append(t_elap)
 
@@ -484,6 +486,7 @@ class FlightCommand(Node):
         x_ext[6:10] = th.obedient_quaternion(x_ext[6:10],self.xref[6:10])
 
         img = self.latest_mask
+        similarity = self.latest_similarity
 
         # zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
         if self.sm == StateMachine.ACTIVE:
@@ -720,13 +723,6 @@ class FlightCommand(Node):
             print("Closing node...")
             self._cleanup()
             self.cmdLoop.cancel()
-            # self.destroy_node()
-            # # try:
-            # #     super().destroy_node()
-            # # except Exception:
-            # #     pass
-            # rclpy.shutdown()
-            # # sys.exit(0)
             exit()
             return
 
@@ -752,14 +748,6 @@ def main() -> None:
     rclpy.spin(controller)
     controller.destroy_node()
     rclpy.shutdown()
-
-    # rclpy.shutdown()
-    # try:
-    #     rclpy.shutdown()
-    # except Exception:
-    #     pass
-    # controller.destroy_node()
-    # rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
