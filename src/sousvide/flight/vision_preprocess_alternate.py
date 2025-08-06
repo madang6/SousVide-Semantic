@@ -821,24 +821,46 @@ def has_large_high_sim_region_cc(sim_map: np.ndarray,
     # threshold → binary mask (uint8)
     mask = (sim_map >= sim_thresh).astype(np.uint8)
 
+    H, W = sim_map.shape
+    total     = H * W
+    min_pixels = int(area_thresh * total)
+
+    sim_score = float(sim_map.max())
+
     # find connected components *with stats*
     #    stats is an array of shape (num_labels, 5), where
     #    stats[i, cv2.CC_STAT_AREA] is the pixel-count of label i.
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
         mask, connectivity=8)
 
-    H, W = sim_map.shape
-    total     = H * W
-    min_pixels = int(area_thresh * total)
+    if num_labels <= 1:
+        return False, sim_score, 0.0, 0.0
 
-    # stats[1:, AREA] are the areas of the *foreground* labels 1..L-1
-    areas = stats[1:, cv2.CC_STAT_AREA]
+    
+    best_score = 0.0
+    area_frac  = 0.0
 
-    # how close to threshold are we?
-    fraction = areas / min_pixels
+    for lab in range(1, num_labels):
+        area = stats[lab, cv2.CC_STAT_AREA]
+        if area < min_pixels:
+            continue
 
-    # any component big enough?
-    return bool((areas >= min_pixels).any()), fraction
+        # highest sim within this component
+        region_max = float(sim_map[labels == lab].max())
+
+        if region_max > best_score:
+            best_score = region_max
+            area_frac  = area / total
+
+    found = (best_score >= sim_thresh)
+    return found, sim_score, area_frac, best_score
+    # # stats[1:, AREA] are the areas of the *foreground* labels 1..L-1
+    # areas = stats[1:, cv2.CC_STAT_AREA]
+    # max_area = int(areas.max())
+    # area_frac = max_area / total
+
+    # # any component big enough?
+    # return bool((areas >= min_pixels).any()), sim_score, area_frac
 
 def render_rescale(self, srgb_mono):
     '''This function takes a single channel semantic similarity and rescales it globally'''

@@ -637,7 +637,6 @@ class FlightCommand(Node):
                 print('Trajectory Finished → HOLDing Position, readying for next query...')
 
         elif self.sm == StateMachine.HOLD:
-            t0_lp  = time.time()                                                # Algorithm start time
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
         #NOTE THIS NEEDS TO BE REPLACED WITH A NEWER VERSION OF THE READY STATE, BUT FOR NOW IT SUFFICES
             if (self.ready_active is True and self.spin_cycle is False) and t_tr > 3.0:
@@ -668,6 +667,12 @@ class FlightCommand(Node):
         elif self.sm == StateMachine.SPIN:
             t_tr = self.get_current_trajectory_time()
 
+            found, sim_score, area_frac , best_score = vp.has_large_high_sim_region_cc(
+                    sim_map=similarity,
+                    sim_thresh=self.sim_thresh,
+                    area_thresh=self.area_thresh
+                )
+
             if t_tr < 7.0:
                 zch.publish_velocity_hold_with_yaw_rate(
                     self.get_current_timestamp_time(),
@@ -675,12 +680,7 @@ class FlightCommand(Node):
                     self.vehicle_rates_setpoint_publisher,
                     0.8
                 )
-                # slic_time = time.time()
-                found, fraction = vp.has_large_high_sim_region_cc(
-                    sim_map=similarity,
-                    sim_thresh=self.sim_thresh,
-                    area_thresh=self.area_thresh
-                )
+
                 # run superpixel check
                 # found, superpixel_mask = vp.has_one_large_high_sim_region_slic(
                 #     image=img,                      
@@ -688,10 +688,9 @@ class FlightCommand(Node):
                 #     sim_thresh=self.sim_thresh,       
                 #     area_thresh=self.area_thresh
                 # )
-                # print(f"ImgProc Time: {time.time() - slic_time:.4f} seconds")
+
                 
                 self.recorder.record(vp.colorize_mask_fast((similarity*255).astype(np.uint8),self.vision_model.lut))
-                self.fraction = fraction
                 if found:
                     self.t_tr0 = self.get_clock().now().nanoseconds/1e9
                     self.ready_active = True
@@ -705,7 +704,13 @@ class FlightCommand(Node):
                 self.spin_cycle = False
                 self.sm   = StateMachine.HOLD
                 print(f'Query {self.prompt} Not Found → HOLDing Position, Preparing to Land')
-                print(f'Found only {self.fraction:.2f} of the image with high similarity')
+#FIXME                 
+                sim_gap  = self.sim_thresh  - sim_score
+                area_gap = self.area_thresh - area_frac
+                print(f"No region: max_sim={sim_score:.3f} (<{self.sim_thresh:.3f} by {sim_gap:.3f}), "
+                    f"largest_area={area_frac*100:.1f}% "
+                    f"(<{self.area_thresh*100:.1f}% by {area_gap*100:.1f}%)"
+                    f", best scoring area ={best_score:.3f}")
 #TODO Remove
         # elif self.sm == StateMachine.SPIN:
         #     t_tr  = self.get_current_trajectory_time()
