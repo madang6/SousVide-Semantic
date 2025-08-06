@@ -553,7 +553,7 @@ class CLIPSegHFModel:
 
         end = time.time()
         log(f"CLIPSeg inference time: {end - start:.3f} seconds")
-        return overlayed
+        return overlayed, mask_u8
 
 ################################################
 # 2. Lookup Table for Semantic Probability Map #

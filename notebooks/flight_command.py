@@ -101,6 +101,7 @@ class FlightCommand(Node):
         """
         super().__init__('outdoor_command_node')
 
+#NOTE Keyboard stuff
         # (optional? - for the non-curses implementation)
         # Save and configure terminal for raw (unbuffered) input
         self._orig_tty = termios.tcgetattr(sys.stdin)
@@ -137,7 +138,6 @@ class FlightCommand(Node):
             depth=1
         )
 
-#FIXME
         print("Loading Configs")
         # Load Configs
         workspace_path = os.path.dirname(os.path.dirname(__file__))
@@ -148,7 +148,6 @@ class FlightCommand(Node):
                 mission_config = json.load(json_file)
         else:
             raise FileNotFoundError(f"Mission file not found: {mission_name}.json")
-#FIXME
         print("Loading Courses")
 
         # Check for trajectory file, skip if it doesn't exist
@@ -165,7 +164,6 @@ class FlightCommand(Node):
                 frame_config = json.load(json_file)
         else:
             raise FileNotFoundError(f"Drone frame file not found, please provide one")
-#FIXME
         print("Loaded Frame")
         if loaded_tXUi is not None:
             tXUi = deepcopy(loaded_tXUi)
@@ -181,7 +179,6 @@ class FlightCommand(Node):
         # ---------------------------------------------------------------------------------------
         # Class Variables -----------------------------------------------------------------------
         # ---------------------------------------------------------------------------------------
-#FIXME:
         print("Loading Pilot")
         # Controller
         if mission_config["pilot"] == "mpc":
@@ -216,10 +213,6 @@ class FlightCommand(Node):
         print(f"Query Set to: {self.prompt}")
 #FIXME
         self.hold_prompt           = self.prompt
-        self.spin_ready            = False
-        self.spin_thread_started   = False
-        self.prompt_thread_started = False
-        self.prompt_buffer         = None
 #
         self.hf_model = mission_config.get('hf_model', 'CIDAS/clipseg-rd64-refined')
         self.onnx_model_path_raw = mission_config.get('onnx_model_path')
@@ -244,11 +237,19 @@ class FlightCommand(Node):
             self.cam_dim,self.cam_fps = [0,0,0],0
         self.img_times = []
 
+#async vision loop
         self.vision_thread     = None
         self.vision_shutdown   = False
         self.vision_started    = False
         self.latest_mask       = None
         self.latest_similarity = None
+#has_one_large_high_sim_region
+        self.sim_thresh        = 0.75
+        self.area_thresh       = 0.05
+
+#policy switch flag
+        self.ready_active     = False
+        self.spin_cycle       = False
 
 #NOTE streamline testing non-mpc pilots
         if not self.isNN:
@@ -266,19 +267,18 @@ class FlightCommand(Node):
 
             # record for the full traj duration + linger
             record_duration = self.Tpi[-1] + self.t_lg
-
+    #NOTE neural network case
         else:
             # non-MPC (neural) case: give everything a neutral default
             dt = 1.0 / hz          # hz (control rate)
             self.Tpi = np.arange(0.0, 1.0 + dt, dt)
             self.obj = np.zeros((18,1))
-            self.q0 = np.array([0.0, 0.0, 0.70710678, 0.70710678])          # 
+            self.q0 = np.array([0.0, 0.0, 0.70710678, 0.70710678])          # determines starting orientation for ACTIVE mode to launch
             self.z0 = -0.50                                    # init altitude offset
             self.xref = np.zeros(10)                          # no reference state
             self.uref = -6.90*np.ones((4,))                   # reference input
             # leave vo_est/.vo_ext.q alone so they start at whatever your first callback gives
             record_duration = self.Tpi[-1] + self.t_lg        # 
-
 
         # Initialize control variables
 #NOTE commented out variables don't exist for RRT* generated tXUi
@@ -371,23 +371,22 @@ class FlightCommand(Node):
         input("Press Enter to proceed...")
 
 #FIXME
-
     def _cleanup(self):
         # Stop & join threads
         if getattr(self, 'vision_thread', None) and self.vision_started:
             print("Closing Vision Thread")
             self.vision_shutdown = True
-            self.vision_thread.join(timeout=1.0)
+            self.vision_thread.join()
             self.vision_started = False
             print("Vision Thread Offline")
 
         if getattr(self, 'kb_thread', None):
             print("Closing Keyboard Thread")
             self.kb_shutdown.set()
-            self.kb_thread.join(timeout=1.0)
+            self.kb_thread.join()
             print("Keyboard Thread Offline")
 
-        # 3) Camera, controller
+        # Camera, controller
         try:
             if self.pipeline:
                 zch.close_camera(self.pipeline)
@@ -396,7 +395,7 @@ class FlightCommand(Node):
         except Exception as e:
             print(f"Error during device cleanup: {e}")
 
-        # 4) Tear down ROS node & context
+        # Tear down ROS node & context
         try:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_tty)
         except Exception as e:
@@ -524,29 +523,35 @@ class FlightCommand(Node):
                 velocity=False
             )
 #FIXME        
-        if self.key_pressed == '\x1b':    # ESC
+        if self.key_pressed == '\x1b':     # ESC
             print("ESC detected, landing…")
             self.sm = StateMachine.LAND
             self.key_pressed = None        # reset
-        elif self.key_pressed == 'h':    # H key
+        elif self.key_pressed == 'h':      # H key
             print("H key detected, switching to HOLD mode…")
-            # self.hold_state = x_est.copy()  # save current state
             self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
             zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
             self.sm = StateMachine.HOLD
             self.key_pressed = None        # reset
-        elif self.key_pressed == 's':    # s key
+        elif self.key_pressed == 's':      # s key
             print("S key detected, switching to SPIN mode…")
-            # self.hold_state = x_est.copy()  # save current state
             self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
             zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
             self.sm = StateMachine.SPIN
+            self.key_pressed = None        # reset
+        elif self.key_pressed == 'q':      # q key
+            print("Q key detected, switching to HOLD startup mode…")
+            self.k_rdy = 0                                                  # Reset ready counter
+            self.ready_active = False                                       # Reset ready active flag
+            self.spin_cycle   = True
+            self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
+            zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
+            self.sm = StateMachine.HOLD
             self.key_pressed = None        # reset
 
         # State Machine
         if self.sm == StateMachine.INIT:
             # Looping State Actions
-
             # Check if we have state information
             if self.vo_est.timestamp > 0:
                 # State Actions
@@ -569,7 +574,7 @@ class FlightCommand(Node):
 
                 # Print State Information
                 print('---------------------------------------------------------------------')
-                print('Node is ready. Starting trajectory.')
+                print('Node is ready. Starting Initial Scan.')
                 print('---------------------------------------------------------------------')
             else:
                 # Looping State Actions
@@ -588,7 +593,6 @@ class FlightCommand(Node):
                 print('Trajectory Started.')
                 # print('In Segment:',self.k_sm+1,'/',self.N_sm)
             else:
-
                 # Looping State Actions
                 self.k_rdy += 1
                 if self.k_rdy % 10 == 0:
@@ -596,6 +600,7 @@ class FlightCommand(Node):
                     q0ds,q0cr = np.around(self.q0,2),np.around(x_est[6:10],2)
 
                     print(f"Desired/Current Altitude+Attitude: ({z0ds}/{z0cr})({q0ds}/{q0cr})")
+                    # print(f"Desired/Current Altitude: ({z0ds}/{z0cr})")
                 
         elif self.sm == StateMachine.ACTIVE:
             # Looping State Actions
@@ -623,20 +628,34 @@ class FlightCommand(Node):
                 # trajectory has ended → HOLD Position
                 self.policy_duration       = t_tr
                 self.hold_prompt           = self.prompt
-                self.spin_ready            = False
-                self.spin_thread_started   = False
-                self.prompt_thread_started = False
-                self.prompt_buffer         = None
 
                 # self.hold_state = x_est.copy()
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
+                self.spin_cycle = True
+                self.ready_active = False                                                 # Reset ready active flag
                 self.sm                    = StateMachine.HOLD
-                print('Trajectory Finished → HOLDing Position')
+                print('Trajectory Finished → HOLDing Position, readying for next query...')
+
         elif self.sm == StateMachine.HOLD:
             t0_lp  = time.time()                                                # Algorithm start time
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
-
-            if t_tr < 5.0:
+        #NOTE THIS NEEDS TO BE REPLACED WITH A NEWER VERSION OF THE READY STATE, BUT FOR NOW IT SUFFICES
+            if (self.ready_active is True and self.spin_cycle is False) and t_tr > 3.0:
+                self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
+                self.ready_active = False                                       # Reset ready active flag
+                zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
+                self.sm = StateMachine.ACTIVE
+                
+                print('=====================================================================')
+                print('ACTIVE Started.')
+            elif (self.ready_active is False and self.spin_cycle is True) and t_tr > 3.0:
+                self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
+                zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
+                self.sm = StateMachine.SPIN
+                
+                print('=====================================================================')
+                print('SPIN Started.')
+            elif t_tr < 6.0:
                 # zch.publish_position_hold(self.get_current_timestamp_time(), self.hold_state, self.trajectory_setpoint_publisher)
                 zch.publish_velocity_hold(
                     self.get_current_timestamp_time(),
@@ -647,45 +666,54 @@ class FlightCommand(Node):
                 print('Trajectory Finished → Landing...')
 
         elif self.sm == StateMachine.SPIN:
-            t_tr  = self.get_current_trajectory_time()
+            t_tr = self.get_current_trajectory_time()
 
-            if t_tr < 5.0:
+            if t_tr < 7.0:
                 zch.publish_velocity_hold_with_yaw_rate(
                     self.get_current_timestamp_time(),
                     self.trajectory_setpoint_publisher,
                     self.vehicle_rates_setpoint_publisher,
-                    0.2
+                    0.8
                 )
+                # run superpixel check
+                found = has_one_large_high_sim_region(
+                    image=frame,                      
+                    similarity_map=self.latest_similarity,
+                    sim_thresh=self.sim_thresh,       
+                    area_thresh=self.area_thresh
+                )
+                if found:
+                    self.t_tr0 = self.get_clock().now().nanoseconds/1e9
+                    self.ready_active = True
+                    self.spin_cycle = False
+                    self.sm                    = StateMachine.HOLD
+                    print(f'Query {self.prompt} Found → HOLDing Position')
+
             else:
-                self.spin_thread_started   = False
-                self.prompt_thread_started = False
-                self.prompt_buffer         = None
-                self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
-                self.sm                    = StateMachine.HOLD
-                print('Trajectory Finished → HOLDing Position')
+                self.t_tr0 = self.get_clock().now().nanoseconds / 1e9
+                self.ready_active = False
+                self.spin_cycle = False
+                self.sm   = StateMachine.HOLD
+                print(f'Query {self.prompt} Not Found → HOLDing Position, Preparing to Land')
+#TODO Remove
+        # elif self.sm == StateMachine.SPIN:
+        #     t_tr  = self.get_current_trajectory_time()
+
+        #     if t_tr < 5.0:
+        #         zch.publish_velocity_hold_with_yaw_rate(
+        #             self.get_current_timestamp_time(),
+        #             self.trajectory_setpoint_publisher,
+        #             self.vehicle_rates_setpoint_publisher,
+        #             0.8
+        #         )
+        #     else:
+        #         self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
+        #         self.sm                    = StateMachine.HOLD
+        #         print('Trajectory Finished → HOLDing Position')
 #
         else:
             # State Actions
             zch.land(self.get_current_timestamp_time(),self.vehicle_command_publisher)
-            
-            # print("Closing Vision Thread")
-            # self.vision_shutdown = True
-            # self.vision_thread.join(timeout=1.0)
-            # self.vision_started = False
-            # print("Vision Thread Offline")
-            
-            # # Close the camera (if exists)
-            # if self.pipeline is not None:
-            #     zch.close_camera(self.pipeline)
-
-            # print("Closing Keyboard Thread")
-            # self.kb_shutdown.set()
-            # self.kb_thread.join(timeout=1.0)
-            # print("Keyboard Thread Offline")
-
-            # # Close the controller (if mpc)
-            # if self.isNN is False:
-            #     self.ctl.clear_generated_code()
                 
             # Save data
             output_path = self.recorder.save()
@@ -718,10 +746,10 @@ class FlightCommand(Node):
                 print(f"CLIPSeg frequency (hz): {1/np.mean(self.img_times):.2f}")
                 print('=====================================================================')
             
-            # # Wait for GCS clearance
+            # Wait for GCS clearance
+            self._cleanup()
             input("Press Enter to close node...")
             print("Closing node...")
-            self._cleanup()
             self.cmdLoop.cancel()
             exit()
             return
