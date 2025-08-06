@@ -101,22 +101,10 @@ class FlightRecorder():
         self.output_type = "flight"
         self.output_base = course_name+"_"+pilot_name
 
-        self._data_recorded = False
-
     def record(self,
-               img: np.ndarray,
-               tcr: float = None,
-               ucr: np.ndarray = None,
-               xref: np.ndarray = None,
-               uref: np.ndarray = None,
-               xest: np.ndarray = None,
-               xext: np.ndarray = None,
-               adv: np.ndarray = None,
-               tsol: np.ndarray = None):
-    # def record(self,
-    #            img:np.ndarray,tcr:float,ucr:np.ndarray,
-    #            xref:np.ndarray,uref:np.ndarray,xest:np.ndarray,xext:np.ndarray,
-    #            adv:np.ndarray,tsol:np.ndarray):
+               img:np.ndarray,tcr:float,ucr:np.ndarray,
+               xref:np.ndarray,uref:np.ndarray,xest:np.ndarray,xext:np.ndarray,
+               adv:np.ndarray,tsol:np.ndarray):
         """"
         Record the flight data and images.
         
@@ -146,21 +134,18 @@ class FlightRecorder():
             if frame_idx < self.Imgs.shape[0]:
                 self.Imgs[frame_idx] = img
 
-        # max_k = self.Tact.shape[0]
+        max_k = self.Tact.shape[0]
 
         # Record the trajectory data
-        if ucr is not None:
-            self._data_recorded = True
-            max_k = self.Tact.shape[0]
-            if self.k < max_k:
-                self.Tact[self.k]   = tcr
-                self.Uact[:,self.k] = ucr
-                self.Xref[:,self.k] = xref
-                self.Uref[:,self.k] = uref
-                self.Xest[:,self.k] = xest
-                self.Xext[:,self.k] = xext
-                self.Adv[:,self.k]  = adv
-                self.Tsol[:,self.k] = tsol
+        if self.k < max_k:
+            self.Tact[self.k]   = tcr
+            self.Uact[:,self.k] = ucr
+            self.Xref[:,self.k] = xref
+            self.Uref[:,self.k] = uref
+            self.Xest[:,self.k] = xest
+            self.Xext[:,self.k] = xext
+            self.Adv[:,self.k]  = adv
+            self.Tsol[:,self.k] = tsol
 
         # Increment the counter
         self.k += 1
@@ -246,39 +231,22 @@ class FlightRecorder():
                     writer.append_data(frame)
             
             # Save the data
-            if self._data_recorded:
-                torch.save({
-                    'Imgs': self.process_images(self.Imgs),
-                    'Tact': self.Tact,
-                    'Uact': self.Uact,
-                    'Xref': self.Xref,
-                    'Uref': self.Uref,
-                    'Xest': self.Xest,
-                    'Xext': self.Xext,
-                    'Adv' : self.Adv,
-                    'Tsol': self.Tsol,
-                    'obj' : self.obj,
-                    'n_im': self.n_img
-                }, data_path)
-                return data_path
-            else:
-                return None
-            # torch.save({
-            #     'Imgs':self.process_images(self.Imgs),
-            #     'Tact':self.Tact,
-            #     'Uact':self.Uact,
-            #     'Xref':self.Xref,
-            #     'Uref':self.Uref,
-            #     'Xest':self.Xest,
-            #     'Xext':self.Xext,
-            #     'Adv' :self.Adv,
-            #     'Tsol':self.Tsol,
-            #     'obj' :self.obj,
-            #     'n_im':self.n_img
-            #     },
-            #     data_path)
+            torch.save({
+                'Imgs':self.process_images(self.Imgs),
+                'Tact':self.Tact,
+                'Uact':self.Uact,
+                'Xref':self.Xref,
+                'Uref':self.Uref,
+                'Xest':self.Xest,
+                'Xext':self.Xext,
+                'Adv' :self.Adv,
+                'Tsol':self.Tsol,
+                'obj' :self.obj,
+                'n_im':self.n_img
+                },
+                data_path)
         
-            # return data_path
+            return data_path
     
     def process_images(self,images:np.ndarray):
         """

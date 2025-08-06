@@ -244,7 +244,7 @@ class FlightCommand(Node):
         self.latest_mask       = None
         self.latest_similarity = None
 #has_one_large_high_sim_region
-        self.sim_thresh        = 0.75
+        self.sim_thresh        = 0.65
         self.area_thresh       = 0.05
 
 #policy switch flag
@@ -675,13 +675,23 @@ class FlightCommand(Node):
                     self.vehicle_rates_setpoint_publisher,
                     0.8
                 )
-                # run superpixel check
-                found = has_one_large_high_sim_region(
-                    image=frame,                      
-                    similarity_map=self.latest_similarity,
-                    sim_thresh=self.sim_thresh,       
+                # slic_time = time.time()
+                found, fraction = vp.has_large_high_sim_region_cc(
+                    sim_map=similarity,
+                    sim_thresh=self.sim_thresh,
                     area_thresh=self.area_thresh
                 )
+                # run superpixel check
+                # found, superpixel_mask = vp.has_one_large_high_sim_region_slic(
+                #     image=img,                      
+                #     similarity_map=similarity,
+                #     sim_thresh=self.sim_thresh,       
+                #     area_thresh=self.area_thresh
+                # )
+                # print(f"ImgProc Time: {time.time() - slic_time:.4f} seconds")
+                
+                self.recorder.record(vp.colorize_mask_fast((similarity*255).astype(np.uint8),self.vision_model.lut))
+                self.fraction = fraction
                 if found:
                     self.t_tr0 = self.get_clock().now().nanoseconds/1e9
                     self.ready_active = True
@@ -695,6 +705,7 @@ class FlightCommand(Node):
                 self.spin_cycle = False
                 self.sm   = StateMachine.HOLD
                 print(f'Query {self.prompt} Not Found → HOLDing Position, Preparing to Land')
+                print(f'Found only {self.fraction:.2f} of the image with high similarity')
 #TODO Remove
         # elif self.sm == StateMachine.SPIN:
         #     t_tr  = self.get_current_trajectory_time()

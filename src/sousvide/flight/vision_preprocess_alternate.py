@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-from skimage.segmentation import slic
+from skimage.segmentation import slic, find_boundaries
 from skimage.metrics import structural_similarity as ssim
 from scipy.stats import mode
 
@@ -465,7 +465,7 @@ class CLIPSegHFModel:
             if verbose:
                 print(*args, **kwargs)
 
-        # --- Step 1: Normalize input to PIL + NumPy ---
+        # --- Step 1: Convert input to PIL + NumPy ---
         if isinstance(image, np.ndarray):
             img = Image.fromarray(image)
             image_np = image
@@ -513,10 +513,17 @@ class CLIPSegHFModel:
             prob = 1.0 / (1.0 + np.exp(-arr))
             mask_u8 = (prob * 255).astype(np.uint8)
         else:
+#FIXME
+            prob = 1.0 / (1.0 + np.exp(-arr))
+            # regular_prob = (prob * 255).astype(np.uint8)
+#
             scaled = self._rescale_global(arr)
             mask_u8 = (scaled * 255).astype(np.uint8)
 
         if resize_output_to_input:
+#FIXME
+            regular_prob = np.array(Image.fromarray(prob).resize(img.size, resample=Image.BILINEAR))
+#
             mask_u8 = np.array(Image.fromarray(mask_u8).resize(img.size, resample=Image.BILINEAR))
 
         # --- Step 5: Post-processing only on fresh inference ---
@@ -545,6 +552,9 @@ class CLIPSegHFModel:
 
         # --- Step 6: Render and cache ---
         colorized = colorize_mask_fast(mask_u8, self.lut)
+#FIXME
+        # regular_prob = colorize_mask_fast(regular_prob, self.lut)
+#
         overlayed = blend_overlay_gpu(image_np, colorized)
 
         # Store just raw mask + image for reuse
@@ -553,7 +563,7 @@ class CLIPSegHFModel:
 
         end = time.time()
         log(f"CLIPSeg inference time: {end - start:.3f} seconds")
-        return overlayed, mask_u8
+        return overlayed, regular_prob
 
 ################################################
 # 2. Lookup Table for Semantic Probability Map #
@@ -752,6 +762,83 @@ def has_one_large_high_sim_region(
             return True
 
     return False
+
+def has_one_large_high_sim_region_slic(
+    image: np.ndarray,
+    similarity_map: np.ndarray,
+    sim_thresh: float = 0.5,
+    area_thresh: float = 0.05,
+    num_superpixels: int = 15,
+    compactness: float = 5.0,
+    sigma: float = 1.0,
+    num_iterations: int = 200,
+    boundary_color: tuple = (0, 255, 0),  # BGR green
+) -> bool:
+    """
+    True if ∃ a SLIC superpixel whose mean(similarity_map) ≥ sim_thresh
+    and whose area ≥ area_thresh * image_area.
+    """
+    h, w = image.shape[:2]
+    # 1) compute SLIC labels (0…n_segments-1)
+    labels = slic(
+        image,
+        n_segments=num_superpixels,
+        compactness=compactness,
+        max_num_iter=num_iterations,  
+        sigma=sigma,
+        start_label=0,
+        channel_axis=-1,              # for color images
+        convert2lab=False,
+        slic_zero=True,
+    )
+    
+    # 2) flatten and bin-count
+    flat_lbl = labels.ravel()
+    flat_sim = similarity_map.ravel()
+    counts = np.bincount(flat_lbl)
+    sums   = np.bincount(flat_lbl, weights=flat_sim)
+    
+    # 3) mean similarity and area fraction per superpixel
+    mean_sim   = sums / counts
+    area_frac  = counts / (h * w)
+    
+    found = bool(np.any((mean_sim >= sim_thresh) & (area_frac >= area_thresh)))
+
+    # 3) build overlay: draw superpixel boundaries on a copy
+    boundaries = find_boundaries(labels, mode='outer')
+    overlay = image.copy()
+    overlay[boundaries] = boundary_color
+
+    return found, overlay
+
+def has_large_high_sim_region_cc(sim_map: np.ndarray,
+                                 sim_thresh: float = 0.5,
+                                 area_thresh: float = 0.05) -> bool:
+    """
+    Return True if there is *any* connected component in the binary mask
+    (sim_map >= sim_thresh) whose pixel‐count ≥ area_thresh * total_pixels.
+    """
+    # threshold → binary mask (uint8)
+    mask = (sim_map >= sim_thresh).astype(np.uint8)
+
+    # find connected components *with stats*
+    #    stats is an array of shape (num_labels, 5), where
+    #    stats[i, cv2.CC_STAT_AREA] is the pixel-count of label i.
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask, connectivity=8)
+
+    H, W = sim_map.shape
+    total     = H * W
+    min_pixels = int(area_thresh * total)
+
+    # stats[1:, AREA] are the areas of the *foreground* labels 1..L-1
+    areas = stats[1:, cv2.CC_STAT_AREA]
+
+    # how close to threshold are we?
+    fraction = areas / min_pixels
+
+    # any component big enough?
+    return bool((areas >= min_pixels).any()), fraction
 
 def render_rescale(self, srgb_mono):
     '''This function takes a single channel semantic similarity and rescales it globally'''
