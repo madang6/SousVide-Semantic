@@ -14,7 +14,8 @@ class FlightRecorder():
                  cam_dim:List[int],
                  obj:np.ndarray,
                  cohort_name:str,course_name:str,pilot_name:str,
-                 Ntsol:int=5,Nimps:int=20):
+                 Ntsol:int=5,Nimps:int=20,
+                 max_time: float=45.0):
         """
         FlightRecorder class for recording flight data and images. We record images every
         n_im time steps to save space.
@@ -66,6 +67,12 @@ class FlightRecorder():
         Ndata = int(hz*tf+1)
         n_img = int(Ndata/(tf*Nimps))
         Nimgs = Ndata//n_img
+
+        # Some useful constants (with buffer up to max_time)
+        t_buffer = max(tf, max_time)
+        Ndata   = int(hz * t_buffer + 1)
+        n_img   = int(Ndata / (t_buffer * Nimps))
+        Nimgs   = Ndata // n_img
 
         # Initialize the objective
         self.obj = obj

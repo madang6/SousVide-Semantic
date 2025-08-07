@@ -696,24 +696,41 @@ class FlightCommand(Node):
                 # self.recorder.record(vp.colorize_mask_fast((similarity*255).astype(np.uint8),self.vision_model.lut))
                 if found:
                     self.t_tr0 = self.get_clock().now().nanoseconds/1e9
+
+                    print(f"largest area={self.vision_model.loiter_area_frac*100:.1f}% "
+                    f", best_scoring_area={self.vision_model.loiter_max:.3f} " 
+                    f", sim_score={sim_score:.3f} "
+                    f", area_frac={area_frac*100:.1f}% "
+                    f", sim_score_diff={sim_score-self.vision_model.loiter_max:.3f} "
+                    f", area_frac_diff={(self.vision_model.loiter_area_frac-area_frac)*100:.1f}%")
+
                     self.active_arm = False
+                    self.vision_model.loiter_max = 0.0
+                    self.vision_model.loiter_area_frac = 0.0
+                    
                     self.ready_active = True
                     self.spin_cycle = False
                     self.sm                    = StateMachine.HOLD
                     print(f'Query {self.prompt} Found → HOLDing Position')
             else:
                 self.t_tr0 = self.get_clock().now().nanoseconds / 1e9
+
+                print(f"largest area={self.vision_model.loiter_area_frac*100:.1f}% "
+                f", best_scoring_area={self.vision_model.loiter_max:.3f} " 
+                f", sim_score={sim_score:.3f} "
+                f", area_frac={area_frac*100:.1f}% "
+                f", sim_score_diff={self.vision_model.loiter_max-sim_score:.3f} "
+                f", area_frac_diff={(self.vision_model.loiter_area_frac-area_frac)*100:.1f}%")
+
+                self.active_arm = False
+                self.vision_model.loiter_max = 0.0
+                self.vision_model.loiter_area_frac = 0.0
+
                 self.ready_active = False
                 self.spin_cycle = False
                 self.sm   = StateMachine.HOLD
                 print(f'Query {self.prompt} Not Found → HOLDing Position, Preparing to Land')
-#FIXME                 
-                sim_gap  = self.vision_model.loiter_max  - sim_score
-                area_gap = self.vision_model.loiter_area_frac - area_frac
-                print(f"No region: max_sim={sim_score:.3f} (<{self.vision_model.loiter_max:.3f} by {sim_gap:.3f}), "
-                    f"largest_area={area_frac*100:.1f}% "
-                    f"(<{self.vision_model.loiter_area_frac*100:.1f}% by {area_gap*100:.1f}%)"
-                    f", best scoring area ={best_score:.3f}")
+
 #TODO Remove
         # elif self.sm == StateMachine.SPIN:
         #     t_tr  = self.get_current_trajectory_time()
@@ -743,8 +760,17 @@ class FlightCommand(Node):
                 print('=====================================================================')
                 
                 # Compute and print statistics
-                Tcmp = self.recorder.Tsol[:-1,:]
-                Tcmd = self.recorder.Tsol[-1,:]
+            #FIXME
+                Tsol = self.recorder.Tsol                  # shape (Ntsol, k)
+                cmd_times = Tsol[-1, :]                     # total-loop times
+                valid = cmd_times > 0                       # True where ACTIVE wrote something
+
+                # only solver-component rows, only ACTIVE columns
+                Tcmp = Tsol[:-1, valid]                     # shape (Ntsol–1, n_active)
+                Tcmd = cmd_times[valid]                     # shape (n_active,)
+            #    
+                # Tcmp = self.recorder.Tsol[:-1,:]
+                # Tcmd = self.recorder.Tsol[-1,:]
 
                 Tcmp = Tcmp[~np.all(Tcmp == 0, axis=1)]
                 Tcmp_tot = np.sum(Tcmp,axis=0)

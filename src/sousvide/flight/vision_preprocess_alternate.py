@@ -605,7 +605,7 @@ class CLIPSegHFModel:
                     self.loiter_max = region_max
                     self.loiter_area_frac = area / total_area
                     # self.loiter_area = area
-        return found, sim_score, area
+        return found, sim_score, area_frac
                  
 ################################################
 # 2. Lookup Table for Semantic Probability Map #
