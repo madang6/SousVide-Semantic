@@ -793,6 +793,7 @@ def generate_loiter_trajectories(tXUd_rrt: np.ndarray,
                                  smooth_duration: float = 1.0,
                                  Nco: int = 6,
                                  hz: int = 20,
+                                 simulate: bool = False,
                                  ) -> List[np.ndarray]:
     """
     For each sample time in Tsps, splice in a constant-rate spin
@@ -887,16 +888,28 @@ def generate_loiter_trajectories(tXUd_rrt: np.ndarray,
             # print(f"Wrote spin rollout to {pkl_path}")
 
 #FIXME
-        tXUd_full = th.build_loiter_fragment(
-            tXUd_spin=tXUd_spin,
-            tXUd_rrt=tXUd_rrt,
-            t0=t0,
-            smooth_duration=smooth_duration,
-            tail_duration=3.0,
-            hz=hz
-        )
+        if simulate:
+            tXUd_full = th.build_loiter_fragment(
+                tXUd_spin=tXUd_spin,
+                tXUd_rrt=tXUd_rrt,
+                t0=t0,
+                smooth_duration=smooth_duration,
+                tail_duration=tXUd_rrt[0, -1] - t0,
+                hz=hz
+            )
 
-        loiter_trajs.append(tXUd_full)
+            loiter_trajs.append(tXUd_full)
+        else:
+            tXUd_full = th.build_loiter_fragment(
+                tXUd_spin=tXUd_spin,
+                tXUd_rrt=tXUd_rrt,
+                t0=t0,
+                smooth_duration=smooth_duration,
+                tail_duration=3.0,
+                hz=hz
+            )
+
+            loiter_trajs.append(tXUd_full)
 
     return loiter_trajs
 

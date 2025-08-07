@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
+from shapely import area
 from skimage.segmentation import slic
 from skimage.metrics import structural_similarity as ssim
 from scipy.stats import mode
@@ -60,6 +61,10 @@ class CLIPSegHFModel:
         self.superpixel_every = 1
         self.frame_counter = 0
 
+        # Baseline for calibration
+        self.loiter_max = 0.0
+        self.loiter_area_frac = 0.0
+
         # ONNX support
         self.use_onnx = False
         self.ort_session = None
@@ -96,8 +101,6 @@ class CLIPSegHFModel:
             self._io_binding = None
             self._input_gpu  = None
             self._output_gpu = None
-
-
 
     def _export_onnx(self, onnx_path: str):
         """
@@ -309,7 +312,7 @@ class CLIPSegHFModel:
             arr = logits.cpu().squeeze().numpy().astype(np.float32)
 
         # skip_norm = prompt.strip().lower() == "null"
-        skip_norm = False
+        skip_norm = True
         if skip_norm:
             # prob = 1.0 / (1.0 + np.exp(-arr))
             # mask_u8 = (prob * 255).astype(np.uint8)
@@ -339,6 +342,7 @@ class CLIPSegHFModel:
 
         if resize_output_to_input:
             mask_u8 = np.array(Image.fromarray(mask_u8).resize(img.size, resample=Image.BILINEAR))
+            # scaled = np.array(Image.fromarray(scaled).resize(img.size, resample=Image.BILINEAR))
 
         # --- Step 5: Post-processing only on fresh inference ---
         if use_smoothing:
@@ -374,7 +378,48 @@ class CLIPSegHFModel:
 
         end = time.time()
         log(f"CLIPSeg inference time: {end - start:.3f} seconds")
-        return overlayed
+        return overlayed#, scaled
+    
+    def loiter_calibrate(self, logits: np.ndarray, active_arm: bool = False) -> None:
+        found = False
+        H, W = logits.shape
+        total_area = H * W
+        sim_score = float(logits.max())
+        thresh = np.percentile(logits, 90.0)
+        # print(f"sim_score={sim_score:.3f}")
+        
+        mask = (logits >= thresh).astype(np.uint8) 
+        
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
+        if num_labels <= 1:
+            return found, sim_score, 0.0
+        # stats[k, cv2.CC_STAT_AREA] is the area of component k
+
+        if active_arm:
+            for lab in range(1, num_labels):
+                area = stats[lab, cv2.CC_STAT_AREA]
+                area_frac = area / total_area
+                region_max = float(logits[labels == lab].max())
+                if (region_max < 0.99*self.loiter_max) or (area_frac < 0.99*self.loiter_area_frac):
+                    continue
+                else:
+                    found = True
+                    # self.loiter_max = 0
+                    # self.loiter_area_frac = 0
+                    return found, sim_score, area_frac
+        else:
+            for lab in range(1, num_labels):
+                area = stats[lab, cv2.CC_STAT_AREA]
+                area_frac = area / total_area
+                # highest sim within this component
+                region_max = float(logits[labels == lab].max())
+
+                if region_max > self.loiter_max:
+                    print(f"New loiter region found: {region_max:.3f} (area_frac={area_frac*100:.1f}%)")
+                    self.loiter_max = region_max
+                    self.loiter_area_frac = area / total_area
+                    # self.loiter_area = area
+        return found, sim_score, area
 
 ################################################
 # 2. Lookup Table for Semantic Probability Map #
@@ -581,6 +626,42 @@ def has_large_region_with_color(image: np.ndarray, target_rgb=(220, 20, 60),
     area_frac = found_pixels / (h * w)
     return area_frac > area_thresh
 
+def has_one_large_high_sim_region(
+    image: np.ndarray,
+    similarity_map: np.ndarray,
+    sim_thresh: float = 0.5,
+    area_thresh: float = 0.05,
+    num_superpixels: int = 500,
+    num_levels: int = 3,
+    prior: int = 2,
+    histogram_bins: int = 5,
+    num_iterations: int = 2,
+) -> bool:
+    """
+    Returns True if there exists *one* superpixel whose
+    mean similarity ≥ sim_thresh *and* whose size ≥ area_thresh of the image.
+    """
+    h, w = image.shape[:2]
+
+    # create & run SEEDS to get labels
+    seeds = cv2.ximgproc.createSuperpixelSEEDS(
+        w, h, image.shape[2],
+        num_superpixels, num_levels, prior,
+        histogram_bins, False
+    )
+    seeds.iterate(image, num_iterations=num_iterations)
+    labels = seeds.getLabels()
+
+    # check each superpixel individually
+    for sp_id in np.unique(labels):
+        mask = (labels == sp_id)
+        mean_sim = float(similarity_map[mask].mean())
+        area_frac = mask.sum() / (h * w)
+
+        if mean_sim >= sim_thresh and area_frac >= area_thresh:
+            return True
+
+    return False
 
 def render_rescale(self, srgb_mono):
     '''This function takes a single channel semantic similarity and rescales it globally'''
@@ -598,3 +679,5 @@ def render_rescale(self, srgb_mono):
     similarity_clip = (srgb_mono - self.running_min) / (self.running_max - self.running_min + 1e-10)
 
     return similarity_clip
+
+

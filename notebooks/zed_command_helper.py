@@ -11,6 +11,7 @@ from px4_msgs.msg import (
     OffboardControlMode,
     VehicleOdometry,
     VehicleRatesSetpoint,
+    TrajectorySetpoint,
     ActuatorMotors
 )
 
@@ -108,6 +109,101 @@ def vrs2uvr(vr:VehicleRatesSetpoint) -> np.ndarray:
     """Convert vehicle rates setpoint to vehicle rates input."""
     return np.array([vr.thrust_body[2],vr.roll,vr.pitch,vr.yaw])
 
+
+def publish_position_hold(timestamp: int,
+                             x_est: np.ndarray,
+                             traj_sp_pub) -> None:
+    """
+    Hold current position & heading using TrajectorySetpoint only.
+    - x_est: 13-element state [x,y,z, vx,vy,vz, qx,qy,qz,qw, ...]
+    - traj_sp_pub: Publisher<TrajectorySetpoint>
+    """
+    sp = TrajectorySetpoint(timestamp=timestamp)
+
+    # set position [x, y, z]
+    sp.position[0] = x_est[0]
+    sp.position[1] = x_est[1]
+    sp.position[2] = x_est[2]
+
+    # extract yaw from quaternion (qx,qy,qz,qw in x_est[6..9])
+    qx, qy, qz, qw = x_est[6], x_est[7], x_est[8], x_est[9]
+    sp.yaw = np.arctan2(2*(qw*qz + qx*qy),
+                        1 - 2*(qy*qy + qz*qz))
+
+    # ignore velocity/acceleration/jerk feed-forward
+    sp.velocity = [float('nan')] * 3
+    sp.acceleration = [float('nan')] * 3
+    sp.jerk = [float('nan')] * 3
+
+    traj_sp_pub.publish(sp)
+
+def publish_velocity_hold(timestamp: int, traj_sp_pub) -> None:
+    ts = TrajectorySetpoint(timestamp=timestamp)
+    ts.velocity     = [0.0, 0.0, 0.0]     # hold zero velocity
+    ts.position     = [float('nan')]*3
+    ts.acceleration = [float('nan')]*3
+    ts.jerk         = [float('nan')]*3
+    ts.yaw          = float('nan')
+    ts.yawspeed     = float('nan')
+    traj_sp_pub.publish(ts)
+
+def publish_velocity_hold_with_yaw_rate(timestamp: int,
+                                        traj_sp_pub,
+                                        rates_sp_pub,
+                                        yaw_rate: float) -> None:
+    # 1) zero-velocity setpoint → holds X/Y/Z
+    ts = TrajectorySetpoint(timestamp=timestamp)
+    ts.velocity     = [0.0, 0.0, 0.0]
+    ts.position     = [float('nan')] * 3
+    ts.acceleration = [float('nan')] * 3
+    ts.jerk         = [float('nan')] * 3
+    ts.yaw          = float('nan')
+    ts.yawspeed     = float('nan')
+    traj_sp_pub.publish(ts)
+
+    # 2) yaw-rate setpoint → spins at your chosen rate
+    vrs = VehicleRatesSetpoint(
+        thrust_body = np.array([0.0, 0.0, 0.0], dtype=np.float32),
+        roll        = 0.0,
+        pitch       = 0.0,
+        yaw         = yaw_rate,
+        timestamp   = timestamp
+    )
+    rates_sp_pub.publish(vrs)
+
+def publish_position_hold_with_yaw_rate(timestamp: int,
+                                           x_est: np.ndarray,
+                                           yaw_rate: float,
+                                           traj_sp_pub,
+                                           rates_sp_pub) -> None:
+    """
+    Hold x,y,z and command constant yaw rate.
+    - yaw_rate: radians/sec (+ = CCW looking down)
+    - traj_sp_pub:   Publisher<TrajectorySetpoint>
+    - rates_sp_pub:  Publisher<VehicleRatesSetpoint>
+    """
+    # publish hold-point TrajectorySetpoint
+    sp = TrajectorySetpoint(timestamp=timestamp)
+    sp.position[0] = x_est[0]
+    sp.position[1] = x_est[1]
+    sp.position[2] = x_est[2]
+    sp.yaw = float('nan')
+    sp.velocity = [float('nan')] * 3
+    sp.acceleration = [float('nan')] * 3
+    sp.jerk = [float('nan')] * 3
+    sp.yawspeed = float('nan')
+    traj_sp_pub.publish(sp)
+
+    # publish yaw-rate command
+    vrs = VehicleRatesSetpoint(
+        thrust_body=[0.0, 0.0, float('nan')].astype(np.float32),
+        roll=0.0,
+        pitch=0.0,
+        yaw=float(yaw_rate),
+        timestamp=timestamp
+    )
+    rates_sp_pub.publish(vrs)
+
 def publish_uvr_command(timestamp:int,uvr:np.ndarray,vrs_publisher:Publisher) -> None:
     """Publish vehicle rates input (as a vehicle rates setpoint message)."""
 
@@ -136,22 +232,16 @@ def engage_offboard_control_mode(timestamp:int,vc_publisher:Publisher) -> None:
 
     vc_publisher.publish(vehicle_command)
 
+#NOTE: unused - requires global position estimate
 def send_hold_mode(timestamp: int, vc_publisher: Publisher) -> None:
     """Switch PX4 into builtin autonomous HOLD (hover) mode."""
     vehicle_command = VehicleCommand(
         command=VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
         param1=1.0,  # MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
-        param2=4.0,  # PX4_CUSTOM_MAIN_MODE_HOLD
-        param3=0.0,
-        param4=0.0,
-        param5=0.0,
-        param6=0.0,
-        param7=0.0,
-        target_system=1,
-        target_component=1,
-        source_system=1,
-        source_component=1,
-        from_external=True,
+        param2=3.0,  # PX4_CUSTOM_MAIN_MODE_POSITION
+        param3=0.0, param4=0.0, param5=0.0, param6=0.0, param7=0.0,
+        target_system=1, target_component=1,
+        source_system=1, source_component=1, from_external=True,
         timestamp=timestamp
     )
     vc_publisher.publish(vehicle_command)
@@ -168,14 +258,33 @@ def land(timestamp:int,vc_publisher:Publisher) -> None:
     )
 
     vc_publisher.publish(vehicle_command)
-    
-def heartbeat_offboard_control_mode(timestamp:int,ocm_publisher:Publisher) -> None:
-    """Send offboard heartbeat message."""
 
+def heartbeat_offboard_control_mode(
+    timestamp: int,
+    ocm_publisher: Publisher,
+    *,
+    body_rate: bool = False,
+    velocity: bool  = False
+) -> None:
+    """Offboard heartbeat that can enable either body-rate or velocity control."""
     offboard_control_mode = OffboardControlMode(
-        timestamp = timestamp,
-        position = False,velocity = False,acceleration = False,
-        attitude = False,body_rate = True,actuator = False
+        timestamp   = timestamp,
+        position    = False,         
+        velocity    = velocity,      # control mode for instruments-only
+        acceleration= False,
+        attitude    = False,
+        body_rate   = body_rate,     # default control mode for Sous Vide
+        actuator    = False
     )
-
     ocm_publisher.publish(offboard_control_mode)
+
+# def heartbeat_offboard_control_mode(timestamp:int,ocm_publisher:Publisher) -> None:
+#     """Send offboard heartbeat message."""
+
+#     offboard_control_mode = OffboardControlMode(
+#         timestamp = timestamp,
+#         position = False,velocity = False,acceleration = False,
+#         attitude = False,body_rate = True,actuator = False
+#     )
+
+#     ocm_publisher.publish(offboard_control_mode)

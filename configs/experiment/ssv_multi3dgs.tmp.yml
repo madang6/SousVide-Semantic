@@ -5,7 +5,8 @@
 # cohort: "ssv_CLIPSEG_NORMAL"
 # cohort: "ssv_CLIPSEG_ONE-ENV-FOUR-OBJ"
 # cohort: "ssv_CLIPSEG_LOITER_V2"
-cohort: "ssv_CLIPSEG_LOITER_900k"
+# cohort: "ssv_CLIPSEG_LOITER_900k"
+cohort: "ssv_CLIPSEG_SIGMOID_ALPHA_100"
 # cohort: "ssv_CLIPSEG_SIGMOID"
 # cohort: "ssv_CLIPSEG_SUPERPIXELS"
 method: "rrt"
@@ -18,8 +19,8 @@ Nep_com: 150 #250 already done
 
 # Each entry is a (scene, course) pair
 flights:
-  - ["flightroom_lowres", "flightroom_lowres"]
-  # - ["spheres", "spheres"]
+  # - ["flightroom_lowres", "flightroom_lowres"]
+  - ["spheres", "spheres"]
   # - ["indooroutdoor", "indooroutdoor"]
   # - ["packardpark", "packardpark"]
 #  - ["sv_917_3_left_gemsplat", "sv_917_3_left_gemsplat"]

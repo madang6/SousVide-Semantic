@@ -58,7 +58,10 @@ def simulate_roster(cohort_name:str,method_name:str,
     # Extract scene configs
     scenes_cfg_dir  = os.path.join(workspace_path, "configs", "scenes")
 
-    # Extrac Perception configs
+    # Set course config path
+    course_cfg_path = os.path.join(workspace_path, "configs", "course")
+
+    # Extract Perception configs
     perception_cfg_dir = os.path.join(workspace_path, "configs", "perception")
     with open(os.path.join(perception_cfg_dir, "onnx_benchmark_config.json")) as json_file:
         perception_config = json.load(json_file)
@@ -116,7 +119,7 @@ def simulate_roster(cohort_name:str,method_name:str,
         os.makedirs(cohort_path)
 
     # Generate base drone specifications
-    base_cfg = generate_specifications(base_frame_config)
+    base_frame_specs = generate_specifications(base_frame_config)
 
     if use_clip:
         print("SIL Model set to CLIPSeg.")
@@ -180,79 +183,107 @@ def simulate_roster(cohort_name:str,method_name:str,
 
                 # Obstacle centroids and rings
 #FIXME
-                if loitering:
-                    rings, obstacles = th.process_obstacle_clusters_and_sample(
-                        epcds_arr, env_bounds)
-                    print(f"obstacles poses : {obstacles}")
-                    print(f"rings poses shape: {len(rings)}")
-                    # Generate RRT paths
-                    raw_rrt_paths = bd.generate_rrt_paths(
-                        scene_cfg_file, simulator, epcds_list, epcds_arr, objectives,
-                        goal_poses, obj_centroids, env_bounds, rings, obstacles, n_iter_rrt
-                    )
+                # if loitering:
+                rings, obstacles = th.process_obstacle_clusters_and_sample(
+                    epcds_arr, env_bounds)
+                print(f"obstacles poses : {obstacles}")
+                print(f"rings poses shape: {len(rings)}")
+                # Generate RRT paths
+                raw_rrt_paths = bd.generate_rrt_paths(
+                    scene_cfg_file, simulator, epcds_list, epcds_arr, objectives,
+                    goal_poses, obj_centroids, env_bounds, rings, obstacles, n_iter_rrt
+                )
+                # else:
+                #     # Generate RRT paths
+                #     raw_rrt_paths = bd.generate_rrt_paths(
+                #         scene_cfg_file, simulator, epcds_list, epcds_arr, objectives,
+                #         goal_poses, obj_centroids, env_bounds, Niter_RRT=n_iter_rrt
+                #     )
 #
-                else:
-                    # Generate RRT paths
-                    raw_rrt_paths = bd.generate_rrt_paths(
-                        scene_cfg_file, simulator, epcds_list, epcds_arr, objectives,
-                        goal_poses, obj_centroids, env_bounds, Niter_RRT=n_iter_rrt
-                    )
-
                 # Filter and parameterize trajectories
                 all_trajectories = {}
+                raw_filtered = {}
                 for i, obj_name in enumerate(objectives):
                     print(f"Processing objective: {obj_name}")
                     branches = raw_rrt_paths[obj_name]
                     alt_set  = th.set_RRT_altitude(branches, altitudes[i])
                     filtered = th.filter_branches(alt_set, n_branches[i], hover_mode)
+                    raw_filtered[obj_name] = filtered
                     print(f"{obj_name}: {len(filtered)} branches")
 
                     idx = np.random.randint(len(filtered))
                     print(f"Selected branch index for {obj_name}: {idx}")
-
+#NOTE this function behaves differently with randint=idx
                     traj_list, node_list, debug_info = th.parameterize_RRT_trajectories(
                         filtered, obj_centroids[i], 1.0, 20, randint=idx
                     )
                     print(f"Parameterized: {len(traj_list)} trajectories")
                     print(f"chosen_traj.shape: {traj_list[idx].shape}")
+
                     chosen_traj  = traj_list[idx]
                     chosen_nodes = node_list[idx]
-                    combined_data = {
-                        "tXUi": chosen_traj,
+
+                    if loitering:
+                        Tsps = gd.compute_intervals(chosen_traj, Tdt_ro)
+                        loiter_tXUd_list = gd.generate_loiter_trajectories(
+                            tXUd_rrt         = chosen_traj,
+                            Tpd              = chosen_traj[0],
+                            Tsps             = Tsps,
+                            base_frame_specs = base_frame_specs,
+                            course_cfg_path  = course_cfg_path,
+                            simulate         = True
+                        )
+                        # print(f"what on earth is loiter_tXUD? is it a list or an array? {type(loiter_tXUd)}")
+                        # print(f"okay its a list, how big is it and what does it contain? {len(loiter_tXUd)} {loiter_tXUd[0].shape}")
+                        loiter_tXUd = loiter_tXUd_list[0]
+                        combined_data = {
+                        "tXUi": loiter_tXUd,
                         "nodes": chosen_nodes,
                         **debug_info
-                    }
+                        }
+                        combined_file = f"{combined_prefix}_loiter_{obj_name}.pkl"
+                        with open(combined_file, "wb") as f:
+                            pickle.dump(combined_data, f)
+                        trajectory_dataset[obj_name] = combined_data
+                        print(f"Saved trajectory dataset for {obj_name} and loiter_{obj_name}")
+                    else:
+                        combined_data = {
+                            "tXUi": chosen_traj,
+                            "nodes": chosen_nodes,
+                            **debug_info
+                        }
 
-                    combined_file = f"{combined_prefix}_{obj_name}.pkl"
-                    with open(combined_file, "wb") as f:
-                        pickle.dump(combined_data, f)
-                    
-                    trajectory_dataset[obj_name] = combined_data
+                        combined_file = f"{combined_prefix}_{obj_name}.pkl"
+                        with open(combined_file, "wb") as f:
+                            pickle.dump(combined_data, f)
+                        
+                        trajectory_dataset[obj_name] = combined_data
+                        print(f"Saved trajectory dataset for {obj_name}")
 #FIXME
-                if loitering:
-                    for idx in range(len(obstacles)):
-                        print(f"Rings for loiter: {[rings[idx]]}")
-                        all_trajectories[f"loiter_{idx}"], _ = th.parameterize_RRT_trajectories(
-                            [rings[idx]], obstacles[idx], constant_velocity=1.0, sampling_frequency=20, loiter=True)
-                    objectives.extend([f"null" for _ in range(len(obstacles))])
-                    idx = np.random.randint(len(obstacles))
-                    print(f"Selected loiter index for obstacles: {idx}")
+                    
+                    # for idx in range(len(obstacles)):
+                    #     print(f"Rings for loiter: {[rings[idx]]}")
+                    #     all_trajectories[f"loiter_{idx}"], _ = th.parameterize_RRT_trajectories(
+                    #         [rings[idx]], obstacles[idx], constant_velocity=1.0, sampling_frequency=20, loiter=True)
+                    # objectives.extend([f"null" for _ in range(len(obstacles))])
+                    # idx = np.random.randint(len(obstacles))
+                    # print(f"Selected loiter index for obstacles: {idx}")
                     # Take the first element of rings and create a new list with just that element
-                    rings_idx = [rings[idx]]
-                    print(f"Rings for loiter: {rings_idx}")
-                    traj_list, node_list, debug_info = th.parameterize_RRT_trajectories(
-                        rings_idx, obstacles[idx], 1.0, 20, randint=idx, loiter=True)
-                    print(f"Parameterized: {len(traj_list)} loiter trajectories for obstacle {idx}")
-                    print(f"chosen_traj.shape: {traj_list[0].shape}")
-                    combined_data = {
-                        "tXUi": traj_list[0],
-                        "nodes": node_list[0],
-                        **debug_info
-                    }
-                    combined_file = f"{combined_prefix}_loiter_{idx}.pkl"
-                    with open(combined_file, "wb") as f:
-                        pickle.dump(combined_data, f)
-                    trajectory_dataset[f"loiter_{idx}"] = combined_data
+                    # rings_idx = [rings[idx]]
+                    # print(f"Rings for loiter: {rings_idx}")
+                    # traj_list, node_list, debug_info = th.parameterize_RRT_trajectories(
+                    #     rings_idx, obstacles[idx], 1.0, 20, randint=idx, loiter=True)
+                    # print(f"Parameterized: {len(traj_list)} loiter trajectories for obstacle {idx}")
+                    # print(f"chosen_traj.shape: {traj_list[0].shape}")
+                    # combined_data = {
+                    #     "tXUi": traj_list[0],
+                    #     "nodes": node_list[0],
+                    #     **debug_info
+                    # }
+                    # combined_file = f"{combined_prefix}_loiter_{idx}.pkl"
+                    # with open(combined_file, "wb") as f:
+                    #     pickle.dump(combined_data, f)
+                    # trajectory_dataset[f"loiter_{idx}"] = combined_data
 #
     else:
         # Load trajectory dataset from files
@@ -297,9 +328,11 @@ def simulate_roster(cohort_name:str,method_name:str,
     Trep, base_frame_config, frame_set_config
     )
 
+    # print(f"trajectory dataset: {list(trajectory_dataset.keys())}")
     # === 10) Simulation Loop: for each objective, for each pilot ===
     for obj_name, data in trajectory_dataset.items():
         tXUi   = data["tXUi"]
+        print(f"txui shape: {tXUi.shape}")
         t0, tf = tXUi[0, 0], tXUi[0, -1]
         x0     = tXUi[1:11, 0]
         
@@ -337,18 +370,18 @@ def simulate_roster(cohort_name:str,method_name:str,
 
                 # Simulate Trajectory
 #FIXME
-                if obj_name.startswith("loiter_"):
-                    # For loiter trajectories, simulate with special loiter parameters
-                    print(f"simulating loiter trajectory with query: null")
-                    Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
-                        policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),
-                        query="null",clipseg=vision_processor,verbose=verbose)
+                # if obj_name.startswith("loiter_"):
+                #     # For loiter trajectories, simulate with special loiter parameters
+                #     print(f"simulating loiter trajectory with query: null")
+                #     Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
+                #         policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),
+                #         query="null",clipseg=vision_processor,verbose=verbose)
 #
-                else:
-                    # Normal simulation for non-loiter trajectories
-                    Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
-                        policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),
-                        query=obj_name,clipseg=vision_processor,verbose=verbose)
+                # else:
+                # Normal simulation for non-loiter trajectories
+                Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
+                    policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),
+                    query=obj_name,clipseg=vision_processor,verbose=verbose)
                 # Tro,Xro,Uro,Iro,Tsol,Adv = simulator.simulate(
                 #     policy,perturbation["t0"],tXUi[0,-1],perturbation["x0"],np.zeros((18,1)),query=obj_name,clipseg=vision_processor)
 

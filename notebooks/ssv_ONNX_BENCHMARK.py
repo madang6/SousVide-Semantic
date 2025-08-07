@@ -58,7 +58,6 @@ def main():
     times = []
     frames = []
     frame_count = 0
-
     if camera_mode:
         input_video_path = cfg['input_video_path']
         video_dir = os.path.dirname(input_video_path)
@@ -142,8 +141,8 @@ def main():
             # Convert to RGB for your inference call
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-            t0 = time.time()
-            overlay = model.clipseg_hf_inference(
+            t10 = time.time()
+            overlay, scaled = model.clipseg_hf_inference(
                 frame_rgb,
                 prompt,
                 resize_output_to_input=True,
@@ -152,9 +151,19 @@ def main():
                 scene_change_threshold=1.0,
                 verbose=False,
             )
-            t1 = time.time()
+            video_time_elapsed = (frame_count - 0) / fps
+            if video_time_elapsed < 3.5:
+                found, sim_score, area_frac = model.loiter_calibrate(logits=scaled,
+                                                                    active_arm=False)
+            else:
+                found, sim_score, area_frac = model.loiter_calibrate(logits=scaled,
+                                                                    active_arm=True)
+                if found:
+                    break
+                    
+            t11 = time.time()
 
-            times.append(t1 - t0)
+            times.append(t11 - t10)
             frame_count += 1
 
             # imageio expects an RGB array
@@ -163,7 +172,13 @@ def main():
             if frame_count % 50 == 0:
                 avg_ms = statistics.mean(times[-50:]) * 1e3
                 print(f"  Frame {frame_count}/{total_frames}: avg {avg_ms:.1f} ms/frame")
-
+        
+        print(f"largest_area={model.loiter_area_frac*100:.1f}% "
+              f", best scoring area={model.loiter_max:.3f} "
+              f", sim_score={sim_score:.3f} "
+              f", area_frac={area_frac*100:.1f}% "
+              f", sim_score_diff={model.loiter_max - sim_score:.3f} "
+              f", area_frac_diff={(model.loiter_area_frac - area_frac)*100:.1f}%")
         cap.release()
         writer.close()
 
