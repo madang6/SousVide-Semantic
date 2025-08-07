@@ -568,40 +568,44 @@ class CLIPSegHFModel:
         end = time.time()
         log(f"CLIPSeg inference time: {end - start:.3f} seconds")
         return overlayed, scaled
-
     def loiter_calibrate(self, logits: np.ndarray, active_arm: bool = False) -> None:
+        found = False
         H, W = logits.shape
         total_area = H * W
+        sim_score = float(logits.max())
+        thresh = np.percentile(logits, 90.0)
         
-        mask = (logits >= self.loiter_max).astype(np.uint8) 
+        mask = (logits >= thresh).astype(np.uint8) 
         
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
-        # stats[k, cv2.CC_STAT_AREA] is the area of component k
+        if num_labels <= 1:
+            return found, sim_score, 0.0
 
         if active_arm:
             for lab in range(1, num_labels):
                 area = stats[lab, cv2.CC_STAT_AREA]
-
-                if area < self.loiter_area_frac:
+                area_frac = area / total_area
+                region_max = float(logits[labels == lab].max())
+                if (region_max < 0.99*self.loiter_max) or (area_frac < 0.99*self.loiter_area_frac):
                     continue
                 else:
                     found = True
-                    self.loiter_max = 0
-                    self.loiter_area_frac = 0
-                    return found, self.loiter_max, self.loiter_area_frac
+                    # self.loiter_max = 0
+                    # self.loiter_area_frac = 0
+                    return found, sim_score, area_frac
         else:
             for lab in range(1, num_labels):
                 area = stats[lab, cv2.CC_STAT_AREA]
-
+                area_frac = area / total_area
                 # highest sim within this component
                 region_max = float(logits[labels == lab].max())
 
                 if region_max > self.loiter_max:
+                    print(f"New loiter region found: {region_max:.3f} (area_frac={area_frac*100:.1f}%)")
                     self.loiter_max = region_max
                     self.loiter_area_frac = area / total_area
                     # self.loiter_area = area
-        found = False
-        return found, self.loiter_max, self.loiter_area_frac
+        return found, sim_score, area
                  
 ################################################
 # 2. Lookup Table for Semantic Probability Map #
