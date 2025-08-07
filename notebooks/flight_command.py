@@ -213,6 +213,7 @@ class FlightCommand(Node):
         print(f"Query Set to: {self.prompt}")
 #FIXME
         self.hold_prompt           = self.prompt
+        self.prompt_2              = "mannequin in a shirt"  # TODO: remove this, it's just for testing
 #
         self.hf_model = mission_config.get('hf_model', 'CIDAS/clipseg-rd64-refined')
         self.onnx_model_path_raw = mission_config.get('onnx_model_path')
@@ -245,7 +246,7 @@ class FlightCommand(Node):
         self.latest_similarity = None
 #has_one_large_high_sim_region
         self.sim_thresh        = 0.65
-        self.area_thresh       = 0.05
+        self.area_thresh       = 0.02
 
 #policy switch flag
         self.ready_active     = False
@@ -628,6 +629,7 @@ class FlightCommand(Node):
                 # trajectory has ended → HOLD Position
                 self.policy_duration       = t_tr
                 self.hold_prompt           = self.prompt
+                self.prompt                = self.prompt_2
 
                 # self.hold_state = x_est.copy()
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
