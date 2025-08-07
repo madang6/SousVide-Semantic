@@ -573,7 +573,7 @@ class CLIPSegHFModel:
         H, W = logits.shape
         total_area = H * W
         
-        mask = (first_sim_map >= self.loiter_max).astype(np.uint8) 
+        mask = (logits >= self.loiter_max).astype(np.uint8) 
         
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
         # stats[k, cv2.CC_STAT_AREA] is the area of component k
