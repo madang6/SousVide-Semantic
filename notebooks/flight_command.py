@@ -246,8 +246,12 @@ class FlightCommand(Node):
         self.latest_mask       = None
         self.latest_similarity = None
 #has_one_large_high_sim_region
-        self.sim_thresh        = 0.65
-        self.area_thresh       = 0.02
+        self.finding_object     = False
+        self.found              = False
+        self.sim_score          = 0.0
+        self.area_frac          = 0.0
+        # self.sim_thresh        = 0.65
+        # self.area_thresh       = 0.02
 
 #policy switch flag
         self.ready_active     = False
@@ -452,6 +456,12 @@ class FlightCommand(Node):
             self.latest_similarity = similarity
             t_elap = time.time() - t0_img
             self.img_times.append(t_elap)
+        
+    def async_loiter_calibrate(self):
+        while self.finding_object:
+            self.found, self.sim_score, self.area_frac = self.vision_model.loiter_calibrate(
+                    logits=self.similarity, active_arm=self.active_arm
+                )
 
     def quat_to_yaw(self,q):
         x, y, z, w = q
@@ -630,8 +640,11 @@ class FlightCommand(Node):
                 # trajectory has ended → HOLD Position
                 self.policy_duration       = t_tr
                 self.hold_prompt           = self.prompt
+            #FIXME
                 self.prompt                = self.prompt_2
-
+                self.vision_model.running_min = float('inf')
+                self.vision_model.running_max = float('-inf')
+            #
                 # self.hold_state = x_est.copy()
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
                 self.spin_cycle = True
@@ -641,7 +654,7 @@ class FlightCommand(Node):
 
         elif self.sm == StateMachine.HOLD:
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
-        #NOTE THIS NEEDS TO BE REPLACED WITH A NEWER VERSION OF THE READY STATE, BUT FOR NOW IT SUFFICES
+        #NOTE THIS SHOULD BE REPLACED WITH A NEWER VERSION OF THE READY STATE, BUT FOR NOW IT SUFFICES
             if (self.ready_active is True and self.spin_cycle is False) and t_tr > 3.0:
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
                 self.ready_active = False                                       # Reset ready active flag
@@ -651,6 +664,17 @@ class FlightCommand(Node):
                 print('=====================================================================')
                 print('ACTIVE Started.')
             elif (self.ready_active is False and self.spin_cycle is True) and t_tr > 3.0:
+                print("Starting Object Detection Thread")
+                if not self.finding_object:
+                    self.object_detection_thread = threading.Thread(
+                        target=self.async_loiter_calibrate,
+                        daemon=True,
+                        name="ObjectDetectionThread"
+                    )
+                    self.vision_thread.start()
+                    self.vision_started = True
+                print("Vision Thread Online")
+
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
                 zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
                 self.sm = StateMachine.SPIN
