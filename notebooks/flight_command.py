@@ -214,6 +214,7 @@ class FlightCommand(Node):
 #FIXME
         self.hold_prompt           = self.prompt
         self.prompt_2              = "mannequin in a shirt"  # TODO: remove this, it's just for testing
+        self.active_arm            = False
 #
         self.hf_model = mission_config.get('hf_model', 'CIDAS/clipseg-rd64-refined')
         self.onnx_model_path_raw = mission_config.get('onnx_model_path')
@@ -669,10 +670,8 @@ class FlightCommand(Node):
         elif self.sm == StateMachine.SPIN:
             t_tr = self.get_current_trajectory_time()
 
-            found, sim_score, area_frac , best_score = vp.has_large_high_sim_region_cc(
-                    sim_map=similarity,
-                    sim_thresh=self.sim_thresh,
-                    area_thresh=self.area_thresh
+            found, sim_score, area_frac = self.vision_model.loiter_calibrate(
+                    logits=similarity, active_arm=self.active_arm
                 )
 
             if t_tr < 7.0:
@@ -682,24 +681,26 @@ class FlightCommand(Node):
                     self.vehicle_rates_setpoint_publisher,
                     0.8
                 )
+                self.active_arm = False
+                self.recorder.record(img)
 
-                # run superpixel check
-                # found, superpixel_mask = vp.has_one_large_high_sim_region_slic(
-                #     image=img,                      
-                #     similarity_map=similarity,
-                #     sim_thresh=self.sim_thresh,       
-                #     area_thresh=self.area_thresh
-                # )
-
-                
-                self.recorder.record(vp.colorize_mask_fast((similarity*255).astype(np.uint8),self.vision_model.lut))
+            elif t_tr >= 7.0 and t_tr < 14.0:
+                zch.publish_velocity_hold_with_yaw_rate(
+                self.get_current_timestamp_time(),
+                self.trajectory_setpoint_publisher,
+                self.vehicle_rates_setpoint_publisher,
+                0.8
+                )
+                    
+                self.active_arm = True
+                # self.recorder.record(vp.colorize_mask_fast((similarity*255).astype(np.uint8),self.vision_model.lut))
                 if found:
                     self.t_tr0 = self.get_clock().now().nanoseconds/1e9
+                    self.active_arm = False
                     self.ready_active = True
                     self.spin_cycle = False
                     self.sm                    = StateMachine.HOLD
                     print(f'Query {self.prompt} Found → HOLDing Position')
-
             else:
                 self.t_tr0 = self.get_clock().now().nanoseconds / 1e9
                 self.ready_active = False
@@ -707,11 +708,11 @@ class FlightCommand(Node):
                 self.sm   = StateMachine.HOLD
                 print(f'Query {self.prompt} Not Found → HOLDing Position, Preparing to Land')
 #FIXME                 
-                sim_gap  = self.sim_thresh  - sim_score
-                area_gap = self.area_thresh - area_frac
-                print(f"No region: max_sim={sim_score:.3f} (<{self.sim_thresh:.3f} by {sim_gap:.3f}), "
+                sim_gap  = self.vision_model.loiter_max  - sim_score
+                area_gap = self.vision_model.loiter_area_frac - area_frac
+                print(f"No region: max_sim={sim_score:.3f} (<{self.vision_model.loiter_max:.3f} by {sim_gap:.3f}), "
                     f"largest_area={area_frac*100:.1f}% "
-                    f"(<{self.area_thresh*100:.1f}% by {area_gap*100:.1f}%)"
+                    f"(<{self.vision_model.loiter_area_frac*100:.1f}% by {area_gap*100:.1f}%)"
                     f", best scoring area ={best_score:.3f}")
 #TODO Remove
         # elif self.sm == StateMachine.SPIN:

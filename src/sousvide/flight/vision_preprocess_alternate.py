@@ -58,6 +58,10 @@ class CLIPSegHFModel:
         self.superpixel_every = 1
         self.frame_counter = 0
 
+        # Baseline for calibration
+        self.loiter_max = 0.0
+        self.loiter_area_frac = 0.0
+
         # ONNX support
         self.use_onnx = False
         self.ort_session = None
@@ -522,7 +526,7 @@ class CLIPSegHFModel:
 
         if resize_output_to_input:
 #FIXME
-            regular_prob = np.array(Image.fromarray(prob).resize(img.size, resample=Image.BILINEAR))
+            scaled = np.array(Image.fromarray(prob).resize(img.size, resample=Image.BILINEAR))
 #
             mask_u8 = np.array(Image.fromarray(mask_u8).resize(img.size, resample=Image.BILINEAR))
 
@@ -563,8 +567,42 @@ class CLIPSegHFModel:
 
         end = time.time()
         log(f"CLIPSeg inference time: {end - start:.3f} seconds")
-        return overlayed, regular_prob
+        return overlayed, scaled
 
+    def loiter_calibrate(self, logits: np.ndarray, active_arm: bool = False) -> None:
+        H, W = logits.shape
+        total_area = H * W
+        
+        sim_score = float(logits.max())
+        
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(logits)
+        # stats[k, cv2.CC_STAT_AREA] is the area of component k
+
+        if active_arm:
+            for lab in range(1, num_labels):
+                area = stats[lab, cv2.CC_STAT_AREA]
+
+                if area < self.loiter_area_frac:
+                    continue
+                else:
+                    found = True
+                    self.loiter_max = 0
+                    self.loiter_area_frac = 0
+                    return found, self.loiter_max, self.loiter_area_frac
+        else:
+            for lab in range(1, num_labels):
+                area = stats[lab, cv2.CC_STAT_AREA]
+
+                # highest sim within this component
+                region_max = float(logits[labels == lab].max())
+
+                if region_max > self.loiter_max:
+                    self.loiter_max = region_max
+                    self.loiter_area_frac = area / total_area
+                    # self.loiter_area = area
+        found = False
+        return found, self.loiter_max, self.loiter_area_frac
+                 
 ################################################
 # 2. Lookup Table for Semantic Probability Map #
 ################################################
@@ -639,7 +677,7 @@ def blend_overlay_gpu(base: np.ndarray,
 
     # 6. Clamp to [0,255], cast → uint8, move to CPU, return as H×W×3
     blended = blended.clamp(0, 255).round().byte()                    # [3, H, W]
-    return blended.permute(1, 2, 0).cpu().numpy()   
+    return blended.permute(1, 2, 0).cpu().numpy()    
 
 def guided_smoothing(rgb: np.ndarray, seg_mask: np.ndarray, radius=4, eps=1e-3) -> np.ndarray:
     rgb_float = rgb.astype(np.float32) / 255.0
@@ -795,8 +833,8 @@ def has_one_large_high_sim_region_slic(
     # 2) flatten and bin-count
     flat_lbl = labels.ravel()
     flat_sim = similarity_map.ravel()
-    counts = np.bincount(flat_lbl)
-    sums   = np.bincount(flat_lbl, weights=flat_sim)
+    counts   = np.bincount(flat_lbl)
+    sums     = np.bincount(flat_lbl, weights=flat_sim)
     
     # 3) mean similarity and area fraction per superpixel
     mean_sim   = sums / counts
@@ -836,7 +874,6 @@ def has_large_high_sim_region_cc(sim_map: np.ndarray,
     if num_labels <= 1:
         return False, sim_score, 0.0, 0.0
 
-    
     best_score = 0.0
     area_frac  = 0.0
 
