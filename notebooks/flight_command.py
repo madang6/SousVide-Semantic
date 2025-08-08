@@ -477,7 +477,7 @@ class FlightCommand(Node):
                         logits=self.latest_similarity,
                         active_arm=self.active_arm
                     )
-                # time.sleep(0.02)
+                time.sleep(0.02)
 
     def quat_to_yaw(self,q):
         x, y, z, w = q
@@ -725,7 +725,7 @@ class FlightCommand(Node):
                 self.get_current_timestamp_time(),
                 self.trajectory_setpoint_publisher,
                 self.vehicle_rates_setpoint_publisher,
-                0.8
+                0.9
                 )
 
             # found, sim_score, area_frac = self.vision_model.loiter_calibrate(
