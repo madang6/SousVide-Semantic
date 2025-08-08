@@ -477,7 +477,7 @@ class FlightCommand(Node):
                         logits=self.latest_similarity,
                         active_arm=self.active_arm
                     )
-                time.sleep(0.02)
+                # time.sleep(0.02)
 
     def quat_to_yaw(self,q):
         x, y, z, w = q
@@ -676,6 +676,7 @@ class FlightCommand(Node):
             #
                 # self.hold_state = x_est.copy()
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
+                # self.finding_shutdown = False
                 self.spin_cycle = True
                 self.ready_active = False                                                 # Reset ready active flag
                 self.found = False
@@ -707,6 +708,7 @@ class FlightCommand(Node):
                 print('=====================================================================')
                 print('SPIN Started.')
             elif t_tr < 6.0:
+                return
                 # zch.publish_position_hold(self.get_current_timestamp_time(), self.hold_state, self.trajectory_setpoint_publisher)
                 # zch.publish_velocity_hold(
                 #     self.get_current_timestamp_time(),
@@ -748,7 +750,7 @@ class FlightCommand(Node):
                     f", sim_score_diff={self.sim_score-self.vision_model.loiter_max:.3f} "
                     f", area_frac_diff={(self.vision_model.loiter_area_frac-self.area_frac)*100:.1f}%")
 
-                    self.finding_shutdown = True
+                    # self.finding_shutdown = True
                     self.sim_score = 0.0
                     self.area_frac = 0.0
                     self.found = False

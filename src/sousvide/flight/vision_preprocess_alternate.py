@@ -586,7 +586,7 @@ class CLIPSegHFModel:
                 area = stats[lab, cv2.CC_STAT_AREA]
                 area_frac = area / total_area
                 region_max = float(logits[labels == lab].max())
-                if (region_max < 0.99*self.loiter_max) or (area_frac < 0.99*self.loiter_area_frac):
+                if (region_max < 0.96*self.loiter_max) or (area_frac < 0.96*self.loiter_area_frac):
                     continue
                 else:
                     found = True
