@@ -246,7 +246,9 @@ class FlightCommand(Node):
         self.latest_mask       = None
         self.latest_similarity = None
 #has_one_large_high_sim_region
-        self.finding_object     = False
+        self.finding_thread     = None
+        self.finding_shutdown   = False
+        self.finding_started    = False
         self.found              = False
         self.sim_score          = 0.0
         self.area_frac          = 0.0
@@ -386,6 +388,13 @@ class FlightCommand(Node):
             self.vision_started = False
             print("Vision Thread Offline")
 
+        if getattr(self, 'finding_thread', None) and self.finding_started:
+            print("Closing Object Detection Thread")
+            self.finding_shutdown = True
+            self.finding_thread.join()
+            self.finding_started = False
+            print("Object Detection Thread Offline")
+
         if getattr(self, 'kb_thread', None):
             print("Closing Keyboard Thread")
             self.kb_shutdown.set()
@@ -458,10 +467,17 @@ class FlightCommand(Node):
             self.img_times.append(t_elap)
         
     def async_loiter_calibrate(self):
-        while self.finding_object:
-            self.found, self.sim_score, self.area_frac = self.vision_model.loiter_calibrate(
-                    logits=self.similarity, active_arm=self.active_arm
-                )
+        while not self.finding_shutdown:
+            if not self.spin_cycle:
+                time.sleep(0.02)
+                continue
+            else:
+                self.found, self.sim_score, self.area_frac = \
+                    self.vision_model.loiter_calibrate(
+                        logits=self.latest_similarity,
+                        active_arm=self.active_arm
+                    )
+                time.sleep(0.02)
 
     def quat_to_yaw(self,q):
         x, y, z, w = q
@@ -556,6 +572,8 @@ class FlightCommand(Node):
             self.k_rdy = 0                                                  # Reset ready counter
             self.ready_active = False                                       # Reset ready active flag
             self.spin_cycle   = True
+            self.found = False
+            self.finding_shutdown = False
             self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
             zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
             self.sm = StateMachine.HOLD
@@ -583,6 +601,17 @@ class FlightCommand(Node):
                     self.vision_thread.start()
                     self.vision_started = True
                 print("Vision Thread Online")
+
+                print("Starting Object Detection Thread")
+                if not self.finding_started:
+                    self.finding_thread = threading.Thread(
+                        target=self.async_loiter_calibrate,
+                        daemon=True,
+                        name="ObjectDetectionThread"
+                    )
+                    self.finding_thread.start()
+                    self.finding_started = True
+                print("Object Detection Thread Online")
 
                 # Print State Information
                 print('---------------------------------------------------------------------')
@@ -649,32 +678,28 @@ class FlightCommand(Node):
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
                 self.spin_cycle = True
                 self.ready_active = False                                                 # Reset ready active flag
+                self.found = False
                 self.sm                    = StateMachine.HOLD
                 print('Trajectory Finished → HOLDing Position, readying for next query...')
 
         elif self.sm == StateMachine.HOLD:
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
+            zch.publish_velocity_hold(
+                self.get_current_timestamp_time(),
+                self.trajectory_setpoint_publisher
+            )
         #NOTE THIS SHOULD BE REPLACED WITH A NEWER VERSION OF THE READY STATE, BUT FOR NOW IT SUFFICES
             if (self.ready_active is True and self.spin_cycle is False) and t_tr > 3.0:
+                print("Detector Thread Sleeping; Switching to Active")
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
                 self.ready_active = False                                       # Reset ready active flag
+                self.found = False
                 zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
                 self.sm = StateMachine.ACTIVE
                 
                 print('=====================================================================')
                 print('ACTIVE Started.')
             elif (self.ready_active is False and self.spin_cycle is True) and t_tr > 3.0:
-                print("Starting Object Detection Thread")
-                if not self.finding_object:
-                    self.object_detection_thread = threading.Thread(
-                        target=self.async_loiter_calibrate,
-                        daemon=True,
-                        name="ObjectDetectionThread"
-                    )
-                    self.vision_thread.start()
-                    self.vision_started = True
-                print("Vision Thread Online")
-
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
                 zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
                 self.sm = StateMachine.SPIN
@@ -683,10 +708,10 @@ class FlightCommand(Node):
                 print('SPIN Started.')
             elif t_tr < 6.0:
                 # zch.publish_position_hold(self.get_current_timestamp_time(), self.hold_state, self.trajectory_setpoint_publisher)
-                zch.publish_velocity_hold(
-                    self.get_current_timestamp_time(),
-                    self.trajectory_setpoint_publisher
-                )
+                # zch.publish_velocity_hold(
+                #     self.get_current_timestamp_time(),
+                #     self.trajectory_setpoint_publisher
+                # )
             else:
                 self.sm = StateMachine.LAND
                 print('Trajectory Finished → Landing...')
@@ -694,40 +719,39 @@ class FlightCommand(Node):
         elif self.sm == StateMachine.SPIN:
             t_tr = self.get_current_trajectory_time()
 
-            found, sim_score, area_frac = self.vision_model.loiter_calibrate(
-                    logits=similarity, active_arm=self.active_arm
-                )
-
-            if t_tr < 7.0:
-                zch.publish_velocity_hold_with_yaw_rate(
-                    self.get_current_timestamp_time(),
-                    self.trajectory_setpoint_publisher,
-                    self.vehicle_rates_setpoint_publisher,
-                    0.8
-                )
-                self.active_arm = False
-                self.recorder.record(img)
-
-            elif t_tr >= 7.0 and t_tr < 14.0:
-                zch.publish_velocity_hold_with_yaw_rate(
+            zch.publish_velocity_hold_with_yaw_rate(
                 self.get_current_timestamp_time(),
                 self.trajectory_setpoint_publisher,
                 self.vehicle_rates_setpoint_publisher,
                 0.8
                 )
-                    
+
+            # found, sim_score, area_frac = self.vision_model.loiter_calibrate(
+            #         logits=similarity, active_arm=self.active_arm
+            #     )
+
+            if t_tr < 7.0:
+
+                self.active_arm = False
+                self.recorder.record(img)
+
+            elif t_tr >= 7.0 and t_tr < 14.0:
                 self.active_arm = True
                 # self.recorder.record(vp.colorize_mask_fast((similarity*255).astype(np.uint8),self.vision_model.lut))
-                if found:
+                if self.found:
                     self.t_tr0 = self.get_clock().now().nanoseconds/1e9
 
                     print(f"largest area={self.vision_model.loiter_area_frac*100:.1f}% "
                     f", best_scoring_area={self.vision_model.loiter_max:.3f} " 
-                    f", sim_score={sim_score:.3f} "
-                    f", area_frac={area_frac*100:.1f}% "
-                    f", sim_score_diff={sim_score-self.vision_model.loiter_max:.3f} "
-                    f", area_frac_diff={(self.vision_model.loiter_area_frac-area_frac)*100:.1f}%")
+                    f", sim_score={self.sim_score:.3f} "
+                    f", area_frac={self.area_frac*100:.1f}% "
+                    f", sim_score_diff={self.sim_score-self.vision_model.loiter_max:.3f} "
+                    f", area_frac_diff={(self.vision_model.loiter_area_frac-self.area_frac)*100:.1f}%")
 
+                    self.finding_shutdown = True
+                    self.sim_score = 0.0
+                    self.area_frac = 0.0
+                    self.found = False
                     self.active_arm = False
                     self.vision_model.loiter_max = 0.0
                     self.vision_model.loiter_area_frac = 0.0
@@ -741,10 +765,10 @@ class FlightCommand(Node):
 
                 print(f"largest area={self.vision_model.loiter_area_frac*100:.1f}% "
                 f", best_scoring_area={self.vision_model.loiter_max:.3f} " 
-                f", sim_score={sim_score:.3f} "
-                f", area_frac={area_frac*100:.1f}% "
-                f", sim_score_diff={self.vision_model.loiter_max-sim_score:.3f} "
-                f", area_frac_diff={(self.vision_model.loiter_area_frac-area_frac)*100:.1f}%")
+                f", sim_score={self.sim_score:.3f} "
+                f", area_frac={self.area_frac*100:.1f}% "
+                f", sim_score_diff={self.vision_model.loiter_max-self.sim_score:.3f} "
+                f", area_frac_diff={(self.vision_model.loiter_area_frac-self.area_frac)*100:.1f}%")
 
                 self.active_arm = False
                 self.vision_model.loiter_max = 0.0
@@ -821,7 +845,6 @@ class FlightCommand(Node):
             print("Closing node...")
             self.cmdLoop.cancel()
             exit()
-            return
 
 def main() -> None:
     print('Starting flight command node...')
