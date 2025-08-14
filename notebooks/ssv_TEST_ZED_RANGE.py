@@ -58,11 +58,11 @@ def ensure_hw_match(reference_hw: tuple[int, int], arr: np.ndarray) -> np.ndarra
 # ---------- Main script ----------
 
 def parse_args():
-    p = argparse.ArgumentParser("ZED SDK test: CLIPSeg similarity → depth range; save videos.")
+    p = argparse.ArgumentParser()
     # Camera init
-    p.add_argument("--cam-width",  type=int, default=640)
-    p.add_argument("--cam-height", type=int, default=480)
-    p.add_argument("--cam-fps",    type=int, default=30)
+    p.add_argument("--cam-width",  type=int, default=None)
+    p.add_argument("--cam-height", type=int, default=None)
+    p.add_argument("--cam-fps",    type=int, default=None)
     # CLIPSeg
     p.add_argument("--prompt", type=str, default="boxes")
     p.add_argument("--hf-model", type=str, default="CIDAS/clipseg-rd64-refined")
@@ -78,112 +78,146 @@ def parse_args():
     p.add_argument("--z-min",  type=float, default=0.3)
     p.add_argument("--z-max",  type=float, default=20.0)
     # Saving
+    p.add_argument("--input-video-path", dest="input_video_path", type=str, default=None)
     p.add_argument("--out-clipseg", type=str, default="clipseg_out.mp4")
     p.add_argument("--out-depth",   type=str, default="depth_out.mp4")
     p.add_argument("--out-sideby",  type=str, default="combo_out.mp4")
     p.add_argument("--save-fps",    type=float, default=15.0)
     # Loop
-    p.add_argument("--rate-hz",     type=float, default=15.0)  # encode rate & print throttle
-    p.add_argument("--max-seconds", type=float, default=10.0)   # 0 = unlimited
+    p.add_argument("--rate-hz",     type=float, default=15.0)   # encode rate & print throttle
+    p.add_argument("--max-seconds", type=float, default=None)   #
     return p.parse_args()
+
+def pick(val, cfg, key, default=None):
+    return val if val is not None else cfg.get(key, default)
 
 
 def main():
-    # Load config like the benchmark
-    CONFIG_PATH = os.path.expanduser(CONFIG_PATH_RAW)
-    cfg = load_config(CONFIG_PATH)
+    args = parse_args()
 
-    # Where to save (same logic as benchmark live path)
-    input_video_path = cfg["input_video_path"]                      
-    video_dir = os.path.dirname(input_video_path)                   
-    _, ext = os.path.splitext(os.path.basename(input_video_path))   
+    # Load JSON config (same path you already use)
+    CONFIG_PATH = os.path.expanduser(
+        "~/StanfordMSL/SousVide-Semantic/configs/perception/onnx_benchmark_config.json"
+    )
+    with open(CONFIG_PATH, "r") as f:
+        cfg = json.load(f)
+
+    # Merge settings (CLI > cfg > hard default)
+    mode          = pick(args.mode,          cfg, "mode",           "full")
+    range_source  = pick(args.range_source,  cfg, "range_source",   "xyz")
+    width         = pick(args.cam_width,  cfg, "camera_width",   640)
+    height        = pick(args.cam_height, cfg, "camera_height",  480)
+    fps_cam       = pick(args.cam_fps,    cfg, "camera_fps",     30)
+    duration      = pick(args.max_seconds, cfg, "camera_duration", 10.0)
+    save_fps      = pick(args.save_fps,      cfg, "save_fps",       10.0)
+
+    input_video_path = pick(args.input_video_path, cfg, "input_video_path",
+                            "~/StanfordMSL/SousVide-Semantic/notebooks/out/live_placeholder.mp4")
+    input_video_path = os.path.expanduser(input_video_path)
+    video_dir = os.path.dirname(input_video_path)
+    _, ext = os.path.splitext(os.path.basename(input_video_path))
     out_clipseg = os.path.join(video_dir, f"live_range_clipseg{ext}")
     out_depth   = os.path.join(video_dir, f"live_range_depth{ext}")
     out_combo   = os.path.join(video_dir, f"live_range_combo{ext}")
 
+    # Open camera (ensure depth is enabled in your get_camera)
+    cam = zch.get_camera(height=height, width=width, fps=fps_cam, use_depth=True)
+    if cam is None:
+        raise RuntimeError("Unable to initialize ZED camera.")
+
 # ---------- DEPTH-ONLY MODE ----------
-    if args.mode == "depth_only":
-        print("Running in depth_only mode (no CLIPSeg).")
-    
+
+    if mode == "depth_only":
+        print(f"Running depth_only mode (range-source={range_source})")
         frames_depth = []
         frame_count = 0
         t0 = time.time()
-    
-        # helper: convert SDK display to RGB at overlay size
-        def depth_display_to_rgb(depth_disp: np.ndarray, target_hw: tuple[int, int] | None = None) -> np.ndarray:
-            dv = depth_disp
-            if dv.dtype != np.uint8:  # VIEW.DEPTH should be uint8; warn but coerce if not
-                print(f"[warn] VIEW.DEPTH dtype={dv.dtype}, expected uint8; coercing")
-                dv = dv.astype(np.uint8, copy=False)
-    
-            if dv.ndim == 2 or (dv.ndim == 3 and dv.shape[2] == 1):
-                rgb = cv2.cvtColor(dv, cv2.COLOR_GRAY2RGB)
-            elif dv.ndim == 3 and dv.shape[2] == 3:
-                rgb = cv2.cvtColor(dv, cv2.COLOR_BGR2RGB)
-            elif dv.ndim == 3 and dv.shape[2] == 4:
-                rgb = cv2.cvtColor(dv, cv2.COLOR_BGRA2RGB)
-            else:
-                rgb = np.repeat(dv[..., :1], 3, axis=2)
-    
-            if target_hw is not None and rgb.shape[:2] != target_hw:
-                H, W = target_hw
-                interp = cv2.INTER_AREA if (rgb.shape[1] > W or rgb.shape[0] > H) else cv2.INTER_LINEAR
-                rgb = cv2.resize(rgb, (W, H), interpolation=interp)
-            return rgb
-    
+        
+    # ---------- CLIPSeg Noise Test ----------
+        prompt = cfg.get("prompt", "")
+        print(f"Prompt set to {prompt}")
+        hf_model = cfg.get("hf_model", "CIDAS/clipseg-rd64-refined")
+        onnx_model_path = cfg.get("onnx_model_path")
+        if onnx_model_path is None:
+            print("Initializing CLIPSegHFModel (PyTorch)…")
+            model = vp.CLIPSegHFModel(hf_model=hf_model)               
+        else:
+            onnx_model_path = os.path.expanduser(onnx_model_path)
+            print("Initializing CLIPSegHFModel (ONNX)…")
+            model = vp.CLIPSegHFModel(                                 
+                hf_model=hf_model,
+                onnx_model_path=onnx_model_path,
+                onnx_model_fp16_path=cfg.get("onnx_model_fp16_path", None),
+            )
+    # ---------- END CLIPSeg Noise Test ----------
+
         try:
-            duration = cfg.get("camera_duration", 10.0)
-            while (time.time() - t0) < duration:
-                # NOTE: use_depth=True to get depth_viz and 'depth_np' (see get_image impl)
-                img_np, depth_np, depth_viz, t_ms = zch.get_image(cam, use_depth=True)
+            while (time.time() - t0) < float(duration):
+                # Your get_image returns: image, XYZ (or None), VIEW.DEPTH display, ts_ms
+                img_np, xyz_np, depth_viz, t_ms = zch.get_image(cam, use_depth=True)
                 if depth_viz is None:
                     continue
-    
-                # Compute a lightweight range readout (center pixel)
+
+            # ---------- CLIPSeg Noise Test ----------
+                # ZED often returns BGRA for VIEW.LEFT; convert to RGB for the model
+                img_bgr = img_np[..., :3] if img_np.shape[2] >= 3 else img_np
+                frame_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+                out = model.clipseg_hf_inference(
+                    frame_rgb,
+                    prompt,
+                    resize_output_to_input=True,
+                    use_refinement=False,
+                    use_smoothing=False,
+                    scene_change_threshold=1.0,
+                    verbose=False,
+                )
+            # ---------- END CLIPSeg Noise Test ----------
+
+                # Depth display → RGB for imageio
                 H, W = depth_viz.shape[:2]
+                depth_rgb = vp.depth_display_to_rgb(depth_viz, target_hw=(H, W))
+
+                # Center-pixel range readout
                 cy, cx = H // 2, W // 2
-    
                 center_txt = "N/A"
-                if args.range_source == "xyz" and isinstance(depth_np, np.ndarray) and depth_np.ndim == 3 and depth_np.shape[2] >= 3:
-                    # Euclidean distance from XYZ (meters)
-                    p = depth_np[cy, cx, :3].astype(np.float64, copy=False)
+                if range_source == "xyz" and isinstance(xyz_np, np.ndarray) and xyz_np.ndim == 3 and xyz_np.shape[2] >= 3:
+                    p = xyz_np[cy, cx, :3].astype(np.float64, copy=False)
                     if np.all(np.isfinite(p)):
                         r = float(np.hypot(np.hypot(p[0], p[1]), p[2]))
                         center_txt = f"{r:.2f} m"
-                elif args.range_source == "z" and isinstance(depth_np, np.ndarray):
-                    # If 'depth_np' is Z-depth (HxW), read Z; if it's XYZ, read Z channel
-                    if depth_np.ndim == 2:
-                        z = float(depth_np[cy, cx])
-                    else:
-                        z = float(depth_np[cy, cx, 2])
-                    center_txt = f"{z:.2f} m" if np.isfinite(z) and z > 0 else "N/A"
-    
-                # Build depth display frame (RGB) and overlay label
-                depth_rgb = depth_display_to_rgb(depth_viz, target_hw=(H, W))
+                elif range_source == "z":
+                    # If get_image is returning XYZ, use its Z channel; if you switch it back to MEASURE.DEPTH (HxW),
+                    # this still works (ndim==2 path)
+                    if isinstance(xyz_np, np.ndarray):
+                        z = xyz_np[cy, cx, 2] if xyz_np.ndim == 3 else xyz_np[cy, cx]
+                        if np.isfinite(z) and z > 0:
+                            center_txt = f"{float(z):.2f} m"
+
+                # Annotate & collect
                 depth_rgb = depth_rgb.copy()
-                cv2.putText(depth_rgb, f"Center range ({args.range_source}): {center_txt}", (10, 24),
+                cv2.putText(depth_rgb, f"Center range ({range_source}): {center_txt}", (10, 24),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (10,10,10), 3, cv2.LINE_AA)
-                cv2.putText(depth_rgb, f"Center range ({args.range_source}): {center_txt}", (10, 24),
+                cv2.putText(depth_rgb, f"Center range ({range_source}): {center_txt}", (10, 24),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (240,240,240), 1, cv2.LINE_AA)
-    
+
                 frames_depth.append(depth_rgb)
                 frame_count += 1
-    
-                # Optional: throttle to ~save-fps
-                time.sleep(max(0.0, 1.0/float(args.save_fps) - 0.001))
-    
+
+                # pace capture around save_fps
+                time.sleep(max(0.0, 1.0/float(save_fps) - 0.001))
+
         finally:
             zch.close_camera(cam)
             if frame_count > 0:
                 elapsed = max(1e-6, time.time() - t0)
                 avg_fps = frame_count / elapsed
-                out_depth = os.path.join(video_dir, os.path.basename(out_depth))  # keep same path var
                 imageio.mimsave(out_depth, frames_depth, fps=avg_fps)
                 print(f"[depth_only] Frames: {frame_count}  avg_fps≈{avg_fps:.2f}")
                 print(f"[depth_only] Wrote depth video: {out_depth}")
             else:
                 print("[depth_only] No frames captured; nothing to save.")
-            return  # IMPORTANT: skip the CLIPSeg path
+        return
 # ---------- END DEPTH-ONLY MODE ----------
 
     # Model selection (same knobs as benchmark)
@@ -202,20 +236,9 @@ def main():
             onnx_model_fp16_path=cfg.get("onnx_model_fp16_path", None),
         )
 
-    # Camera knobs (mirror ‘camera_*’ keys the benchmark uses)
-    fps_cam  = cfg.get("camera_fps",    30)                        
-    width    = cfg.get("camera_width",  640)                       
-    height   = cfg.get("camera_height", 480)                       
-    duration = cfg.get("camera_duration", 10.0)
-
     # Range estimator params
     top_percent = float(cfg.get("range_top_percent", 10.0))
     min_pixels  = int(cfg.get("range_min_pixels", 200))
-
-    # Open camera (same helper)
-    cam = zch.get_camera(height=height, width=width, fps=fps_cam, use_depth=0)
-    if cam is None:
-        raise RuntimeError("Unable to initialize ZED camera.")
 
     frames_clipseg = []
     frames_depth   = []
@@ -229,8 +252,8 @@ def main():
     try:
         while (time.time() - t_start) < duration:
             # Grab LEFT + DEPTH (meters) with your updated get_image
-            img_np, depth_np, depth_viz, t_ms = zch.get_image(cam, use_depth=True)
-            if img_np is None or depth_np is None:
+            img_np, xyz_np, depth_viz, t_ms = zch.get_image(cam, use_depth=True)
+            if img_np is None or xyz_np is None or depth_viz is None:
                 continue
 
             # ZED often returns BGRA for VIEW.LEFT; convert to RGB for the model
@@ -261,11 +284,11 @@ def main():
 
             # Make sure depth matches overlay size (nearest)
             H, W = overlay_rgb.shape[:2]
-            depth_np = ensure_hw_match((H, W), depth_np)
+            xyz_np = ensure_hw_match((H, W), xyz_np)
 
             # Estimate range (top-P% similarity pixels)
             ok, range_m = zch.euclidean_range_from_similarity(
-                similarity, depth_np,
+                similarity, xyz_np,
                 top_percent=top_percent,
                 min_pixels=min_pixels,
             )

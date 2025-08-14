@@ -101,7 +101,7 @@ def publish_velocity_toward_range(
     ts.yawspeed     = float('nan')
     traj_sp_pub.publish(ts)
 
-def get_camera(height: int, width: int, fps: int, use_depth: int = 0) -> sl.Camera:
+def get_camera(height: int, width: int, fps: int, use_depth: bool = False) -> sl.Camera:
     """Initialize the ZED camera."""
     print("Initializing ZED camera if available...")
 
@@ -112,7 +112,7 @@ def get_camera(height: int, width: int, fps: int, use_depth: int = 0) -> sl.Came
         init_params.camera_resolution = sl.RESOLUTION.VGA  # Automatically set resolution
         init_params.camera_fps = fps  # Set the camera FPS
 
-        if use_depth == 0:
+        if use_depth == True:
             init_params.depth_mode = sl.DEPTH_MODE.NEURAL_LIGHT  # Neural mode
             init_params.coordinate_units = sl.UNIT.METER
             init_params.depth_minimum_distance = 0.3       # 0.3 m
@@ -152,26 +152,40 @@ def get_image(Camera: sl.Camera,
     """Capture an image from the ZED camera."""
     if Camera is None:
         print("Camera is not initialized.")
-        return None, None
+        return None, None, None, None
 
-    runtime_parameters = sl.RuntimeParameters()
+    # runtime_parameters = sl.RuntimeParameters()
+
+    if not hasattr(get_image, "_inited"):
+        get_image._image = sl.Mat()
+        get_image._xyz = sl.Mat()
+        get_image._depth_viz = sl.Mat()
+        get_image._rt = sl.RuntimeParameters()
+        # get_image._rt.confidence_threshold = 95
+        # get_image._rt.texture_confidence_threshold = 100
+        # get_image._rt.remove_saturated_areas = False
+        # get_image._rt.sensing_mode = sl.SENSING_MODE.FILL
+        get_image._inited = True
 
     # Grab a frame from the camera
-    if Camera.grab(runtime_parameters) == sl.ERROR_CODE.SUCCESS:
-        image = sl.Mat()
-        Camera.retrieve_image(image, sl.VIEW.LEFT)
+    if Camera.grab(get_image._rt) == sl.ERROR_CODE.SUCCESS:
+        # image = sl.Mat()
+        Camera.retrieve_image(get_image._image, sl.VIEW.LEFT)
+        img_np = get_image._image.get_data()
         if use_depth:
-            depth = sl.Mat()
-            depth_for_display = sl.Mat()
+            # depth = sl.Mat()
+            # depth_for_display = sl.Mat()
             # Camera.retrieve_measure(depth, sl.MEASURE.DEPTH)
-            Camera.retrieve_measure(depth, sl.MEASURE.XYZ)
-            Camera.retrieve_image(depth_for_display, sl.VIEW.DEPTH)
+            Camera.retrieve_measure(get_image._xyz, sl.MEASURE.XYZ)
+            xyz_np = get_image._xyz.get_data()
+            Camera.retrieve_image(get_image._depth_viz, sl.VIEW.DEPTH)
+            depth_viz_np = get_image._depth_viz.get_data()
 
         timestamp = Camera.get_timestamp(sl.TIME_REFERENCE.CURRENT)  # Get timestamp
 
         # print(f"Image resolution: {image.get_width()} x {image.get_height()} || Image timestamp: {timestamp.get_milliseconds()}")
 
-        return image.get_data(), depth.get_data(), depth_for_display.get_data(), timestamp.get_milliseconds()
+        return img_np, xyz_np, depth_viz_np, timestamp.get_milliseconds()
 
     else:
         print("Failed to capture image.")
