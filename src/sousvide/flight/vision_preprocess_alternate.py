@@ -627,7 +627,35 @@ def colorize_mask_fast(mask_np, lut):
 ################################################
 # 3. Utility Functions for Image Processing #
 ################################################
-    
+def depth_display_to_rgb(depth_disp: np.ndarray, target_hw: tuple[int, int] | None = None) -> np.ndarray:
+    """
+    Convert ZED VIEW.DEPTH display image to RGB for saving.
+    VIEW.DEPTH is 8-bit display; SDK may deliver 1c (GRAY) or 3/4c (BGR/BGRA) depending on settings.
+    """
+    dv = depth_disp
+    # Ensure 8-bit
+    if dv.dtype != np.uint8:
+        dv = dv.astype(np.uint8, copy=False)
+
+    # Channel handling
+    if dv.ndim == 2 or (dv.ndim == 3 and dv.shape[2] == 1):
+        rgb = cv2.cvtColor(dv, cv2.COLOR_GRAY2RGB)
+    elif dv.ndim == 3 and dv.shape[2] == 3:
+        rgb = cv2.cvtColor(dv, cv2.COLOR_BGR2RGB)
+    elif dv.ndim == 3 and dv.shape[2] == 4:
+        rgb = cv2.cvtColor(dv, cv2.COLOR_BGRA2RGB)
+    else:
+        # Fallback: replicate to 3 channels
+        rgb = np.repeat(dv[..., :1], 3, axis=2)
+
+    if target_hw is not None and rgb.shape[:2] != target_hw:
+        H, W = target_hw
+        interp = cv2.INTER_AREA if (rgb.shape[1] > W or rgb.shape[0] > H) else cv2.INTER_LINEAR
+        rgb = cv2.resize(rgb, (W, H), interpolation=interp)
+
+    return rgb
+
+
 
 def blend_overlay_gpu(base: np.ndarray,
                       overlay: np.ndarray,

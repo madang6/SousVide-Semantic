@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
-from typing import Tuple
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+import cv2
 import pyzed.sl as sl
 from rclpy.publisher import Publisher
 
@@ -14,6 +14,92 @@ from px4_msgs.msg import (
     TrajectorySetpoint,
     ActuatorMotors
 )
+
+def euclidean_range_from_similarity(
+    similarity: np.ndarray,
+    xyz_m: np.ndarray,               # HxWx3 or HxWx4 from sl.MEASURE.XYZ
+    top_percent: float = 10.0,
+    min_pixels: int = 200,
+    max_abs_coord: float = 1e3,      # clip XYZ to ±1000 m to avoid overflow
+    r_min: float = 0.05,
+    r_max: float = 200.0,
+) -> tuple[bool, float]:
+    if similarity is None or xyz_m is None or xyz_m.ndim != 3 or xyz_m.shape[2] < 3:
+        return False, float('nan')
+
+    # Use only X,Y,Z (ignore 4th channel if present)
+    xyz = xyz_m[..., :3].astype(np.float32, copy=False)
+
+    # Ensure shapes match (nearest keeps pixel alignment)
+    Hs, Ws = similarity.shape[:2]
+    Hx, Wx = xyz.shape[:2]
+    if (Hs, Ws) != (Hx, Wx):
+        xyz = cv2.resize(xyz, (Ws, Hs), interpolation=cv2.INTER_NEAREST)
+
+    sim = similarity.astype(np.float32, copy=False)
+
+    # Top-P% threshold without sorting whole array
+    n = sim.size
+    k = max(0, min(n - 1, int((1.0 - top_percent / 100.0) * n)))
+    thr = np.partition(sim.ravel(), k)[k]
+
+    # Gather ROI XYZ
+    roi = xyz[sim >= thr]                    # shape (N, 3)
+    if roi.size < 3 * max(10, min_pixels):
+        return False, float('nan')
+
+    # Filter out non-finite rows
+    finite = np.all(np.isfinite(roi), axis=1)
+    roi = roi[finite]
+    if roi.shape[0] < min_pixels:
+        return False, float('nan')
+
+    # Clip absurd magnitudes to avoid overflow when squaring
+    np.clip(roi, -max_abs_coord, max_abs_coord, out=roi)
+
+    # Stable Euclidean norm (float64 + hypot chaining)
+    x = roi[:, 0].astype(np.float64, copy=False)
+    y = roi[:, 1].astype(np.float64, copy=False)
+    z = roi[:, 2].astype(np.float64, copy=False)
+    dist = np.hypot(np.hypot(x, y), z)
+
+    # Keep plausible ranges
+    dist = dist[(dist > r_min) & (dist < r_max)]
+    if dist.size < min_pixels:
+        return False, float('nan')
+
+    return True, float(np.nanmedian(dist))
+
+def publish_velocity_toward_range(
+    timestamp: int,
+    current_yaw_rad: float,
+    current_range_m: float,
+    target_range_m: float,
+    traj_sp_pub: Publisher,
+    kp: float = 0.6,
+    vmax: float = 0.6,
+    deadband_m: float = 0.05
+) -> None:
+    """Forward/back velocity along heading to close range error."""
+    if not np.isfinite(current_range_m):
+        publish_velocity_hold(timestamp, traj_sp_pub)
+        return
+
+    err = float(current_range_m - target_range_m)  # >0: too far
+    vx_body = 0.0 if abs(err) <= deadband_m else float(np.clip(kp * err, -vmax, vmax))
+
+    c, s = np.cos(current_yaw_rad), np.sin(current_yaw_rad)
+    vx_ned = vx_body * c
+    vy_ned = vx_body * s
+
+    ts = TrajectorySetpoint(timestamp=timestamp)
+    ts.velocity     = [vx_ned, vy_ned, 0.0]
+    ts.position     = [float('nan')]*3
+    ts.acceleration = [float('nan')]*3
+    ts.jerk         = [float('nan')]*3
+    ts.yaw          = float('nan')
+    ts.yawspeed     = float('nan')
+    traj_sp_pub.publish(ts)
 
 def get_camera(height: int, width: int, fps: int) -> sl.Camera:
     """Initialize the ZED camera."""
@@ -38,7 +124,8 @@ def get_camera(height: int, width: int, fps: int) -> sl.Camera:
         print(f"No camera found: {e}")
         return None
 
-def get_image(Camera: sl.Camera) -> tuple[np.ndarray, int]:
+def get_image(Camera: sl.Camera,
+              use_depth: bool = False) -> tuple[np.ndarray, int]:
     """Capture an image from the ZED camera."""
     if Camera is None:
         print("Camera is not initialized.")
@@ -50,16 +137,22 @@ def get_image(Camera: sl.Camera) -> tuple[np.ndarray, int]:
     if Camera.grab(runtime_parameters) == sl.ERROR_CODE.SUCCESS:
         image = sl.Mat()
         Camera.retrieve_image(image, sl.VIEW.LEFT)
+        if use_depth:
+            depth = sl.Mat()
+            depth_for_display = sl.Mat()
+            # Camera.retrieve_measure(depth, sl.MEASURE.DEPTH)
+            Camera.retrieve_measure(depth, sl.MEASURE.XYZ)
+            Camera.retrieve_image(depth_for_display, sl.VIEW.DEPTH)
 
         timestamp = Camera.get_timestamp(sl.TIME_REFERENCE.CURRENT)  # Get timestamp
 
         # print(f"Image resolution: {image.get_width()} x {image.get_height()} || Image timestamp: {timestamp.get_milliseconds()}")
 
-        return image.get_data(), timestamp.get_milliseconds()
+        return image.get_data(), depth.get_data(), depth_for_display.get_data(), timestamp.get_milliseconds()
 
     else:
         print("Failed to capture image.")
-        return None, None
+        return None, None, None, None
 
 def close_camera(Camera: sl.Camera) -> None:
     """Close the ZED camera."""
