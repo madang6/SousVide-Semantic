@@ -100,6 +100,10 @@ def parse_args():
     p.add_argument("--hf-model", type=str, default="CIDAS/clipseg-rd64-refined")
     p.add_argument("--onnx-model-path", type=str, default=None)
     p.add_argument("--onnx-model-fp16-path", type=str, default=None)
+    p.add_argument("--mode", choices=["full", "depth_only"], default="full",
+                   help="full = CLIPSeg+range+3 videos, depth_only = capture XYZ+VIEW.DEPTH, print center range, save depth video only")
+    p.add_argument("--range-source", choices=["xyz", "z"], default="xyz",
+                   help="For depth_only: use 'xyz' for Euclidean range (MEASURE.XYZ) or 'z' for optical-axis depth (MEASURE.DEPTH)")
     # Estimator
     p.add_argument("--top-percent", type=float, default=10.0)
     p.add_argument("--min-pixels",  type=int, default=200)
@@ -128,6 +132,91 @@ def main():
     out_clipseg = os.path.join(video_dir, f"live_range_clipseg{ext}")
     out_depth   = os.path.join(video_dir, f"live_range_depth{ext}")
     out_combo   = os.path.join(video_dir, f"live_range_combo{ext}")
+
+# ---------- DEPTH-ONLY MODE ----------
+    if args.mode == "depth_only":
+        print("Running in depth_only mode (no CLIPSeg).")
+    
+        frames_depth = []
+        frame_count = 0
+        t0 = time.time()
+    
+        # helper: convert SDK display to RGB at overlay size
+        def depth_display_to_rgb(depth_disp: np.ndarray, target_hw: tuple[int, int] | None = None) -> np.ndarray:
+            dv = depth_disp
+            if dv.dtype != np.uint8:  # VIEW.DEPTH should be uint8; warn but coerce if not
+                print(f"[warn] VIEW.DEPTH dtype={dv.dtype}, expected uint8; coercing")
+                dv = dv.astype(np.uint8, copy=False)
+    
+            if dv.ndim == 2 or (dv.ndim == 3 and dv.shape[2] == 1):
+                rgb = cv2.cvtColor(dv, cv2.COLOR_GRAY2RGB)
+            elif dv.ndim == 3 and dv.shape[2] == 3:
+                rgb = cv2.cvtColor(dv, cv2.COLOR_BGR2RGB)
+            elif dv.ndim == 3 and dv.shape[2] == 4:
+                rgb = cv2.cvtColor(dv, cv2.COLOR_BGRA2RGB)
+            else:
+                rgb = np.repeat(dv[..., :1], 3, axis=2)
+    
+            if target_hw is not None and rgb.shape[:2] != target_hw:
+                H, W = target_hw
+                interp = cv2.INTER_AREA if (rgb.shape[1] > W or rgb.shape[0] > H) else cv2.INTER_LINEAR
+                rgb = cv2.resize(rgb, (W, H), interpolation=interp)
+            return rgb
+    
+        try:
+            duration = cfg.get("camera_duration", 10.0)
+            while (time.time() - t0) < duration:
+                # NOTE: use_depth=True to get depth_viz and 'depth_np' (see get_image impl)
+                img_np, depth_np, depth_viz, t_ms = zch.get_image(cam, use_depth=True)
+                if depth_viz is None:
+                    continue
+    
+                # Compute a lightweight range readout (center pixel)
+                H, W = depth_viz.shape[:2]
+                cy, cx = H // 2, W // 2
+    
+                center_txt = "N/A"
+                if args.range_source == "xyz" and isinstance(depth_np, np.ndarray) and depth_np.ndim == 3 and depth_np.shape[2] >= 3:
+                    # Euclidean distance from XYZ (meters)
+                    p = depth_np[cy, cx, :3].astype(np.float64, copy=False)
+                    if np.all(np.isfinite(p)):
+                        r = float(np.hypot(np.hypot(p[0], p[1]), p[2]))
+                        center_txt = f"{r:.2f} m"
+                elif args.range_source == "z" and isinstance(depth_np, np.ndarray):
+                    # If 'depth_np' is Z-depth (HxW), read Z; if it's XYZ, read Z channel
+                    if depth_np.ndim == 2:
+                        z = float(depth_np[cy, cx])
+                    else:
+                        z = float(depth_np[cy, cx, 2])
+                    center_txt = f"{z:.2f} m" if np.isfinite(z) and z > 0 else "N/A"
+    
+                # Build depth display frame (RGB) and overlay label
+                depth_rgb = depth_display_to_rgb(depth_viz, target_hw=(H, W))
+                depth_rgb = depth_rgb.copy()
+                cv2.putText(depth_rgb, f"Center range ({args.range_source}): {center_txt}", (10, 24),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (10,10,10), 3, cv2.LINE_AA)
+                cv2.putText(depth_rgb, f"Center range ({args.range_source}): {center_txt}", (10, 24),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (240,240,240), 1, cv2.LINE_AA)
+    
+                frames_depth.append(depth_rgb)
+                frame_count += 1
+    
+                # Optional: throttle to ~save-fps
+                time.sleep(max(0.0, 1.0/float(args.save_fps) - 0.001))
+    
+        finally:
+            zch.close_camera(cam)
+            if frame_count > 0:
+                elapsed = max(1e-6, time.time() - t0)
+                avg_fps = frame_count / elapsed
+                out_depth = os.path.join(video_dir, os.path.basename(out_depth))  # keep same path var
+                imageio.mimsave(out_depth, frames_depth, fps=avg_fps)
+                print(f"[depth_only] Frames: {frame_count}  avg_fps≈{avg_fps:.2f}")
+                print(f"[depth_only] Wrote depth video: {out_depth}")
+            else:
+                print("[depth_only] No frames captured; nothing to save.")
+            return  # IMPORTANT: skip the CLIPSeg path
+# ---------- END DEPTH-ONLY MODE ----------
 
     # Model selection (same knobs as benchmark)
     prompt = cfg.get("prompt", "")
@@ -158,7 +247,7 @@ def main():
     z_max       = float(cfg.get("range_z_max", 20.0))
 
     # Open camera (same helper)
-    cam = zch.get_camera(height=height, width=width, fps=fps_cam)
+    cam = zch.get_camera(height=height, width=width, fps=fps_cam, use_depth=True)
     if cam is None:
         raise RuntimeError("Unable to initialize ZED camera.")
 
