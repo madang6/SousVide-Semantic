@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 
-from typing import Tuple
+from typing import Optional, Tuple
 import numpy as np
+import cv2
 from scipy.spatial.transform import Rotation as R
 import pyzed.sl as sl
+from sensor_msgs.msg import Image, CameraInfo
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.publisher import Publisher
 
 from px4_msgs.msg import (
@@ -14,6 +17,160 @@ from px4_msgs.msg import (
     TrajectorySetpoint,
     ActuatorMotors
 )
+
+class ZedDepthSubscriber:
+    """
+    Subscribes to ZED depth aligned to LEFT camera.
+    Defaults match zed-ros2-wrapper:
+      /zed/zed_node/depth/depth_registered (encoding: '32FC1' meters)
+      /zed/zed_node/left/camera_info      (optional)
+    """
+
+    def __init__(self, node, depth_topic: str, camera_info_topic: Optional[str], qos: QoSProfile):
+        if CvBridge is None:
+            raise RuntimeError("cv_bridge is required for ZED depth subscriptions.")
+        self._node = node
+        self._bridge = CvBridge()
+        self._latest_depth: Optional[np.ndarray] = None
+        self._latest_stamp: Optional[int] = None
+        self._camera_info: Optional[CameraInfo] = None
+
+        self._sub_depth = node.create_subscription(Image, depth_topic, self._depth_cb, qos)
+        self._sub_info = None
+        if camera_info_topic:
+            self._sub_info = node.create_subscription(CameraInfo, camera_info_topic, self._info_cb, qos)
+
+    def _info_cb(self, msg: CameraInfo) -> None:
+        self._camera_info = msg
+
+    def _depth_cb(self, msg: Image) -> None:
+        depth = self._bridge.imgmsg_to_cv2(msg, desired_encoding=msg.encoding)
+        depth = np.array(depth, copy=True)
+        enc = msg.encoding.upper()
+
+        if enc == '16UC1':  # millimeters → meters
+            depth = depth.astype(np.float32) * 0.001
+        elif enc == '32FC1':
+            depth = depth.astype(np.float32)
+        else:
+            depth = depth.astype(np.float32)  # best-effort
+
+        # Normalize invalids (ZED uses 0 or NaN)
+        invalid = ~np.isfinite(depth) | (depth <= 0.0)
+        if np.any(invalid):
+            depth[invalid] = np.nan
+
+        self._latest_depth = depth
+        self._latest_stamp = int(msg.header.stamp.sec * 1e9 + msg.header.stamp.nanosec)
+
+    def get_latest(self) -> Tuple[Optional[np.ndarray], Optional[int]]:
+        return self._latest_depth, self._latest_stamp
+
+def create_zed_depth_subscriber(
+    node,
+    qos: Optional[QoSProfile] = None,
+    depth_topic: str = '/zed/zed_node/depth/depth_registered',
+    camera_info_topic: Optional[str] = '/zed/zed_node/left/camera_info',
+) -> ZedDepthSubscriber:
+    """Factory to create and return a ZedDepthSubscriber with your QoS."""
+    if qos is None:
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+    return ZedDepthSubscriber(node, depth_topic, camera_info_topic, qos)
+
+def estimate_range_from_similarity(
+    similarity_map: np.ndarray,
+    depth_m: np.ndarray,
+    top_percent: float = 10.0,
+    min_pixels: int = 200,
+    morph_kernel: int = 3
+) -> Tuple[bool, float, Tuple[int, int]]:
+    """
+    Compute robust range (median meters) over the top-percentile similarity pixels.
+    Expects depth_m aligned to LEFT and in meters.
+    """
+    if similarity_map is None or depth_m is None:
+        return False, float('nan'), (0, 0)
+
+    Hs, Ws = similarity_map.shape[:2]
+    Hd, Wd = depth_m.shape[:2]
+    if (Hs, Ws) != (Hd, Wd):
+        depth_m = cv2.resize(depth_m, (Ws, Hs), interpolation=cv2.INTER_NEAREST)
+
+    sim = similarity_map.astype(np.float32)
+    thr = np.percentile(sim, 100.0 - float(top_percent))
+    mask = (sim >= thr).astype(np.uint8)
+
+    if morph_kernel > 1:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_kernel, morph_kernel))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
+
+    vals = depth_m[mask > 0]
+    vals = vals[np.isfinite(vals)]
+    vals = vals[(vals > 0.05) & (vals < 50.0)]  # clamp to sensible range
+
+    if vals.size < max(10, min_pixels):
+        return False, float('nan'), (Hs, Ws)
+
+    return True, float(np.nanmedian(vals)), (Hs, Ws)
+
+def publish_velocity_toward_range(
+    timestamp: int,
+    current_yaw_rad: float,
+    current_range_m: float,
+    target_range_m: float,
+    traj_sp_pub: Publisher,
+    kp: float = 0.6,
+    vmax: float = 0.6,
+    deadband_m: float = 0.05
+) -> None:
+    """Forward/back velocity along heading to close range error."""
+    if not np.isfinite(current_range_m):
+        publish_velocity_hold(timestamp, traj_sp_pub)
+        return
+
+    err = float(current_range_m - target_range_m)  # >0: too far
+    vx_body = 0.0 if abs(err) <= deadband_m else float(np.clip(kp * err, -vmax, vmax))
+
+    c, s = np.cos(current_yaw_rad), np.sin(current_yaw_rad)
+    vx_ned = vx_body * c
+    vy_ned = vx_body * s
+
+    ts = TrajectorySetpoint(timestamp=timestamp)
+    ts.velocity     = [vx_ned, vy_ned, 0.0]
+    ts.position     = [float('nan')]*3
+    ts.acceleration = [float('nan')]*3
+    ts.jerk         = [float('nan')]*3
+    ts.yaw          = float('nan')
+    ts.yawspeed     = float('nan')
+    traj_sp_pub.publish(ts)
+
+
+def publish_pitchrate_toward_range(
+    timestamp: int,
+    current_range_m: float,
+    target_range_m: float,
+    vrs_pub: Publisher,
+    k_rate: float = 0.5,      # rad/s per meter
+    max_rate: float = 0.3     # clamp
+) -> None:
+    """Body pitch-rate nudge to walk range open/closed when staying in body-rate."""
+    if not np.isfinite(current_range_m):
+        return
+    err = float(current_range_m - target_range_m)
+    pitch_rate = float(np.clip(-k_rate * err, -max_rate, max_rate))
+    vrs = VehicleRatesSetpoint(
+        thrust_body=np.array([0.0, 0.0, float('nan')], dtype=np.float32),
+        roll=0.0,
+        pitch=pitch_rate,
+        yaw=0.0,
+        timestamp=timestamp
+    )
+    vrs_pub.publish(vrs)
 
 def get_camera(height: int, width: int, fps: int) -> sl.Camera:
     """Initialize the ZED camera."""
@@ -110,32 +267,32 @@ def vrs2uvr(vr:VehicleRatesSetpoint) -> np.ndarray:
     return np.array([vr.thrust_body[2],vr.roll,vr.pitch,vr.yaw])
 
 
-def publish_position_hold(timestamp: int,
-                             x_est: np.ndarray,
-                             traj_sp_pub) -> None:
-    """
-    Hold current position & heading using TrajectorySetpoint only.
-    - x_est: 13-element state [x,y,z, vx,vy,vz, qx,qy,qz,qw, ...]
-    - traj_sp_pub: Publisher<TrajectorySetpoint>
-    """
-    sp = TrajectorySetpoint(timestamp=timestamp)
+# def publish_position_hold(timestamp: int,
+#                              x_est: np.ndarray,
+#                              traj_sp_pub) -> None:
+#     """
+#     Hold current position & heading using TrajectorySetpoint only.
+#     - x_est: 13-element state [x,y,z, vx,vy,vz, qx,qy,qz,qw, ...]
+#     - traj_sp_pub: Publisher<TrajectorySetpoint>
+#     """
+#     sp = TrajectorySetpoint(timestamp=timestamp)
 
-    # set position [x, y, z]
-    sp.position[0] = x_est[0]
-    sp.position[1] = x_est[1]
-    sp.position[2] = x_est[2]
+#     # set position [x, y, z]
+#     sp.position[0] = x_est[0]
+#     sp.position[1] = x_est[1]
+#     sp.position[2] = x_est[2]
 
-    # extract yaw from quaternion (qx,qy,qz,qw in x_est[6..9])
-    qx, qy, qz, qw = x_est[6], x_est[7], x_est[8], x_est[9]
-    sp.yaw = np.arctan2(2*(qw*qz + qx*qy),
-                        1 - 2*(qy*qy + qz*qz))
+#     # extract yaw from quaternion (qx,qy,qz,qw in x_est[6..9])
+#     qx, qy, qz, qw = x_est[6], x_est[7], x_est[8], x_est[9]
+#     sp.yaw = np.arctan2(2*(qw*qz + qx*qy),
+#                         1 - 2*(qy*qy + qz*qz))
 
-    # ignore velocity/acceleration/jerk feed-forward
-    sp.velocity = [float('nan')] * 3
-    sp.acceleration = [float('nan')] * 3
-    sp.jerk = [float('nan')] * 3
+#     # ignore velocity/acceleration/jerk feed-forward
+#     sp.velocity = [float('nan')] * 3
+#     sp.acceleration = [float('nan')] * 3
+#     sp.jerk = [float('nan')] * 3
 
-    traj_sp_pub.publish(sp)
+#     traj_sp_pub.publish(sp)
 
 def publish_velocity_hold(timestamp: int, traj_sp_pub) -> None:
     ts = TrajectorySetpoint(timestamp=timestamp)
@@ -151,58 +308,58 @@ def publish_velocity_hold_with_yaw_rate(timestamp: int,
                                         traj_sp_pub,
                                         rates_sp_pub,
                                         yaw_rate: float) -> None:
-    # 1) zero-velocity setpoint → holds X/Y/Z
+    # zero-velocity setpoint → holds X/Y/Z
     ts = TrajectorySetpoint(timestamp=timestamp)
     ts.velocity     = [0.0, 0.0, 0.0]
     ts.position     = [float('nan')] * 3
     ts.acceleration = [float('nan')] * 3
     ts.jerk         = [float('nan')] * 3
     ts.yaw          = float('nan')
-    ts.yawspeed     = float('nan')
+    ts.yawspeed     = yaw_rate  # set yaw speed to desired rate
     traj_sp_pub.publish(ts)
 
-    # 2) yaw-rate setpoint → spins at your chosen rate
-    vrs = VehicleRatesSetpoint(
-        thrust_body = np.array([0.0, 0.0, 0.0], dtype=np.float32),
-        roll        = 0.0,
-        pitch       = 0.0,
-        yaw         = yaw_rate,
-        timestamp   = timestamp
-    )
-    rates_sp_pub.publish(vrs)
+    # # yaw-rate setpoint → spins at your chosen rate
+    # vrs = VehicleRatesSetpoint(
+    #     thrust_body = np.array([0.0, 0.0, float('nan')], dtype=np.float32),
+    #     roll        = 0.0,
+    #     pitch       = 0.0,
+    #     yaw         = yaw_rate,
+    #     timestamp   = timestamp
+    # )
+    # rates_sp_pub.publish(vrs)
 
-def publish_position_hold_with_yaw_rate(timestamp: int,
-                                           x_est: np.ndarray,
-                                           yaw_rate: float,
-                                           traj_sp_pub,
-                                           rates_sp_pub) -> None:
-    """
-    Hold x,y,z and command constant yaw rate.
-    - yaw_rate: radians/sec (+ = CCW looking down)
-    - traj_sp_pub:   Publisher<TrajectorySetpoint>
-    - rates_sp_pub:  Publisher<VehicleRatesSetpoint>
-    """
-    # publish hold-point TrajectorySetpoint
-    sp = TrajectorySetpoint(timestamp=timestamp)
-    sp.position[0] = x_est[0]
-    sp.position[1] = x_est[1]
-    sp.position[2] = x_est[2]
-    sp.yaw = float('nan')
-    sp.velocity = [float('nan')] * 3
-    sp.acceleration = [float('nan')] * 3
-    sp.jerk = [float('nan')] * 3
-    sp.yawspeed = float('nan')
-    traj_sp_pub.publish(sp)
+# def publish_position_hold_with_yaw_rate(timestamp: int,
+#                                            x_est: np.ndarray,
+#                                            yaw_rate: float,
+#                                            traj_sp_pub,
+#                                            rates_sp_pub) -> None:
+#     """
+#     Hold x,y,z and command constant yaw rate.
+#     - yaw_rate: radians/sec (+ = CCW looking down)
+#     - traj_sp_pub:   Publisher<TrajectorySetpoint>
+#     - rates_sp_pub:  Publisher<VehicleRatesSetpoint>
+#     """
+#     # publish hold-point TrajectorySetpoint
+#     sp = TrajectorySetpoint(timestamp=timestamp)
+#     sp.position[0] = x_est[0]
+#     sp.position[1] = x_est[1]
+#     sp.position[2] = x_est[2]
+#     sp.yaw = float('nan')
+#     sp.velocity = [float('nan')] * 3
+#     sp.acceleration = [float('nan')] * 3
+#     sp.jerk = [float('nan')] * 3
+#     sp.yawspeed = float('nan')
+#     traj_sp_pub.publish(sp)
 
-    # publish yaw-rate command
-    vrs = VehicleRatesSetpoint(
-        thrust_body=[0.0, 0.0, float('nan')].astype(np.float32),
-        roll=0.0,
-        pitch=0.0,
-        yaw=float(yaw_rate),
-        timestamp=timestamp
-    )
-    rates_sp_pub.publish(vrs)
+#     # publish yaw-rate command
+#     vrs = VehicleRatesSetpoint(
+#         thrust_body=[0.0, 0.0, float('nan')].astype(np.float32),
+#         roll=0.0,
+#         pitch=0.0,
+#         yaw=float(yaw_rate),
+#         timestamp=timestamp
+#     )
+#     rates_sp_pub.publish(vrs)
 
 def publish_uvr_command(timestamp:int,uvr:np.ndarray,vrs_publisher:Publisher) -> None:
     """Publish vehicle rates input (as a vehicle rates setpoint message)."""

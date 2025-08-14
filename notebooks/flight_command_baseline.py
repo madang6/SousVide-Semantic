@@ -189,6 +189,16 @@ class FlightCommand(Node):
                     f"'{mission_config['course']}_tXUi.pkl' was found."
                 )
             self.ctl = vr_mpc.VehicleRateMPC(tXUi,drone_config,hz,use_RTI=True,tpad=mission_config["linger"])
+        elif mission_config["pilot"] == "range_velocity":
+            self.isNN = False
+            # range controller tunables
+            self.range_target_m   = float(mission_config.get('range_target_m', 2.0))
+            self.range_top_pct    = float(mission_config.get('range_top_percent', 10.0))  # top-P% similarity pixels
+            self.range_kp         = float(mission_config.get('range_kp', 0.6))
+            self.range_vmax       = float(mission_config.get('range_vmax', 0.6))
+            self.range_deadband   = float(mission_config.get('range_deadband', 0.05))
+            self.range_k_rate     = float(mission_config.get('range_k_rate', 0.5))
+            self.range_max_rate   = float(mission_config.get('range_max_rate', 0.3))
         else:
             self.isNN = True
             self.ctl = Pilot(mission_config["cohort"],mission_config["pilot"])
@@ -201,7 +211,14 @@ class FlightCommand(Node):
             VehicleOdometry, '/drone0/fmu/in/vehicle_visual_odometry', self.external_estimator_callback, qos_mocap)
         self.vehicle_rates_subcriber = self.create_subscription(
             VehicleRatesSetpoint, drone_prefix+'/fmu/out/vehicle_rates_setpoint', self.vehicle_rates_setpoint_callback, qos_drone)
-        
+    #FIXME
+        self.depth_sub = zch.create_zed_depth_subscriber(
+            self,
+            qos=qos_drone,
+            depth_topic='/zed/zed_node/depth/depth_registered',
+            camera_info_topic='/zed/zed_node/left/camera_info'
+        )
+    #
         # Create publishers
         self.vehicle_command_publisher = self.create_publisher(VehicleCommand,drone_prefix+'/fmu/in/vehicle_command', qos_drone)
         self.offboard_control_mode_publisher = self.create_publisher(OffboardControlMode,drone_prefix+'/fmu/in/offboard_control_mode', qos_drone)
@@ -259,7 +276,7 @@ class FlightCommand(Node):
         self.ready_active     = False
         self.spin_cycle       = False
 
-#NOTE streamline testing non-mpc pilots
+    #NOTE streamline testing non-mpc pilots
         if not self.isNN:
             # MPC case: unpack the precomputed trajectory exactly as you do today
             self.Tpi = tXUi[0, :]                             # time vector
@@ -289,7 +306,7 @@ class FlightCommand(Node):
             record_duration = self.Tpi[-1] + self.t_lg        # 
 
         # Initialize control variables
-#NOTE commented out variables don't exist for RRT* generated tXUi
+    #NOTE commented out variables don't exist for RRT* generated tXUi
         self.node_start = False                                 # Node start flag
         self.node_status_informed = False                       # Node status informed flag
         # self.Tpi,self.CPi = Tpi,CPi                             # trajectory time and control points
@@ -518,12 +535,19 @@ class FlightCommand(Node):
         # zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
         if self.sm == StateMachine.ACTIVE:
             # Active/Spin: use body-rate control
-            zch.heartbeat_offboard_control_mode(
-                self.get_current_timestamp_time(),
-                self.offboard_control_mode_publisher,
-                body_rate=True,
-                velocity=False
-            )
+            if self.active_control == 'range_velocity':
+                zch.heartbeat_offboard_control_mode(
+                    self.get_current_timestamp_time(),
+                    self.offboard_control_mode_publisher,
+                    body_rate=False, velocity=True
+                )
+            else:
+                zch.heartbeat_offboard_control_mode(
+                    self.get_current_timestamp_time(),
+                    self.offboard_control_mode_publisher,
+                    body_rate=True, velocity=False
+                )
+
         
         elif self.sm == StateMachine.HOLD:
             # Hold: use velocity control for smooth hover
@@ -652,19 +676,43 @@ class FlightCommand(Node):
             if t_tr < (self.Tpi[-1]+self.t_lg):
                 # Compute the reference trajectory current point
                 t_ref = np.min((t_tr,self.Tpi[-1]))                             # Reference time (does not exceed ideal)
+                x_ref, u_ref = self.xref, self.uref
 
-                x_ref = self.xref
-                u_ref = self.uref
+                # === Vision range-control path ===
+                # Pull latest ZED depth & similarity
+                depth_m, _ = self.depth_sub.get_latest()          # created earlier via zch.create_zed_depth_subscriber(...)
+                similarity = self.latest_similarity                # produced in your vision thread
 
-                # Generate vrs command
-                u_act,self.znn,adv,t_sol_ctl = self.ctl.control(t_tr,x_est,u_pr,obj,img,znn)
+                ok, range_m, _ = zch.estimate_range_from_similarity(
+                    similarity, depth_m, top_percent=self.range_top_pct
+                )
+                if ok:
+                    # 2) Compute yaw (world → body forward) from your VO state
+                    x_hat = zch.vo2x(self.vo_est, self.T_e2w)[0:10]      # position/vel + quat
+                    qx, qy, qz, qw = x_hat[6:10]
+                    yaw = np.arctan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz))
 
-                # Send command
-                zch.publish_uvr_command(self.get_current_timestamp_time(),u_act,self.vehicle_rates_setpoint_publisher)
-                
-                # Record data
-                t_sol = np.hstack((t_sol_ctl,time.time()-t0_lp))
-                self.recorder.record(img,t_tr,u_act,x_ref,u_ref,x_est,x_ext,adv,t_sol)
+                    ts = self.get_current_timestamp_time()
+
+                    if self.mission_config["pilot"] == "range_velocity":
+                        # TrajectorySetpoint.velocity forward/back to close range
+                        zch.publish_velocity_toward_range(
+                            ts, yaw, range_m, self.range_target_m,
+                            self.trajectory_setpoint_publisher,
+                            kp=self.range_kp, vmax=self.range_vmax, deadband_m=self.range_deadband
+                        )
+                    else:  # 'range_pitchrate'
+                        # Body pitch-rate nudge to open/close range
+                        zch.publish_pitchrate_toward_range(
+                            ts, range_m, self.range_target_m,
+                            self.vehicle_rates_setpoint_publisher,
+                            k_rate=self.range_k_rate, max_rate=self.range_max_rate
+                        )
+                else:
+                    # No valid depth: hold velocity (hover)
+                    zch.publish_velocity_hold(self.get_current_timestamp_time(), self.trajectory_setpoint_publisher)
+
+
             else:
                 # trajectory has ended → HOLD Position
                 self.policy_duration       = t_tr
@@ -674,9 +722,7 @@ class FlightCommand(Node):
                 self.vision_model.running_min = float('inf')
                 self.vision_model.running_max = float('-inf')
             #
-                # self.hold_state = x_est.copy()
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
-                # self.finding_shutdown = False
                 self.spin_cycle = True
                 self.ready_active = False                                                 # Reset ready active flag
                 self.found = False

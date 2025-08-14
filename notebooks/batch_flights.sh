@@ -22,7 +22,7 @@ for flight in "${FLIGHTS[@]}"; do
   # build the args in an array
   args=( generate-rollouts --config-file "$TMP" )
   
-  # args+=( --validation-mode )
+  args+=( --validation-mode )
 
   # args+=( --use-wandb --wandb-project ssv )
   args+=( --use-wandb --wandb-project ssv \
