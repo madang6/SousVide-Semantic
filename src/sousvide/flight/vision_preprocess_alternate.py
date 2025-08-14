@@ -655,8 +655,6 @@ def depth_display_to_rgb(depth_disp: np.ndarray, target_hw: tuple[int, int] | No
 
     return rgb
 
-
-
 def blend_overlay_gpu(base: np.ndarray,
                       overlay: np.ndarray,
                       alpha: float = 1.00) -> np.ndarray:

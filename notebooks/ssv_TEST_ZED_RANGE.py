@@ -47,38 +47,6 @@ def load_config(path):
 
 # ---------- Viz helpers ----------
 
-def colorize_depth(depth_m: np.ndarray, z_min: float, z_max: float) -> np.ndarray:
-    """
-    Convert a depth image (meters, NaN/inf invalid) to a BGR colormap.
-    Invalid pixels are rendered black. No RuntimeWarnings.
-    """
-    d = depth_m.astype(np.float32, copy=False)
-
-    # Valid mask BEFORE any transforms
-    valid = np.isfinite(d) & (d > 0.0)
-
-    # Guard denom
-    denom = float(z_max - z_min)
-    if denom <= 0 or not np.isfinite(denom):
-        denom = 1.0
-
-    # Build a safe array for normalization: default to z_min, fill valid with clipped depths
-    d_safe = np.full_like(d, z_min, dtype=np.float32)
-    if np.any(valid):
-        d_safe[valid] = np.clip(d[valid], z_min, z_max)
-
-    # Normalize 0..1 only on the safe array (no NaNs/Infs remain)
-    d_norm = (d_safe - z_min) / denom
-    d_norm = np.clip(d_norm, 0.0, 1.0)
-
-    # 0..255 u8 without warnings (+0.5 for round-to-nearest)
-    d_u8 = (d_norm * 255.0 + 0.5).astype(np.uint8)
-
-    # Apply colormap and paint invalid as black
-    cm = cv2.applyColorMap(d_u8, cv2.COLORMAP_TURBO)
-    cm[~valid] = (0, 0, 0)
-    return cm
-
 
 def ensure_hw_match(reference_hw: tuple[int, int], arr: np.ndarray) -> np.ndarray:
     H, W = reference_hw
@@ -238,16 +206,14 @@ def main():
     fps_cam  = cfg.get("camera_fps",    30)                        
     width    = cfg.get("camera_width",  640)                       
     height   = cfg.get("camera_height", 480)                       
-    duration = cfg.get("camera_duration", 10.0)                    
+    duration = cfg.get("camera_duration", 10.0)
 
     # Range estimator params
     top_percent = float(cfg.get("range_top_percent", 10.0))
     min_pixels  = int(cfg.get("range_min_pixels", 200))
-    z_min       = float(cfg.get("range_z_min", 0.3))
-    z_max       = float(cfg.get("range_z_max", 20.0))
 
     # Open camera (same helper)
-    cam = zch.get_camera(height=height, width=width, fps=fps_cam, use_depth=True)
+    cam = zch.get_camera(height=height, width=width, fps=fps_cam, use_depth=0)
     if cam is None:
         raise RuntimeError("Unable to initialize ZED camera.")
 
@@ -312,10 +278,10 @@ def main():
             depth_rgb = vp.depth_display_to_rgb(depth_viz, target_hw=(H, W))
 
             # Optional label
-            depth_rgb = depth_rgb.copy()
-            label = f"Depth (display)  Range est: {range_m:.2f} m" if ok and np.isfinite(range_m) else "Depth (display)  Range est: N/A"
-            cv2.putText(depth_rgb, label, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (10,10,10), 3, cv2.LINE_AA)
-            cv2.putText(depth_rgb, label, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (240,240,240), 1, cv2.LINE_AA)
+            # depth_rgb = depth_rgb.copy()
+            # label = f"Depth (display)  Range est: {range_m:.2f} m" if ok and np.isfinite(range_m) else "Depth (display)  Range est: N/A"
+            # cv2.putText(depth_rgb, label, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (10,10,10), 3, cv2.LINE_AA)
+            # cv2.putText(depth_rgb, label, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (240,240,240), 1, cv2.LINE_AA)
 
             # Append for imageio
             frames_clipseg.append(clipseg_rgb)

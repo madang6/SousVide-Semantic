@@ -244,7 +244,7 @@ class FlightCommand(Node):
         )
 
         # Initalize camera (if exists)
-        self.pipeline = zch.get_camera(cam_dim[0],cam_dim[1],cam_fps)
+        self.pipeline = zch.get_camera(cam_dim[0],cam_dim[1],cam_fps,use_depth=self.use_depth)
         if self.pipeline is not None:
             self.cam_dim,self.cam_fps = cam_dim,cam_fps
         else:

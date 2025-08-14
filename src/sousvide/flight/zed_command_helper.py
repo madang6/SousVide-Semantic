@@ -101,7 +101,7 @@ def publish_velocity_toward_range(
     ts.yawspeed     = float('nan')
     traj_sp_pub.publish(ts)
 
-def get_camera(height: int, width: int, fps: int) -> sl.Camera:
+def get_camera(height: int, width: int, fps: int, use_depth: int = 0) -> sl.Camera:
     """Initialize the ZED camera."""
     print("Initializing ZED camera if available...")
 
@@ -111,6 +111,29 @@ def get_camera(height: int, width: int, fps: int) -> sl.Camera:
         init_params = sl.InitParameters()
         init_params.camera_resolution = sl.RESOLUTION.VGA  # Automatically set resolution
         init_params.camera_fps = fps  # Set the camera FPS
+
+        if use_depth == 0:
+            init_params.depth_mode = sl.DEPTH_MODE.NEURAL_LIGHT  # Neural mode
+            init_params.coordinate_units = sl.UNIT.METER
+            init_params.depth_minimum_distance = 0.3       # 0.3 m
+            init_params.depth_maximum_distance = 12.0      # 12 m
+            init_params.depth_stabilization = 30           # % (0–100 int, not bool)
+
+            # Runtime params from the screenshots
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.BRIGHTNESS, 4)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.CONTRAST, 4)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.HUE, 0)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.SATURATION, 4)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.SHARPNESS, 3)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.GAMMA, 5)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.WHITEBALANCE_TEMPERATURE, 0)  # Auto adjust disabled
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.GAIN, 4)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.EXPOSURE, 34)
+
+            # Optional: you can set confidence thresholds if API version supports it
+            runtime_params = sl.RuntimeParameters()
+            runtime_params.confidence_threshold = 95
+            runtime_params.texture_confidence_threshold = 100
 
         err = camera.open(init_params)
         if err != sl.ERROR_CODE.SUCCESS:
