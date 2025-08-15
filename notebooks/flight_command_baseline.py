@@ -199,7 +199,7 @@ class FlightCommand(Node):
             self.range_vmax       = float(mission_config.get('range_vmax', 0.6))
             self.range_deadband   = float(mission_config.get('range_deadband', 0.05))
             self.range_k_rate     = float(mission_config.get('range_k_rate', 0.5))
-            self.range_max_rate   = float(mission_config.get('range_max_rate', 0.3))
+            self.range_max_rate   = float(mission_config.get('range_max_rate', 0.3))            
         else:
             self.isNN = True
             self.use_depth = False

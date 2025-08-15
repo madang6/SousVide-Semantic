@@ -132,24 +132,6 @@ def main():
         frames_depth = []
         frame_count = 0
         t0 = time.time()
-        
-    # ---------- CLIPSeg Noise Test ----------
-        prompt = cfg.get("prompt", "")
-        print(f"Prompt set to {prompt}")
-        hf_model = cfg.get("hf_model", "CIDAS/clipseg-rd64-refined")
-        onnx_model_path = cfg.get("onnx_model_path")
-        if onnx_model_path is None:
-            print("Initializing CLIPSegHFModel (PyTorch)…")
-            model = vp.CLIPSegHFModel(hf_model=hf_model)               
-        else:
-            onnx_model_path = os.path.expanduser(onnx_model_path)
-            print("Initializing CLIPSegHFModel (ONNX)…")
-            model = vp.CLIPSegHFModel(                                 
-                hf_model=hf_model,
-                onnx_model_path=onnx_model_path,
-                onnx_model_fp16_path=cfg.get("onnx_model_fp16_path", None),
-            )
-    # ---------- END CLIPSeg Noise Test ----------
 
         try:
             while (time.time() - t0) < float(duration):
@@ -157,22 +139,6 @@ def main():
                 img_np, xyz_np, depth_viz, t_ms = zch.get_image(cam, use_depth=True)
                 if depth_viz is None:
                     continue
-
-            # ---------- CLIPSeg Noise Test ----------
-                # ZED often returns BGRA for VIEW.LEFT; convert to RGB for the model
-                img_bgr = img_np[..., :3] if img_np.shape[2] >= 3 else img_np
-                frame_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-
-                out = model.clipseg_hf_inference(
-                    frame_rgb,
-                    prompt,
-                    resize_output_to_input=True,
-                    use_refinement=False,
-                    use_smoothing=False,
-                    scene_change_threshold=1.0,
-                    verbose=False,
-                )
-            # ---------- END CLIPSeg Noise Test ----------
 
                 # Depth display → RGB for imageio
                 H, W = depth_viz.shape[:2]

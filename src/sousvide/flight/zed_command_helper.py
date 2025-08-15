@@ -119,17 +119,6 @@ def get_camera(height: int, width: int, fps: int, use_depth: bool = False) -> sl
             init_params.depth_maximum_distance = 12.0      # 12 m
             init_params.depth_stabilization = 30           # % (0–100 int, not bool)
 
-            # Runtime params from the screenshots
-            camera.set_camera_settings(sl.VIDEO_SETTINGS.BRIGHTNESS, 4)
-            camera.set_camera_settings(sl.VIDEO_SETTINGS.CONTRAST, 4)
-            camera.set_camera_settings(sl.VIDEO_SETTINGS.HUE, 0)
-            camera.set_camera_settings(sl.VIDEO_SETTINGS.SATURATION, 4)
-            camera.set_camera_settings(sl.VIDEO_SETTINGS.SHARPNESS, 3)
-            camera.set_camera_settings(sl.VIDEO_SETTINGS.GAMMA, 5)
-            camera.set_camera_settings(sl.VIDEO_SETTINGS.WHITEBALANCE_TEMPERATURE, 0)  # Auto adjust disabled
-            camera.set_camera_settings(sl.VIDEO_SETTINGS.GAIN, 4)
-            camera.set_camera_settings(sl.VIDEO_SETTINGS.EXPOSURE, 34)
-
             # Optional: you can set confidence thresholds if API version supports it
             runtime_params = sl.RuntimeParameters()
             runtime_params.confidence_threshold = 95
@@ -139,6 +128,17 @@ def get_camera(height: int, width: int, fps: int, use_depth: bool = False) -> sl
         if err != sl.ERROR_CODE.SUCCESS:
             print(f"Camera Open Error: {repr(err)}. Exiting program.")
             exit()
+
+        if use_depth == True:
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.BRIGHTNESS, 4)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.CONTRAST, 4)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.HUE, 0)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.SATURATION, 4)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.SHARPNESS, 3)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.GAMMA, 5)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.WHITEBALANCE_TEMPERATURE, 0)  # Auto adjust disabled
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.GAIN, 4)
+            camera.set_camera_settings(sl.VIDEO_SETTINGS.EXPOSURE, 34)
 
         print("Camera found!!!")
         return camera
