@@ -293,8 +293,8 @@ class FlightCommand(Node):
         self.vo_est = VehicleOdometry()                         # current state vector (estimated)
         self.vo_ext = VehicleOdometry()                         # current state vector (external)
         self.vrs = VehicleRatesSetpoint()                       # current vehicle rates setpoint
-        self.znn = (torch.zeros(self.ctl.model.Nz)              # current visual feature vector
-                    if isinstance(self.ctl,Pilot) else None)   
+        # self.znn = (torch.zeros(self.ctl.model.Nz)              # current visual feature vector
+        #             if isinstance(self.ctl,Pilot) else None)   
 
         # State Machine and Failsafe variables
         self.sm = StateMachine.INIT                                    # state machine
@@ -306,7 +306,7 @@ class FlightCommand(Node):
         self.recorder = rf.FlightRecorder(
             drone_config["nx"],
             drone_config["nu"],
-            self.ctl.hz,
+            hz,
             record_duration,
             cam_dim,
             self.obj,
@@ -321,7 +321,7 @@ class FlightCommand(Node):
         self.pilot_name = mission_config["pilot"]
 
         # Create a timer to publish control commands
-        self.cmdLoop = self.create_timer(1/self.ctl.hz, self.commander)
+        self.cmdLoop = self.create_timer(dt, self.commander)
 
         # Earth to World Pose
         self.T_e2w = np.eye(4)
@@ -335,28 +335,28 @@ class FlightCommand(Node):
         print('Scene Name      :',mission_config["scene"])
         print('Pilot Name       :',mission_config["pilot"])
         print('Quad Name        :',drone_config["name"])
-        print('Control Frequency:',self.ctl.hz)
+        print('Control Frequency:',hz)
         print('Images Per Second:',mission_config["images_per_second"])
         print('Failsafe Tolerances (q_init,z_init):',mission_config["failsafes"]["attitude_tolerance"],mission_config["failsafes"]["height_tolerance"])
         print('=====================================================================')
-        if self.isNN is False:
-            Qk,Rk = np.diagonal(self.ctl.Qk),np.diagonal(self.ctl.Rk)
-            QN = np.diagonal(self.ctl.QN)
+        # if self.isNN is False:
+        #     Qk,Rk = np.diagonal(self.ctl.Qk),np.diagonal(self.ctl.Rk)
+        #     QN = np.diagonal(self.ctl.QN)
 
-            print('--------------------------> MPC Weights <----------------------------')
-            print('Stagewise Weights:')
-            print('Position:',Qk[0:3])
-            print('Velocity:',Qk[3:6])
-            print('Attitude:',Qk[6:10])
-            print('')
-            print('Thrust  :',Rk[0])
-            print('Rates   :',Rk[1:4])
-            print('')
-            print('Terminal Weights:')
-            print('Position:',QN[0:3])
-            print('Velocity:',QN[3:6])
-            print('Attitude:',QN[6:10])
-            print('=====================================================================')
+        #     print('--------------------------> MPC Weights <----------------------------')
+        #     print('Stagewise Weights:')
+        #     print('Position:',Qk[0:3])
+        #     print('Velocity:',Qk[3:6])
+        #     print('Attitude:',Qk[6:10])
+        #     print('')
+        #     print('Thrust  :',Rk[0])
+        #     print('Rates   :',Rk[1:4])
+        #     print('')
+        #     print('Terminal Weights:')
+        #     print('Position:',QN[0:3])
+        #     print('Velocity:',QN[3:6])
+        #     print('Attitude:',QN[6:10])
+        #     print('=====================================================================')
 
         print('--------------------> Trajectory Information <-----------------------')
         print('---------------------------------------------------------------------')
@@ -398,7 +398,10 @@ class FlightCommand(Node):
             if self.pipeline:
                 zch.close_camera(self.pipeline)
             if not self.isNN:
-                self.ctl.clear_generated_code()
+                try:
+                    self.ctl.clear_generated_code()
+                except Exception as e:
+                    print(f"Error during controller cleanup: {e}. This is OK in this script")
         except Exception as e:
             print(f"Error during device cleanup: {e}")
 
@@ -476,32 +479,32 @@ class FlightCommand(Node):
         x, y, z, w = q
         return np.arctan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
 
-    def build_yaw_qp(self, xyz, yaw0, t0):
-        """Background build of the spin trajectory."""
-        cfg = th.generate_spin_keyframes(
-            name=f"loiter_spin_{t0:.2f}",
-            Nco=6,
-            xyz=xyz,
-            theta0=yaw0, theta1=yaw0,
-            time=5.0
-        )
-        out = ms.solve(cfg)
-        if out is False:
-            print(f"Spin QP failed at t0={t0:.2f}")
-            return
-        self.Tps_spin, self.CPs_spin = out
-        self.tXUd_spin       = th.TS_to_tXU(self.Tps_spin, self.CPs_spin,
-                                            self.drone_config,
-                                            self.ctl.hz)
-        # self.spin_start_time = t0
-        self.spin_ready     = True
-        print("Spin QP ready")
+    # def build_yaw_qp(self, xyz, yaw0, t0):
+    #     """Background build of the spin trajectory."""
+    #     cfg = th.generate_spin_keyframes(
+    #         name=f"loiter_spin_{t0:.2f}",
+    #         Nco=6,
+    #         xyz=xyz,
+    #         theta0=yaw0, theta1=yaw0,
+    #         time=5.0
+    #     )
+    #     out = ms.solve(cfg)
+    #     if out is False:
+    #         print(f"Spin QP failed at t0={t0:.2f}")
+    #         return
+    #     self.Tps_spin, self.CPs_spin = out
+    #     self.tXUd_spin       = th.TS_to_tXU(self.Tps_spin, self.CPs_spin,
+    #                                         self.drone_config,
+    #                                         self.ctl.hz)
+    #     # self.spin_start_time = t0
+    #     self.spin_ready     = True
+    #     print("Spin QP ready")
 
     def commander(self) -> None:
         """Main control loop for generating commands."""
         # Looping Callback Actions
         x_est,u_pr = zch.vo2x(self.vo_est,self.T_e2w)[0:10],zch.vrs2uvr(self.vrs)
-        x_ext,znn,obj = zch.vo2x(self.vo_ext)[0:10],self.znn,self.obj
+        x_ext,obj = zch.vo2x(self.vo_ext)[0:10],self.obj
         x_est[6:10] = th.obedient_quaternion(x_est[6:10],self.xref[6:10])
         x_ext[6:10] = th.obedient_quaternion(x_ext[6:10],self.xref[6:10])
 
@@ -511,7 +514,7 @@ class FlightCommand(Node):
         # zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
         if self.sm == StateMachine.ACTIVE:
             # Active/Spin: use body-rate control
-            if self.active_control == 'range_velocity':
+            if self.pilot_name == 'range_velocity':
                 zch.heartbeat_offboard_control_mode(
                     self.get_current_timestamp_time(),
                     self.offboard_control_mode_publisher,
@@ -653,7 +656,7 @@ class FlightCommand(Node):
                 depth_m    = self.latest_depth
                 similarity = self.latest_similarity
 
-                ok, range_m = zch.estimate_range_from_similarity(
+                ok, range_m = zch.euclidean_range_from_similarity(
                     similarity, depth_m, top_percent=self.range_top_pct
                 )
                 if ok:
