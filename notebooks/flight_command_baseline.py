@@ -195,11 +195,16 @@ class FlightCommand(Node):
             # range controller tunables
             self.range_target_m   = float(mission_config.get('range_target_m', 2.0))
             self.range_top_pct    = float(mission_config.get('range_top_percent', 10.0))  # top-P% similarity pixels
+            self.range_min_pixels  = int(mission_config.get("range_min_pixels", 200))
+            self.range_standoff   = float(mission_config.get('range_standoff', 0.5))  # standoff distance in meters
             self.range_kp         = float(mission_config.get('range_kp', 0.6))
             self.range_vmax       = float(mission_config.get('range_vmax', 0.6))
             self.range_deadband   = float(mission_config.get('range_deadband', 0.05))
             self.range_k_rate     = float(mission_config.get('range_k_rate', 0.5))
-            self.range_max_rate   = float(mission_config.get('range_max_rate', 0.3))            
+            self.range_max_rate   = float(mission_config.get('range_max_rate', 0.3))
+
+            self.next_waypoint_world = None
+            self.next_waypoint_body  = None        
         else:
             self.isNN = True
             self.use_depth = False
@@ -257,6 +262,7 @@ class FlightCommand(Node):
         self.vision_started    = False
         self.latest_mask       = None
         self.latest_similarity = None
+        self.latest_depth_xyz  = None
 #has_one_large_high_sim_region
         self.finding_thread     = None
         self.finding_shutdown   = False
@@ -397,11 +403,11 @@ class FlightCommand(Node):
         try:
             if self.pipeline:
                 zch.close_camera(self.pipeline)
-            if not self.isNN:
-                try:
-                    self.ctl.clear_generated_code()
-                except Exception as e:
-                    print(f"Error during controller cleanup: {e}. This is OK in this script")
+            # if not self.isNN:
+            #     try:
+            #         self.ctl.clear_generated_code()
+            #     except Exception as e:
+            #         print(f"Error during controller cleanup: {e}. This is OK in this script")
         except Exception as e:
             print(f"Error during device cleanup: {e}")
 
@@ -441,13 +447,13 @@ class FlightCommand(Node):
     def async_vision_loop(self):
         """Continuously grab + infer, store only the newest mask."""
         while not self.vision_shutdown:
-            imgz, imgd, _, _ = zch.get_image(self.pipeline, use_depth=self.use_depth)
+            imgz, depth_xyz, _, _ = zch.get_image(self.pipeline, use_depth=self.use_depth)
             if imgz is None:
                 time.sleep(0.01)
                 continue
             t0_img = time.time()
             frame = cv2.cvtColor(imgz, cv2.COLOR_BGR2RGB)
-            mask, similarity = self.vision_model.clipseg_hf_inference(
+            mask, raw_similarity = self.vision_model.clipseg_hf_inference(
                 frame,
                 self.prompt,
                 resize_output_to_input=True,
@@ -456,9 +462,9 @@ class FlightCommand(Node):
                 scene_change_threshold=1.0,
                 verbose=False
             )
-            self.latest_depth = imgd
+            self.latest_depth_xyz = depth_xyz
             self.latest_mask = mask
-            self.latest_similarity = similarity
+            self.latest_similarity = raw_similarity
             t_elap = time.time() - t0_img
             self.img_times.append(t_elap)
         
@@ -510,6 +516,7 @@ class FlightCommand(Node):
 
         img = self.latest_mask
         similarity = self.latest_similarity
+        depth = self.latest_depth_xyz
 
         # zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
         if self.sm == StateMachine.ACTIVE:
@@ -574,6 +581,7 @@ class FlightCommand(Node):
             self.spin_cycle   = True
             self.found = False
             self.finding_shutdown = False
+            self.last_print_time = 0.0
             self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
             zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
             self.sm = StateMachine.HOLD
@@ -648,41 +656,14 @@ class FlightCommand(Node):
 
             # Check if we are still in the trajectory
             if t_tr < (self.Tpi[-1]+self.t_lg):
-                # Compute the reference trajectory current point
-                t_ref = np.min((t_tr,self.Tpi[-1]))                             # Reference time (does not exceed ideal)
-                x_ref, u_ref = self.xref, self.uref
-
-                # Pull latest ZED depth & similarity
-                depth_m    = self.latest_depth
-                similarity = self.latest_similarity
-
-                ok, range_m = zch.euclidean_range_from_similarity(
-                    similarity, depth_m, top_percent=self.range_top_pct
+                # Publish a TrajectorySetpoint to the fixed world waypoint (position only; others NaN)
+                zch.publish_position_setpoint(
+                    self.get_current_timestamp_time(),
+                    x_ext[0:3],
+                    self.next_waypoint_world,
+                    self.trajectory_setpoint_publisher
                 )
-                if ok:
-                    # Compute yaw (world → body forward) from your VO state
-                    x_hat = zch.vo2x(self.vo_est, self.T_e2w)[0:10]      # position/vel + quat
-                    qx, qy, qz, qw = x_hat[6:10]
-                    yaw = np.arctan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz))
 
-                    ts = self.get_current_timestamp_time()
-
-                    if self.pilot_name == "range_velocity":
-                        # TrajectorySetpoint.velocity forward/back to close range
-                        zch.publish_velocity_toward_range(
-                            ts, yaw, range_m, self.range_target_m,
-                            self.trajectory_setpoint_publisher,
-                            kp=self.range_kp, vmax=self.range_vmax, deadband_m=self.range_deadband
-                        )
-                    else:  # If this block runs you've done something wrong!
-                        print(f"Invalid pilot type {self.pilot_name} detected, this script only supports 'range_velocity', landing…")
-                        self.sm = StateMachine.LAND
-                else:
-                    self.ready_active = True
-                    self.spin_cycle   = False
-                    self.found        = False
-                    self.t_tr0        = self.get_clock().now().nanoseconds/1e9
-                    self.sm           = StateMachine.HOLD
             else:
                 # trajectory has ended → HOLD Position
                 self.policy_duration       = t_tr
@@ -713,19 +694,68 @@ class FlightCommand(Node):
                 print("Detector Thread Sleeping; Switching to Active")
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
                 self.ready_active = False                                       # Reset ready active flag
+                self.active_arm   = False
                 self.found = False
+                self.last_print_time = 0.0
                 zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
 
                 self.sm = StateMachine.ACTIVE
                 print('=====================================================================')
                 print('ACTIVE Started.')
-            elif (self.ready_active is False and self.spin_cycle is True) and t_tr > 3.0:
+            elif (self.ready_active is False and self.spin_cycle is True) and t_tr > 4.0:
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
                 zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
 
                 self.sm = StateMachine.SPIN
                 print('=====================================================================')
                 print('SPIN Started.')
+            elif self.pilot_name == "range_velocity" and t_tr < 6.0 and (self.active_arm is True and self.spin_cycle is False):
+                # One-time target solve while HOLDing
+                ok_pose, p_cam, (u_star, v_star), _ = zch.pose_from_similarity_xyz(
+                    similarity, depth,
+                    top_percent=self.range_top_pct,
+                    min_pixels=self.range_min_pixels
+                )
+
+                if not ok_pose:
+                    print("[HOLD→TARGET] No valid pose yet (insufficient ROI/depth).")
+                    return
+
+                # cam -> body -> world
+                T_cb = np.array(self.drone_config["T_c2b"], dtype=np.float64)
+
+                p_body, p_world_target, R_bw = zch.build_world_target_from_cam_point(p_cam, T_cb, x_ext)
+
+                # Choose the final waypoint: either the true target, or a standoff along the same ray
+                # standoff_m = getattr(self, "standoff_m", 0.0)  # set in config; 0.0 => touch target
+                standoff_m = self.range_standoff
+                if standoff_m > 0.0:
+                    r_body   = np.linalg.norm(p_body) + 1e-9
+                    dir_body = p_body / r_body
+                    # stop short by standoff_m (don’t pass through the target)
+                    step_world = R_bw @ (max(r_body - standoff_m, 0.0) * dir_body)
+                    p_world_waypoint = x_ext[0:3] + step_world
+                else:
+                    p_world_waypoint = p_world_target
+
+                # Save for ACTIVE
+                self.next_waypoint_world = p_world_waypoint.astype(np.float32)
+                self.next_waypoint_body  = p_body.astype(np.float32)
+                # self.target_ready        = True
+                self.ready_active        = True
+                # self.target_timestamp    = self.get_clock().now().nanoseconds/1e9
+
+                now = time.time()
+                if now - self.last_print_time >= 0.5:  # 2 Hz = every 0.5s
+                    print(
+                        "[HOLD→TARGET] cam={}  body={}  world_target={}  world_waypoint={}".format(
+                            np.asarray(p_cam, dtype=float).round(3),
+                            np.asarray(p_body, dtype=float).round(3),
+                            np.asarray(p_world_target, dtype=float).round(3),
+                            np.asarray(p_world_waypoint, dtype=float).round(3),
+                        )
+                    )
+                    self.last_print_time = now
             elif t_tr < 6.0:
                 return
             else:
@@ -760,11 +790,11 @@ class FlightCommand(Node):
                     self.sim_score = 0.0
                     self.area_frac = 0.0
                     self.found = False
-                    self.active_arm = False
+                    # self.active_arm = True
                     self.vision_model.loiter_max = 0.0
                     self.vision_model.loiter_area_frac = 0.0
                     
-                    self.ready_active = True
+                    # self.ready_active = True
                     self.spin_cycle = False
                     self.sm                    = StateMachine.HOLD
                     print(f'Query {self.prompt} Found → HOLDing Position')

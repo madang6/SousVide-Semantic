@@ -15,88 +15,131 @@ from px4_msgs.msg import (
     ActuatorMotors
 )
 
-def euclidean_range_from_similarity(
-    similarity: np.ndarray,
-    xyz_m: np.ndarray,               # HxWx3 or HxWx4 from sl.MEASURE.XYZ
-    top_percent: float = 10.0,
-    min_pixels: int = 200,
-    max_abs_coord: float = 1e3,      # clip XYZ to ±1000 m to avoid overflow
-    r_min: float = 0.05,
-    r_max: float = 200.0,
-) -> tuple[bool, float]:
-    if similarity is None or xyz_m is None or xyz_m.ndim != 3 or xyz_m.shape[2] < 3:
-        return False, float('nan')
+def pose_from_similarity_xyz(similarity: np.ndarray,
+                             xyz_m: np.ndarray,
+                             top_percent: float = 10.0,
+                             min_pixels: int = 200):
+    """
+    Returns:
+      ok: bool
+      p_cam: (3,) float [X,Y,Z] in meters, camera frame (Z forward; ZED convention)
+      uv_centroid: (u*, v*) int pixel centroid of ROI (for aiming/visualization)
+      mask: boolean mask of selected ROI
+    """
+    if xyz_m is None or xyz_m.ndim != 3 or xyz_m.shape[2] < 3:
+        return False, None, None, None
 
-    # Use only X,Y,Z (ignore 4th channel if present)
-    xyz = xyz_m[..., :3].astype(np.float32, copy=False)
-
-    # Ensure shapes match (nearest keeps pixel alignment)
     Hs, Ws = similarity.shape[:2]
-    Hx, Wx = xyz.shape[:2]
+    Hx, Wx = xyz_m.shape[:2]
     if (Hs, Ws) != (Hx, Wx):
-        xyz = cv2.resize(xyz, (Ws, Hs), interpolation=cv2.INTER_NEAREST)
+        xyz_m = cv2.resize(xyz_m, (Ws, Hs), interpolation=cv2.INTER_NEAREST)
 
     sim = similarity.astype(np.float32, copy=False)
-
-    # Top-P% threshold without sorting whole array
     n = sim.size
-    k = max(0, min(n - 1, int((1.0 - top_percent / 100.0) * n)))
+    k = max(0, min(n - 1, int((1.0 - top_percent/100.0) * n)))
     thr = np.partition(sim.ravel(), k)[k]
+    mask = (sim >= thr)
 
-    # Gather ROI XYZ
-    roi = xyz[sim >= thr]                    # shape (N, 3)
-    if roi.size < 3 * max(10, min_pixels):
-        return False, float('nan')
+    if mask.sum() < min_pixels:
+        return False, None, None, mask
 
-    # Filter out non-finite rows
-    finite = np.all(np.isfinite(roi), axis=1)
-    roi = roi[finite]
-    if roi.shape[0] < min_pixels:
-        return False, float('nan')
+    roi_xyz = xyz_m[mask, :3]
+    finite = np.all(np.isfinite(roi_xyz), axis=1)
+    roi_xyz = roi_xyz[finite]
+    if roi_xyz.shape[0] < min_pixels:
+        return False, None, None, mask
 
-    # Clip absurd magnitudes to avoid overflow when squaring
-    np.clip(roi, -max_abs_coord, max_abs_coord, out=roi)
+    # Robust 3D point in camera frame
+    p_cam = np.median(roi_xyz, axis=0).astype(np.float32)  # [X,Y,Z]
 
-    # Stable Euclidean norm (float64 + hypot chaining)
-    x = roi[:, 0].astype(np.float64, copy=False)
-    y = roi[:, 1].astype(np.float64, copy=False)
-    z = roi[:, 2].astype(np.float64, copy=False)
-    dist = np.hypot(np.hypot(x, y), z)
+    # Pixel centroid (for aiming)
+    ys, xs = np.nonzero(mask)
+    if ys.size:
+        uv_centroid = (int(np.median(xs)), int(np.median(ys)))
+    else:
+        uv_centroid = (None, None)
 
-    # Keep plausible ranges
-    dist = dist[(dist > r_min) & (dist < r_max)]
-    if dist.size < min_pixels:
-        return False, float('nan')
+    p_body = [p_cam[2], p_cam[0], -p_cam[1]]
 
-    return True, float(np.nanmedian(dist))
+    return True, p_body, uv_centroid, mask
 
-def publish_velocity_toward_range(
-    timestamp: int,
-    current_yaw_rad: float,
-    current_range_m: float,
-    target_range_m: float,
-    traj_sp_pub: Publisher,
-    kp: float = 0.6,
-    vmax: float = 0.6,
-    deadband_m: float = 0.05
-) -> None:
-    """Forward/back velocity along heading to close range error."""
-    if not np.isfinite(current_range_m):
-        publish_velocity_hold(timestamp, traj_sp_pub)
-        return
+def cam_xyz_to_body_ned(p_cam_xyz: np.ndarray) -> np.ndarray:
+    """
+    Map a point from ZED camera frame (X right, Y down, Z forward)
+    to drone BODY NED (X north/forward, Y east/right, Z down).
+    Assumes camera optical axis aligns with body +X (north/forward) and is level.
+    """
+    Xc, Yc, Zc = float(p_cam_xyz[0]), float(p_cam_xyz[1]), float(p_cam_xyz[2])
+    # Simple axis remap: X_ned = Z_cam, Y_ned = X_cam, Z_ned = Y_cam
+    return np.array([Zc, Xc, Yc], dtype=np.float32)
 
-    err = float(current_range_m - target_range_m)  # >0: too far
-    vx_body = 0.0 if abs(err) <= deadband_m else float(np.clip(kp * err, -vmax, vmax))
+def quat_xyzw_to_dcm_body_to_world(q_xyzw: np.ndarray) -> np.ndarray:
+    """
+    q = [x, y, z, w] (body->world). Returns 3x3 DCM R_BW.
+    Normalizes q for safety.
+    """
+    x, y, z, w = map(float, q_xyzw)
+    n = np.sqrt(x*x + y*y + z*z + w*w)
+    if n < 1e-9:
+        # Identity fallback
+        return np.eye(3, dtype=np.float64)
+    x, y, z, w = x/n, y/n, z/n, w/n
 
-    c, s = np.cos(current_yaw_rad), np.sin(current_yaw_rad)
-    vx_ned = vx_body * c
-    vy_ned = vx_body * s
+    xx, yy, zz = x*x, y*y, z*z
+    xy, xz, yz = x*y, x*z, y*z
+    wx, wy, wz = w*x, w*y, w*z
 
-    ts = TrajectorySetpoint(timestamp=timestamp)
-    ts.velocity     = [vx_ned, vy_ned, 0.0]
-    ts.position     = [float('nan')]*3
-    ts.acceleration = [float('nan')]*3
-    ts.jerk         = [float('nan')]*3
+    # Standard right-handed DCM for q = [x,y,z,w]
+    R = np.array([
+        [1 - 2*(yy + zz),     2*(xy - wz),        2*(xz + wy)],
+        [    2*(xy + wz),  1 - 2*(xx + zz),       2*(yz - wx)],
+        [    2*(xz - wy),      2*(yz + wx),   1 - 2*(xx + yy)]
+    ], dtype=np.float64)
+    return R
+
+def cam_to_body_from_Tcb(p_cam_xyz, T_cb_4x4):
+    p = np.asarray(p_cam_xyz, dtype=np.float64).reshape(3)
+    T = np.asarray(T_cb_4x4, dtype=np.float64)
+    R_cb = T[:3, :3]; t_cb = T[:3, 3]
+    return (R_cb @ p) + t_cb
+
+def body_to_world(p_body: np.ndarray, R_bw: np.ndarray, p_world_current: np.ndarray) -> np.ndarray:
+    """
+    p_body: [X,Y,Z] in body NED
+    R_bw:  3x3 body->world rotation from x_ext quaternion
+    p_world_current: current vehicle position [X,Y,Z] in world NED from x_ext[0:3]
+    """
+    return (R_bw @ p_body.reshape(3,1)).ravel() + p_world_current.reshape(3)
+
+def build_world_target_from_cam_point(p_cam_xyz, T_cb_4x4, x_ext):
+    p_cam = np.asarray(p_cam_xyz, dtype=np.float64).reshape(3)
+    T_cb  = np.asarray(T_cb_4x4, dtype=np.float64)
+    x_ext = np.asarray(x_ext, dtype=np.float64)
+
+    p_body = cam_to_body_from_Tcb(p_cam, T_cb)
+
+    p_world_current = x_ext[0:3]
+    q_xyzw = x_ext[6:10]
+    R_bw = quat_xyzw_to_dcm_body_to_world(q_xyzw)
+
+    p_world = (R_bw @ p_body) + p_world_current
+    # Ensure ndarray returns:
+    return p_body.astype(np.float64), p_world.astype(np.float64), R_bw
+
+def publish_position_setpoint(timestamp: int,
+                              current_position: np.ndarray,
+                              desired_position_ned: np.ndarray,
+                              traj_sp_pub) -> None:
+    ts = TrajectorySetpoint(timestamp=int(timestamp))  # PX4 expects int (µs)
+    # Hold current Z, command XY
+    ts.position = [
+        float(desired_position_ned[0]),
+        float(desired_position_ned[1]),
+        float(current_position[2]),
+    ]
+    ts.velocity     = [float('nan'), float('nan'), float('nan')]
+    ts.acceleration = [float('nan'), float('nan'), float('nan')]
+    ts.jerk         = [float('nan'), float('nan'), float('nan')]
     ts.yaw          = float('nan')
     ts.yawspeed     = float('nan')
     traj_sp_pub.publish(ts)
@@ -238,7 +281,6 @@ def am2unf(am:ActuatorMotors) -> np.ndarray:
 def vrs2uvr(vr:VehicleRatesSetpoint) -> np.ndarray:
     """Convert vehicle rates setpoint to vehicle rates input."""
     return np.array([vr.thrust_body[2],vr.roll,vr.pitch,vr.yaw])
-
 
 # def publish_position_hold(timestamp: int,
 #                              x_est: np.ndarray,
