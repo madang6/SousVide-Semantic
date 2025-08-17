@@ -675,6 +675,7 @@ class FlightCommand(Node):
             #
                 self.vision_model.running_min = float('inf')
                 self.vision_model.running_max = float('-inf')
+                self.vision_model._max_prob_logit = float('-inf')
 
                 self.alt_hold = float('nan')
 

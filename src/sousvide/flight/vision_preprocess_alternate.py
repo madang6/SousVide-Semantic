@@ -520,13 +520,22 @@ class CLIPSegHFModel:
 #FIXME
             prob = 1.0 / (1.0 + np.exp(-arr))
             # regular_prob = (prob * 255).astype(np.uint8)
+            cur_prob_max = float(arr.max())
+            self._max_prob_logit = max(getattr(self, "_max_prob_logit", cur_prob_max), cur_prob_max)
+            global_max_prob = 1.0 / (1.0 + np.exp(-self._max_prob_logit))
+           # —– 4) scale your current mask so that
+           #      prob == global_max_prob → 1.0 (full brightness),
+           #      lower probs → proportionally dimmer
+            prob_scaled = prob / (global_max_prob + 1e-8)
+            prob_scaled = np.clip(prob_scaled, 0.0, 1.0)
 #
             scaled = self._rescale_global(arr)
             mask_u8 = (scaled * 255).astype(np.uint8)
 
         if resize_output_to_input:
 #FIXME
-            scaled = np.array(Image.fromarray(prob).resize(img.size, resample=Image.BILINEAR))
+            # prob_scaled = np.array(Image.fromarray(prob).resize(img.size, resample=Image.BILINEAR))
+            prob_scaled = np.array(Image.fromarray(prob_scaled).resize(img.size, resample=Image.BILINEAR))
 #
             mask_u8 = np.array(Image.fromarray(mask_u8).resize(img.size, resample=Image.BILINEAR))
 
@@ -567,7 +576,7 @@ class CLIPSegHFModel:
 
         end = time.time()
         log(f"CLIPSeg inference time: {end - start:.3f} seconds")
-        return overlayed, scaled
+        return overlayed, prob_scaled
     
     
     def loiter_calibrate(self, logits: np.ndarray, active_arm: bool = False) -> None:
