@@ -568,6 +568,8 @@ class CLIPSegHFModel:
         end = time.time()
         log(f"CLIPSeg inference time: {end - start:.3f} seconds")
         return overlayed, scaled
+    
+    
     def loiter_calibrate(self, logits: np.ndarray, active_arm: bool = False) -> None:
         found = False
         H, W = logits.shape

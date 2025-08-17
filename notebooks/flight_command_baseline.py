@@ -808,6 +808,8 @@ class FlightCommand(Node):
                     self.spin_cycle = False
                     self.sm                    = StateMachine.HOLD
                     print(f'Query {self.prompt} Found → HOLDing Position')
+
+                self.recorder.record(img)
             else:
                 self.t_tr0 = self.get_clock().now().nanoseconds / 1e9
 
@@ -826,6 +828,7 @@ class FlightCommand(Node):
                 self.spin_cycle = False
                 self.sm   = StateMachine.HOLD
                 print(f'Query {self.prompt} Not Found → HOLDing Position, Preparing to Land')
+                self.recorder.record(img)
         else:
             # State Actions
             zch.land(self.get_current_timestamp_time(),self.vehicle_command_publisher)
