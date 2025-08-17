@@ -655,16 +655,100 @@ class FlightCommand(Node):
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
 
             # Check if we are still in the trajectory
-            if (t_tr <= (self.Tpi[-1]+self.t_lg)) and (self.trajectory_index < self.trajectory_length-1):
-                desired_position = self.trajectory[self.trajectory_index]
-                # Publish a TrajectorySetpoint to the fixed world waypoint (position only; others NaN)
-                zch.publish_position_setpoint(
+            if (t_tr <= (self.Tpi[-1]+self.t_lg)) and not ((e_par < float(getattr(self, "range_goal_eps", 0.45))) and (np.linalg.norm(e_perp) < 0.2)):
+                now_ts = time.time()
+                dt = max(now_ts - getattr(self, "last_active_ts", now_ts), 1e-3)
+                self.last_active_ts = now_ts
+
+                p_now   = x_est[0:3].astype(np.float64)
+                d_world = self.d_world  # unit, persistent
+
+                # 1) fresh measurement (bearing from uv; depth is noisy)
+                ok_pose, p_cam, uv_centroid, mask = zch.pose_from_similarity_xyz(
+                    similarity, depth,
+                    top_percent=self.range_top_pct,
+                    min_pixels=self.range_min_pixels
+                )
+
+                if ok_pose and uv_centroid is not None and uv_centroid[0] is not None:
+                    K      = np.array(self.drone_config["K_cam"], dtype=np.float64)
+                    d_cam  = zch._pixel_to_cam_ray(K, uv_centroid)
+                    T_cb   = np.array(self.drone_config["T_c2b"], dtype=np.float64)
+                    R_wb   = qc.q_to_R(x_est[6:10])
+                    d_body = (T_cb[:3,:3] @ d_cam)
+                    d_new  = zch._unit(R_wb @ d_body)
+                    # Smooth bearing a bit
+                    d_world = zch._unit(0.8 * d_world + 0.2 * d_new)
+                    self.d_world = d_world
+
+                    # scalar range EMA (use noisy z as measurement, bounded)
+                    r_lo, r_hi = self.r_bounds
+                    z_depth = float(p_cam[2]) if (p_cam is not None and np.isfinite(p_cam[2])) else self.r_hat
+                    self.r_hat = zch._ema_scalar(self.r_hat, z_depth, alpha=0.2, lo=r_lo, hi=r_hi)
+
+                # Predict range using last command (so filter is consistent with motion)
+                v_along_prev = float(np.dot(getattr(self, "v_cmd_prev", np.zeros(3)), d_world))
+                self.r_hat = float(np.clip(self.r_hat - v_along_prev * dt, *self.r_bounds))
+
+                # 2) goal from bearing + standoff; light EMA for stability
+                standoff = float(getattr(self, "range_standoff_m", 0.5))
+                p_goal   = p_now + d_world * max(self.r_hat - standoff, 0.0)
+                self.goal_world_filt = 0.3 * p_goal + 0.7 * getattr(self, "goal_world_filt", p_goal)
+
+                # 3) velocity planning with explicit caps + stopping law
+                e      = self.goal_world_filt - p_now
+                e_par  = float(np.dot(e, d_world))
+                e_perp = e - e_par * d_world
+
+                kp_par  = 1.0
+                kp_perp = 1.0
+                v_max   = float(self.range_vmax)
+                a_max   = float(getattr(self, "range_amax", 2.0))
+
+                # braking cap: v_forward ≤ sqrt(2 a_max e_par)
+                v_brake = np.sqrt(max(0.0, 2.0 * a_max * max(e_par, 0.0)))
+                v_cap_forward = min(v_max, v_brake)
+
+                v_des = kp_par*e_par*d_world + kp_perp*e_perp
+                v_fwd = float(np.dot(v_des, d_world))
+                v_fwd = float(np.clip(v_fwd, -v_max, v_cap_forward))
+                v_lat = v_des - v_fwd * d_world
+                if np.linalg.norm(v_lat) > v_max:
+                    v_lat *= (v_max / np.linalg.norm(v_lat))
+                v_des = v_fwd * d_world + v_lat
+
+                v_cmd = zch._accel_limit(getattr(self, "v_cmd_prev", np.zeros(3)), v_des, a_max, dt)
+                v_cmd[2] = 0.0  # hold altitude (optional)
+
+                d_xy = np.array([d_world[0], d_world[1], 0.0], dtype=np.float64)
+                if np.linalg.norm(d_xy) > 1e-6:
+                    yaw_des = float(np.arctan2(d_world[1], d_world[0]))    # face the ray
+                else:
+                    # near-vertical ray → keep previous command
+                    yaw_des = getattr(self, "yaw_cmd_prev", 0.0)
+
+                # Slew-limit yaw to avoid snap turns
+                yaw_rate_max = float(getattr(self, "yaw_rate_max", np.deg2rad(120.0)))  # rad/s
+                yaw_prev     = getattr(self, "yaw_cmd_prev", yaw_des)
+                dyaw         = zch._wrap_pi(yaw_des - yaw_prev)
+                yaw_cmd      = zch._wrap_pi(yaw_prev + np.clip(dyaw, -yaw_rate_max*dt, yaw_rate_max*dt))
+                self.yaw_cmd_prev = yaw_cmd
+
+                # --- Publish velocity + heading ---
+                zch.publish_velocity_heading_setpoint(
                     self.get_current_timestamp_time(),
-                    self.alt_hold,
-                    desired_position,
+                    v_cmd,
+                    yaw_cmd,
                     self.trajectory_setpoint_publisher
                 )
-                self.trajectory_index += 1  # move to next waypoint for next loop
+                self.v_cmd_prev = v_cmd
+
+                # zch.publish_velocity_setpoint(
+                #     self.get_current_timestamp_time(),
+                #     v_cmd,
+                #     self.trajectory_setpoint_publisher
+                # )
+                # self.v_cmd_prev = v_cmd
 
             else:
                 # trajectory has ended → HOLD Position
@@ -704,6 +788,9 @@ class FlightCommand(Node):
                 self.last_print_time = 0.0
 
                 self.alt_hold = x_est[2] if np.isnan(self.alt_hold) else self.alt_hold
+                R_wb = qc.q_to_R(x_est[6:10])
+                self.yaw_cmd_prev = zch._yaw_from_R(R_wb)   # start from current heading
+
                 zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
 
                 self.sm = StateMachine.ACTIVE
@@ -718,47 +805,53 @@ class FlightCommand(Node):
                 print('SPIN Started.')
             elif self.pilot_name == "range_velocity" and t_tr < 6.0 and (self.active_arm is True and self.spin_cycle is False):
                 current_state = x_est.copy()
-                # One-time target solve while HOLDing
-                ok_pose, p_cam, _, _ = zch.pose_from_similarity_xyz(
+
+                ok_pose, p_cam, uv_centroid, mask = zch.pose_from_similarity_xyz(
                     similarity, depth,
                     top_percent=self.range_top_pct,
                     min_pixels=self.range_min_pixels
                 )
-
-                if not ok_pose:
+                if not ok_pose or uv_centroid is None or uv_centroid[0] is None:
                     print("[HOLD→TARGET] No valid pose yet (insufficient ROI/depth).")
                     return
 
-                # cam -> body -> world
-                T_cb = np.array(self.drone_config["T_c2b"], dtype=np.float64)
+                # Bearing from pixels (ignore depth here)
+                K      = np.array(self.drone_config["K_cam"], dtype=np.float64)  # intrinsics
+                d_cam  = zch._pixel_to_cam_ray(K, uv_centroid)                       # unit ray in cam frame
+                T_cb   = np.array(self.drone_config["T_c2b"], dtype=np.float64)  # cam->body
+                R_wb   = qc.q_to_R(x_est[6:10])                                  # body->world
+                d_body = (T_cb[:3,:3] @ d_cam)
+                d_world = zch._unit(R_wb @ d_body)
 
-                trajectory, dbg = zch.traj_from_target_pose(
-                    x_ext=current_state,
-                    p_cam=p_cam,
-                    T_c2b=T_cb,
-                    dt=self.dt,
-                    total_time=2.0,
-                    v_max=self.range_vmax,
-                    standoff_m=0.5
-                )
-                self.trajectory = trajectory
-                self.trajectory_length = trajectory.shape[0]
+                # Scalar range filter along the ray (use noisy depth as initial guess, bounded)
+                r_lo, r_hi = 0.7, 8.0
+                z_depth = float(p_cam[2]) if (p_cam is not None and np.isfinite(p_cam[2])) else (r_lo + r_hi)/2
+                self.r_hat      = float(np.clip(z_depth, r_lo, r_hi))
+                self.r_bounds   = (float(r_lo), float(r_hi))
+                self.d_world    = d_world.copy()
+                self.v_cmd_prev = np.zeros(3, dtype=np.float64)
+
+                # Initial goal = along the ray minus standoff
+                standoff = float(getattr(self, "range_standoff_m", 0.5))
+                p_now = x_est[0:3].astype(np.float64)
+                self.goal_world_filt = p_now + d_world * max(self.r_hat - standoff, 0.0)
 
                 self.ready_active = True
+                self.spin_cycle   = False
 
                 now = time.time()
                 if now - self.last_print_time >= 0.5:
-                    print(
-                        "[HOLD→TARGET] "
-                        f"drone={np.asarray(current_state[0:3]).round(3)}  "
-                        f"cam={np.asarray(dbg['p_cam']).round(3)}  "
-                        f"body={np.asarray(dbg['p_body']).round(3)}  "
-                        f"world_target={np.asarray(dbg['p_world_tgt']).round(3)}  "
-                        f"world_goal={np.asarray(dbg['p_world_goal']).round(3)}\n"
-                        f"dist={dbg['dist']:.3f} m  steps={dbg['steps']}  "
-                        # f"dt={dbg.get('dt',dt):.3f}s  vmax={dbg.get('v_max',vmax):.2f} m/s  "
-                        # f"step_cap={dbg['step_cap']:.3f} m  standoff={dbg.get('standoff_m',standoff_m):.2f} m"
-                    )
+                    # print(
+                    #     "[HOLD→TARGET] "
+                    #     f"drone={np.asarray(current_state[0:3]).round(3)}  "
+                    #     f"cam={np.asarray(dbg['p_cam']).round(3)}  "
+                    #     f"body={np.asarray(dbg['p_body']).round(3)}  "
+                    #     f"world_target={np.asarray(dbg['p_world_tgt']).round(3)}  "
+                    #     f"world_goal={np.asarray(dbg['p_world_goal']).round(3)}\n"
+                    #     f"dist={dbg['dist']:.3f} m  steps={dbg['steps']}  "
+                    #     # f"dt={dbg.get('dt',dt):.3f}s  vmax={dbg.get('v_max',vmax):.2f} m/s  "
+                    #     # f"step_cap={dbg['step_cap']:.3f} m  standoff={dbg.get('standoff_m',standoff_m):.2f} m"
+                    # )
                     self.last_print_time = now
             elif t_tr < 6.0:
                 return
