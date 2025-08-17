@@ -2,7 +2,7 @@
     "cohort": "ssv_CLIPSEG_NORMAL",
     "pilot" : "InstinctJester",
     "drone" : "drone4",
-    "scene": "flightroom_any",
+    "scene": "flightroom_sparse_mann_ladder",
     "frame" : "carl",
     "failsafes": {
         "attitude_tolerance": 0.30,

@@ -128,6 +128,20 @@ def publish_position_setpoint(timestamp: int,
     ts.yawspeed     = float('nan')
     traj_sp_pub.publish(ts)
 
+def publish_position_setpoint_with_yawspeed(timestamp: int,
+                                            altitude_hold: float,
+                                            desired_position: np.ndarray,
+                                            traj_sp_pub,
+                                            yaw_rate: float) -> None:
+    ts = TrajectorySetpoint(timestamp=timestamp)
+    ts.position     = [float(desired_position[0]), float(desired_position[1]), float(altitude_hold)]
+    ts.velocity     = [float('nan')] * 3
+    ts.acceleration = [float('nan')] * 3
+    ts.jerk         = [float('nan')] * 3
+    ts.yaw          = float('nan')         # IMPORTANT: NaN → use yawspeed mode
+    ts.yawspeed     = float(yaw_rate)      # command yaw rate here
+    traj_sp_pub.publish(ts)
+
 def traj_from_target_pose(
     x_ext: np.ndarray,
     p_cam: np.ndarray,
@@ -444,7 +458,6 @@ def publish_velocity_hold(timestamp: int, traj_sp_pub) -> None:
 
 def publish_velocity_hold_with_yaw_rate(timestamp: int,
                                         traj_sp_pub,
-                                        rates_sp_pub,
                                         yaw_rate: float) -> None:
     # zero-velocity setpoint → holds X/Y/Z
     ts = TrajectorySetpoint(timestamp=timestamp)

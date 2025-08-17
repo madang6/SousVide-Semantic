@@ -61,21 +61,7 @@ class CLIPSegHFModel:
         # Baseline for calibration
         self.loiter_max = 0.0
         self.loiter_area_frac = 0.0
-    #FIXME
-        self.loiter_mask = None            # uint8 mask of best region from calibration
-        self.loiter_contour = None         # optional: for drawing crisp outlines
-        self.iou_thresh = 0.50             # tune 0.4–0.6
-        self.overlay_alpha = 0.40
-        self.overlay_color = (0, 255, 0)   # RGB
 
-        self.loiter_cnt = None
-        self.loiter_solidity = None
-        self.loiter_eccentricity = None
-        self.shape_thresh = 0.35           # tune 0.05–0.20 (lower = stricter)
-        self.area_tolerance = 0.15         # ±15%
-        self.sol_tol = 0.10                # ±10% band
-        self.ecc_tol = 0.15                # ±15% band
-    #
         # ONNX support
         self.use_onnx = False
         self.ort_session = None
@@ -592,199 +578,45 @@ class CLIPSegHFModel:
         log(f"CLIPSeg inference time: {end - start:.3f} seconds")
         return overlayed, prob_scaled
     
-#FIXME
-    def _largest_contour_from_mask(self, mask_u8: np.ndarray):
-        contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return None, 0, 0.0, 0.0
-        cnt = max(contours, key=cv2.contourArea)
-        area = float(cv2.contourArea(cnt))
-        hull = cv2.convexHull(cnt)
-        hull_area = float(cv2.contourArea(hull)) if len(hull) >= 3 else area
-        solidity = (area / hull_area) if hull_area > 0 else 1.0
-        # Eccentricity via PCA on contour points
-        pts = cnt.reshape(-1, 2).astype(np.float32)
-        if len(pts) >= 5:
-            mean, eigenvectors, eigenvalues = cv2.PCACompute2(pts, mean=None)
-            l1, l2 = float(eigenvalues[0][0]), float(eigenvalues[1][0]) if eigenvalues.shape[0] > 1 else (1.0, 1.0)
-            eccentricity = (1.0 - (min(l1,l2) / max(l1,l2))) if max(l1,l2) > 0 else 0.0
-        else:
-            eccentricity = 0.0
-        return cnt, area, solidity, eccentricity
-
-    def _match_shape_distance(self, cnt_ref, cnt_cur) -> float:
-        # I1 is a good default; I2/I3 are alternatives
-        return cv2.matchShapes(cnt_ref, cnt_cur, cv2.CONTOURS_MATCH_I1, 0.0)
     
-    def _area_targeted_mask(self, logits: np.ndarray, target_frac: float,
-                            ksize: int = 3, do_open_close: bool = True) -> np.ndarray:
-        """
-        Build a binary mask whose pixel fraction ≈ target_frac by thresholding at the
-        corresponding quantile. Then clean it with light morphology.
-        Returns 0/255 uint8.
-        """
-        H, W = logits.shape
-        total = H * W
-        target_frac = float(np.clip(target_frac, 1e-4, 0.90))  # safety
-        q = 1.0 - target_frac
-        # Quantile threshold (clip to sane min/max so we don't get extremes)
-        t = np.quantile(logits, q)
-        mask = (logits >= t).astype(np.uint8) * 255
-
-        if do_open_close:
-            kernel = np.ones((ksize, ksize), np.uint8)
-            # close gaps then open speckles
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel, iterations=1)
-        return mask
-    
-    def _make_overlay(self, frame_bgr: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
-        overlay = frame_bgr.copy()
-        color_img = np.zeros_like(frame_bgr)
-        color_img[mask_u8 > 0] = self.overlay_color
-        return cv2.addWeighted(color_img, self.overlay_alpha, overlay, 1.0, 0.0)
-
-    def _compute_iou(self, a_u8: np.ndarray, b_u8: np.ndarray) -> float:
-        # Assumes same shape, values are 0/255
-        inter = np.count_nonzero((a_u8 > 0) & (b_u8 > 0))
-        union = np.count_nonzero((a_u8 > 0) | (b_u8 > 0))
-        return float(inter) / float(union) if union else 0.0
-    
-    def _dbg(self, **k):
-        print("[LOITER DBG]", " ".join(f"{kk}={vv}" for kk,vv in k.items()))
-#
-
-    def loiter_calibrate(
-        self,
-        logits: np.ndarray,
-        frame_img: np.ndarray,
-        active_arm: bool = False
-    ) -> Tuple[bool, float, float, Optional[np.ndarray]]:
-        """
-        Returns (found, sim_score, area_frac, overlay_bgr_or_None)
-        - found: whether we matched the stored region (shape-based when active_arm=True)
-        - sim_score: global max in logits (unchanged)
-        - area_frac: area fraction of the current best region
-        - overlay: original frame with current region and/or stored region overlaid
-        """
+    def loiter_calibrate(self, logits: np.ndarray, active_arm: bool = False) -> None:
         found = False
         H, W = logits.shape
         total_area = H * W
         sim_score = float(logits.max())
-
-        # 1) threshold → binary mask (per-frame)
         thresh = np.percentile(logits, 90.0)
-        mask = (logits >= thresh).astype(np.uint8)  # 0/1
-
-        # 2) connected components
+        
+        mask = (logits >= thresh).astype(np.uint8) 
+        
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
         if num_labels <= 1:
-            return found, sim_score, 0.0, None
+            return found, sim_score, 0.0
 
-        # 3) choose the "best" region in this frame:
-        best_lab = -1
-        best_region_max = -1.0
-        best_area = -1
-        for lab in range(1, num_labels):
-            area = stats[lab, cv2.CC_STAT_AREA]
-            region_max = float(logits[labels == lab].max())
-            if (region_max > best_region_max) or (region_max == best_region_max and area > best_area):
-                best_region_max = region_max
-                best_area = area
-                best_lab = lab
-
-        # 4) materialize current best region mask (0/255)
-        # curr_region_mask = ((labels == best_lab).astype(np.uint8) * 255)
-
-        area_frac = float(best_area) / float(total_area)
-        # t0 = time.perf_counter()
-        curr_region_mask = self._area_targeted_mask(logits, target_frac=area_frac)
-        # t1 = time.perf_counter()
-        # logits_rgb = (logits * 255).astype(np.uint8)
-        # logits_rgb = colorize_mask_fast(logits_rgb, self.lut)
-        # logits_rgb = depth_display_to_rgb(logits, target_hw=(H, W))
-        # overlay = self._make_overlay(logits_rgb, curr_region_mask)
-        if not active_arm:
-            self.overlay_color = (0, 255, 0)
+        if active_arm:
+            for lab in range(1, num_labels):
+                area = stats[lab, cv2.CC_STAT_AREA]
+                area_frac = area / total_area
+                region_max = float(logits[labels == lab].max())
+                if (region_max < 0.96*self.loiter_max) or (area_frac < 0.96*self.loiter_area_frac):
+                    continue
+                else:
+                    found = True
+                    # self.loiter_max = 0
+                    # self.loiter_area_frac = 0
+                    return found, sim_score, area_frac
         else:
-            self.overlay_color = (0, 0, 255)
-        overlay = self._make_overlay(frame_img, curr_region_mask)
+            for lab in range(1, num_labels):
+                area = stats[lab, cv2.CC_STAT_AREA]
+                area_frac = area / total_area
+                # highest sim within this component
+                region_max = float(logits[labels == lab].max())
 
-        if not active_arm:
-            # --- CALIBRATION PHASE ---
-            cnt, area_px, solidity, ecc = self._largest_contour_from_mask(curr_region_mask)
-            # t2 = time.perf_counter()
-            # Should this frame's best become the global reference?
-            better = (best_region_max > self.loiter_max) or (
-                np.isclose(best_region_max, self.loiter_max, rtol=0, atol=1e-6)
-                and (best_area > self.loiter_area_frac * total_area)
-            )
-
-            if better and cnt is not None:
-                self.loiter_max          = best_region_max
-                self.loiter_area_frac    = area_frac
-                self.loiter_mask         = curr_region_mask.copy()
-                self.loiter_cnt          = cnt
-                self.loiter_solidity     = solidity
-                self.loiter_eccentricity = ecc
-
-                # Optional visualization of stored outline
-                cv2.drawContours(overlay, [self.loiter_cnt], -1, (0, 200, 255), 5)
-                # logits_overlay = depth_display_to_rgb(logits, target_hw=(H, W))
-                # cv2.drawContours(logits_overlay, [self.loiter_cnt], -1, (0, 200, 255), 2)
-                # overlay = logits_overlay
-
-            return found, sim_score, area_frac, overlay
-
-        # --- ACTIVE / ARM PHASE ---
-        if self.loiter_cnt is None:
-            return found, sim_score, area_frac, overlay
-
-        # rebuild mask to match reference area
-        curr_region_mask = self._area_targeted_mask(logits, target_frac=self.loiter_area_frac)
-
-        # recompute current area fraction from the mask you will compare
-        cur_area_frac = np.count_nonzero(curr_region_mask) / float(total_area)
-
-        cur_cnt, cur_area_px, cur_sol, cur_ecc = self._largest_contour_from_mask(curr_region_mask)
-        if cur_cnt is None:
-            return found, sim_score, cur_area_frac, overlay
-
-        # 1) Area sanity using cur_area_frac
-        area_ok = abs(cur_area_frac - self.loiter_area_frac) <= self.area_tolerance * self.loiter_area_frac
-
-        # 2) Shape distance (lower is more similar)
-        d = self._match_shape_distance(self.loiter_cnt, cur_cnt)
-        shape_ok = (d <= self.shape_thresh)
-
-        # 3) Optional morphology bands
-        sol_ok = (abs(cur_sol - self.loiter_solidity) <= self.sol_tol * max(self.loiter_solidity, 1e-6))
-        ecc_ok = (abs(cur_ecc - self.loiter_eccentricity) <= self.ecc_tol * max(self.loiter_eccentricity, 1e-6))
-
-        print(
-            f"[LOITER DBG] d={d:.3f} (thr={self.shape_thresh}) shape_ok={shape_ok} | "
-            f"area={cur_area_frac:.3f}, ref={self.loiter_area_frac:.3f}, ok={area_ok} | "
-            f"sol={cur_sol:.3f}, ref={self.loiter_solidity:.3f}, ok={sol_ok} | "
-            f"ecc={cur_ecc:.3f}, ref={self.loiter_eccentricity:.3f}, ok={ecc_ok}"
-        )
-        if shape_ok and area_ok and sol_ok and ecc_ok:
-            found = True
-            # visualize both shapes (current in green, reference outline in orange)
-            rgb_overlay = frame_img.copy()
-            fill = np.zeros_like(frame_img); fill[curr_region_mask > 0] = (0, 255, 0)
-            rgb_overlay = cv2.addWeighted(fill, 0.4, rgb_overlay, 1.0, 0.0)
-            cv2.drawContours(rgb_overlay, [self.loiter_cnt], -1, (0, 165, 255), 2)
-            cv2.drawContours(rgb_overlay, [cur_cnt], -1, (0, 255, 0), 2)
-
-            logits_overlay = depth_display_to_rgb(logits, target_hw=(H, W))
-            fill = np.zeros_like(logits_overlay); fill[curr_region_mask > 0] = (0, 255, 0)
-            logits_overlay = cv2.addWeighted(fill, 0.4, logits_overlay, 1.0, 0.0)
-            cv2.drawContours(logits_overlay, [self.loiter_cnt], -1, (0, 165, 255), 2)
-            cv2.drawContours(logits_overlay, [cur_cnt], -1, (0, 255, 0), 2)
-
-            overlay =np.hstack((rgb_overlay, logits_overlay))
-
-        return found, sim_score, area_frac, overlay
+                if region_max > self.loiter_max:
+                    print(f"New loiter region found: {region_max:.3f} (area_frac={area_frac*100:.1f}%)")
+                    self.loiter_max = region_max
+                    self.loiter_area_frac = area / total_area
+                    # self.loiter_area = area
+        return found, sim_score, area_frac
                  
 ################################################
 # 2. Lookup Table for Semantic Probability Map #

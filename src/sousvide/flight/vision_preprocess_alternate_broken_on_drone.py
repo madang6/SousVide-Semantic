@@ -5,7 +5,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-from skimage.segmentation import slic, find_boundaries
+from shapely import area
+from skimage.segmentation import slic
 from skimage.metrics import structural_similarity as ssim
 from scipy.stats import mode
 
@@ -43,8 +44,10 @@ class CLIPSegHFModel:
         else:
             self.device = device
 
-        # load HF processor
+        # load HF processor & model
         self.processor = CLIPSegProcessor.from_pretrained(hf_model, use_fast=True)
+        self.model = CLIPSegForImageSegmentation.from_pretrained(hf_model)
+        self.model.to(self.device).eval()
 
         # color‐lut, running bounds, caches, etc.
         self.lut = get_colormap_lut(cmap_name=cmap)
@@ -71,11 +74,12 @@ class CLIPSegHFModel:
         self.loiter_cnt = None
         self.loiter_solidity = None
         self.loiter_eccentricity = None
-        self.shape_thresh = 0.35           # tune 0.05–0.20 (lower = stricter)
+        self.shape_thresh = 0.20           # tune 0.05–0.20 (lower = stricter)
         self.area_tolerance = 0.15         # ±15%
         self.sol_tol = 0.10                # ±10% band
         self.ecc_tol = 0.15                # ±15% band
     #
+
         # ONNX support
         self.use_onnx = False
         self.ort_session = None
@@ -87,193 +91,80 @@ class CLIPSegHFModel:
                 )
             # if the .onnx file is missing, export it:
             if not os.path.isfile(onnx_model_path):
-                print(f"Exporting HF model to ONNX at {onnx_model_path}...")
-                self.model = CLIPSegForImageSegmentation.from_pretrained(hf_model)
-                self.model.to(self.device).eval()
                 self._export_onnx(onnx_model_path)
             if onnx_model_fp16_path:
-                print(f"Converting ONNX model to FP16 at {onnx_model_fp16_path}...")
                 if (not os.path.isfile(onnx_model_fp16_path)):
                     self._convert_to_fp16(onnx_model_path, onnx_model_fp16_path)
                 onnx_model_path = onnx_model_fp16_path
                 self.using_fp16 = True
-            print(f"Using ONNX model at {onnx_model_path}...")
-            
-            so = ort.SessionOptions()
 
-            # so.enable_mem_pattern     = False
-            # so.enable_cpu_mem_arena   = False
+            # load the session
+            so = ort.SessionOptions()
+            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            so.intra_op_num_threads = 1
+            so.inter_op_num_threads = 1
             
-            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
-            
-            # so.intra_op_num_threads = 1
-            # so.inter_op_num_threads = 1
-            so.log_severity_level   = 2
+            so.log_severity_level = 1
             self.ort_session = ort.InferenceSession(
                 onnx_model_path,
                 sess_options=so,
-                providers=["CUDAExecutionProvider"]#, "CUDAExecutionProvider", "CPUExecutionProvider"]
+                providers=["TensorrtExecutionProvider"]#, "CUDAExecutionProvider", "CPUExecutionProvider"]
             )
             self.io_binding = self.ort_session.io_binding()
             self.use_onnx = True
 
+            self._io_binding = None
             self._input_gpu  = None
             self._output_gpu = None
 
-        else:
-            self.model = CLIPSegForImageSegmentation.from_pretrained(hf_model)
-            self.model.to(self.device).eval()
-
     def _export_onnx(self, onnx_path: str):
         """
-        Exports the HF CLIPSeg model to ONNX at `onnx_path` using a model wrapper,
-        grabs a real frame from the Zed camera at the configured resolution/fps.
+        Exports the HF CLIPSeg model to ONNX at onnx_path.
+        Uses a dummy text+image input from the processor.
         """
-        import sousvide.flight.zed_command_helper as zed
+        # pick a dummy prompt and image
+        dummy_prompt = "a photo of a cat"
+        dummy_img = Image.new("RGB", (224, 224), color="white")
 
-        # 1) Grab one frame from the Zed camera
-        camera = zed.get_camera(height=376, width=672, fps=30)
-        if camera is None:
-            raise RuntimeError("Unable to initialize Zed camera.")
-        frame, timestamp = zed.get_image(camera)
-        if not isinstance(frame, np.ndarray):
-            raise RuntimeError(f"Expected NumPy array from Zed, got {type(frame)}")
-        # Convert BGRA/BGR → RGB PIL.Image
-        bgr = frame[..., :3]
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(rgb)
-
-        # 2) Prepare dummy text & tokenize image+text
-        dummy_prompt = "a cabinet"
-        proc_inputs = self.processor(
-            images=pil_img,
+        # prepare torch inputs
+        torch_inputs = self.processor(
+            images=dummy_img,
             text=dummy_prompt,
             return_tensors="pt"
         )
-        proc_inputs = {k: v.to(self.device) for k, v in proc_inputs.items()}
-        inputs = (
-            proc_inputs["input_ids"],
-            proc_inputs["pixel_values"],
-            proc_inputs["attention_mask"],
-        )
+        torch_inputs = {k: v.to(self.device) for k, v in torch_inputs.items()}
 
-        # 3) Wrap HF model so it outputs a single tensor (.logits)
-        class Wrapper(torch.nn.Module):
-            def __init__(self, model):
-                super().__init__()
-                self.model = model
+        # names must match the processor/model
+        # input_names = ["pixel_values", "input_ids", "attention_mask"]
+        # output_names = ["logits"]
+        # dynamic_axes = {
+        #     "pixel_values":   {0: "batch", 2: "height", 3: "width"},
+        #     "input_ids":      {0: "batch", 1: "seq_len"},
+        #     "attention_mask": {0: "batch", 1: "seq_len"},
+        #     "logits":         {0: "batch", 2: "height", 3: "width"},
+        # }
 
-            def forward(self, input_ids, pixel_values, attention_mask):
-                out = self.model(
-                    input_ids=input_ids,
-                    pixel_values=pixel_values,
-                    attention_mask=attention_mask
-                )
-                return out.logits
-
-        wrapper = Wrapper(self.model).eval().to(self.device)
-
-        # 4) Export with generic names, dynamic batch+seq_len axes, opset 21
-        from onnx import __version__, IR_VERSION
-        from onnx.defs import onnx_opset_version
-        print(f"onnx.__version__={__version__!r}, opset={onnx_opset_version()}, IR_VERSION={IR_VERSION}")
-        print(f"[INFO] Exporting ONNX model to '{onnx_path}'…")
+        # export
         torch.onnx.export(
-            wrapper,
-            inputs,
+            self.model,
+            (
+                torch_inputs["input_ids"],
+                torch_inputs["pixel_values"],
+                torch_inputs["attention_mask"],
+            ),
             onnx_path,
             input_names=["input_ids", "pixel_values", "attention_mask"],
+            # input_names=["input_ids", "pixel_values"],
             output_names=["logits"],
             dynamic_axes={
-                "input_ids":      {0: "batch", 1: "seq_len"},
-                "pixel_values":   {0: "batch"},
-                "attention_mask": {0: "batch", 1: "seq_len"},
-                "logits":         {0: "batch", 2: "height", 3: "width"}
+                "input_ids":      {1: "seq_len"},
+                # "pixel_values":   {2: "height", 3: "width"},
+                "attention_mask": {1: "seq_len"},
+                # "logits":         {2: "height", 3: "width"},
             },
-            opset_version=20,
+            opset_version=17,
             do_constant_folding=True,
-            verbose=False,
         )
-        # ── Patch Resize nodes (cubic→linear) ──
-        # ONNXRuntime’s Resize only supports 'cubic' on 2-D or certain 4-D inputs,
-        # so we rewrite anything using cubic to linear for full compatibility.
-        import onnx
-        model_onnx = onnx.load(onnx_path)
-        patched = False
-        for node in model_onnx.graph.node:
-            if node.op_type == "Resize":
-                for attr in node.attribute:
-                    if attr.name == "mode" and attr.s.decode("utf-8").lower() == "cubic":
-                        attr.s = b"linear"
-                        patched = True
-        if patched:
-            onnx.save(model_onnx, onnx_path)
-            print(f"[INFO] Patched Resize mode→'linear' in {onnx_path}")
-        print(f"[INFO] Exported ONNX model with inputs ['input_ids','pixel_values','attention_mask'] → '{onnx_path}' ✅")
-    # def _export_onnx(self, onnx_path: str):
-    #     """
-    #     Exports the HF CLIPSeg model to ONNX at onnx_path.
-    #     Uses a dummy text+image input from the processor.
-    #     """
-    #     # pick a dummy prompt and image
-    #     dummy_prompt = "a photo of a cat"
-    #     dummy_img = Image.new("RGB", (224, 224), color="white")
-
-    #     # prepare torch inputs
-    #     torch_inputs = self.processor(
-    #         images=dummy_img,
-    #         text=dummy_prompt,
-    #         return_tensors="pt"
-    #     )
-    #     torch_inputs = {k: v.to(self.device) for k, v in torch_inputs.items()}
-
-    #     # names must match the processor/model
-    #     # input_names = ["pixel_values", "input_ids", "attention_mask"]
-    #     # output_names = ["logits"]
-    #     # dynamic_axes = {
-    #     #     "pixel_values":   {0: "batch", 2: "height", 3: "width"},
-    #     #     "input_ids":      {0: "batch", 1: "seq_len"},
-    #     #     "attention_mask": {0: "batch", 1: "seq_len"},
-    #     #     "logits":         {0: "batch", 2: "height", 3: "width"},
-    #     # }
-
-    #     # export
-    #     torch.onnx.export(
-    #         self.model,
-    #         (
-    #             torch_inputs["input_ids"],
-    #             torch_inputs["pixel_values"],
-    #             torch_inputs["attention_mask"],
-    #         ),
-    #         onnx_path,
-    #         input_names=["input_ids", "pixel_values", "attention_mask"],
-    #         # input_names=["input_ids", "pixel_values"],session
-    #         output_names=["logits"],
-    #         dynamic_axes={
-    #             "input_ids":      {1: "seq_len"},
-    #             # "pixel_values":   {2: "height", 3: "width"},
-    #             "attention_mask": {1: "seq_len"},
-    #             # "logits":         {2: "height", 3: "width"},
-    #         },
-    #         opset_version=17,
-    #         do_constant_folding=True,
-    #     )
-    
-    # def _convert_to_fp16(self, onnx_path: str, fp16_path: str):
-    #     import onnx
-    #     from onnxconverter_common import float16
-
-    #     model = onnx.load("clipseg_model.onnx")
-
-    #     model_fp16 = float16.convert_float_to_float16(
-    #         model,
-    #         keep_io_types=False,       # keep inputs/outputs in float32
-    #         disable_shape_infer=True,  # skip ONNX shape inference
-    #         op_block_list=[],
-    #         check_fp16_ready=False
-    #     )
-
-    #     onnx.save_model(model_fp16, "clipseg_model_fp16.onnx")
 
     def _convert_to_fp16(self, onnx_path: str, fp16_path: str):
         import onnx
@@ -305,58 +196,32 @@ class CLIPSegHFModel:
         else:
             scaled = (arr - self.running_min) / span
         return scaled
-    
-    # def _run_onnx_model(self, img: Image.Image, prompt: str) -> np.ndarray:
-    #     """
-    #     Runs forward pass via onnxruntime and returns the raw logits as a float32 numpy array.
-    #     """
-    #     # 1) Get PyTorch tensors from the HF processor...
-    #     torch_inputs = self.processor(images=img, text=prompt, return_tensors="pt")
-    #     # 2) Move them to CPU & convert to numpy for ONNX runtime
-    #     ort_inputs = {}
-    #     for inp in self.ort_session.get_inputs():
-    #         name = inp.name
-    #         tensor = torch_inputs.get(name)
-    #         if tensor is None:
-    #             continue
-    #         # detach, move to CPU, numpy
-    #         ort_inputs[name] = tensor.cpu().numpy()
-    #     # 3) Run the ONNX session
-    #     ort_outs = self.ort_session.run(None, ort_inputs)
-    #     # assume first output is logits [1,1,H,W]
-    #     logits = ort_outs[0]
-    #     return logits.squeeze().astype(np.float32)
 
     def _run_onnx_model(self, img: Image.Image, prompt: str) -> np.ndarray:
         import numpy as np
         import torch
 
-        # 1) Preprocess — half if FP16, full-precision otherwise
+        # 1) Preprocess on GPU
         torch_inputs = self.processor(images=img, text=prompt, return_tensors="pt")
         if self.using_fp16:
+            # convert to FP16 if needed and move to device
             torch_inputs = {
-                k: (v.half().to(self.device) if k == "pixel_values"
-                    else v.to(self.device))
+                k: (v.half().to(self.device) if k == "pixel_values" else v.to(self.device))
                 for k, v in torch_inputs.items()
             }
         else:
             torch_inputs = {k: v.to(self.device) for k, v in torch_inputs.items()}
 
-        # 2) New binding for each run
-        io_bind = self.ort_session.io_binding()
+        # 2) Fresh IOBinding
+        io_binding = self.ort_session.io_binding()
 
-        # 3) Bind *all* ONNX inputs by name
-        for meta in self.ort_session.get_inputs():
-            name = meta.name
-            if name not in torch_inputs:
-                raise RuntimeError(f"ONNX model expects '{name}' but no tensor was found.")
-            tensor = torch_inputs[name]
-            elem_type = (
-                np.float16 if tensor.dtype == torch.float16 else
-                np.float32 if tensor.dtype == torch.float32 else
-                np.int64
-            )
-            io_bind.bind_input(
+        # 3) Bind inputs zero-copy
+        sess_input_names = {inp.name for inp in self.ort_session.get_inputs()}
+        for name, tensor in torch_inputs.items():
+            if name not in sess_input_names:
+                continue
+            elem_type = np.float32 if tensor.dtype == torch.float32 else np.int64
+            io_binding.bind_input(
                 name=name,
                 device_type=self.device,   # e.g. "cuda"
                 device_id=0,
@@ -365,106 +230,41 @@ class CLIPSegHFModel:
                 buffer_ptr=tensor.data_ptr(),
             )
 
-        # 4) Figure out the output shape
+        # 4) Figure out the ONNX output shape
         out_meta = self.ort_session.get_outputs()[0]
         B, _, H, W = torch_inputs["pixel_values"].shape
         if len(out_meta.shape) == 3:
+            # [batch, height, width]
             out_shape = (B, H, W)
         elif len(out_meta.shape) == 4:
+            # [batch, channels, height, width]
             C = out_meta.shape[1] if isinstance(out_meta.shape[1], int) else 1
             out_shape = (B, C, H, W)
         else:
             raise RuntimeError(f"Unsupported logits rank: {len(out_meta.shape)}")
 
-        # 5) Allocate & bind output on GPU
+        # 5) Allocate & bind output buffer on GPU
         out_dtype = torch.float16 if self.using_fp16 else torch.float32
-        gpu_out = torch.empty(out_shape, dtype=out_dtype, device=self.device)
-        io_bind.bind_output(
+        output_gpu = torch.empty(out_shape, dtype=out_dtype, device=self.device)
+        io_binding.bind_output(
             name=out_meta.name,
             device_type=self.device,
             device_id=0,
             element_type=(np.float16 if self.using_fp16 else np.float32),
             shape=out_shape,
-            buffer_ptr=gpu_out.data_ptr(),
+            buffer_ptr=output_gpu.data_ptr(),
         )
 
         # 6) Run
-        self.ort_session.run_with_iobinding(io_bind)
+        self.ort_session.run_with_iobinding(io_binding)
 
-        # 7) Fetch & postprocess
-        result = gpu_out.cpu().numpy()
-        # if [B,1,H,W], drop channel
+        # 7) Fetch & squeeze
+        result = output_gpu.cpu().numpy()
+        # if it’s [B, 1, H, W], drop the channel axis
         if result.ndim == 4 and result.shape[1] == 1:
             result = result[:, 0]
+        # if batch‐size is 1, you can also drop that:
         return result.squeeze()
-    # def _run_onnx_model(self, img: Image.Image, prompt: str) -> np.ndarray:
-    #     import numpy as np
-    #     import torch
-
-    #     # 1) Preprocess on GPU
-    #     torch_inputs = self.processor(images=img, text=prompt, return_tensors="pt")
-    #     if self.using_fp16:
-    #         # convert to FP16 if needed and move to device
-    #         torch_inputs = {
-    #             k: (v.half().to(self.device) if k == "pixel_values" else v.to(self.device))
-    #             for k, v in torch_inputs.items()
-    #         }
-    #     else:
-    #         torch_inputs = {k: v.to(self.device) for k, v in torch_inputs.items()}
-
-    #     # 2) Fresh IOBinding
-    #     io_binding = self.ort_session.io_binding()
-
-    #     # 3) Bind inputs zero-copy
-    #     sess_input_names = {inp.name for inp in self.ort_session.get_inputs()}
-    #     for name, tensor in torch_inputs.items():
-    #         if name not in sess_input_names:
-    #             continue
-    #         elem_type = np.float32 if tensor.dtype == torch.float32 else np.int64
-    #         io_binding.bind_input(
-    #             name=name,
-    #             device_type=self.device,   # e.g. "cuda"
-    #             device_id=0,
-    #             element_type=elem_type,
-    #             shape=tuple(tensor.shape),
-    #             buffer_ptr=tensor.data_ptr(),
-    #         )
-
-    #     # 4) Figure out the ONNX output shape
-    #     out_meta = self.ort_session.get_outputs()[0]
-    #     B, _, H, W = torch_inputs["pixel_values"].shape
-    #     if len(out_meta.shape) == 3:
-    #         # [batch, height, width]
-    #         out_shape = (B, H, W)
-    #     elif len(out_meta.shape) == 4:
-    #         # [batch, channels, height, width]
-    #         C = out_meta.shape[1] if isinstance(out_meta.shape[1], int) else 1
-    #         out_shape = (B, C, H, W)
-    #     else:
-    #         raise RuntimeError(f"Unsupported logits rank: {len(out_meta.shape)}")
-
-    #     # 5) Allocate & bind output buffer on GPU
-    #     out_dtype = torch.float16 if self.using_fp16 else torch.float32
-    #     output_gpu = torch.empty(out_shape, dtype=out_dtype, device=self.device)
-    #     io_binding.bind_output(
-    #         name=out_meta.name,
-    #         device_type=self.device,
-    #         device_id=0,
-    #         element_type=(np.float16 if self.using_fp16 else np.float32),
-    #         shape=out_shape,
-    #         buffer_ptr=output_gpu.data_ptr(),
-    #     )
-
-    #     # 6) Run
-    #     self.ort_session.run_with_iobinding(io_binding)
-
-    #     # 7) Fetch & squeeze
-    #     result = output_gpu.cpu().numpy()
-    #     # if it’s [B, 1, H, W], drop the channel axis
-    #     if result.ndim == 4 and result.shape[1] == 1:
-    #         result = result[:, 0]
-    #     # if batch‐size is 1, you can also drop that:
-    #     return result.squeeze()
 
     def clipseg_hf_inference(
         self,
@@ -483,7 +283,7 @@ class CLIPSegHFModel:
             if verbose:
                 print(*args, **kwargs)
 
-        # --- Step 1: Convert input to PIL + NumPy ---
+        # --- Step 1: Normalize input to PIL + NumPy ---
         if isinstance(image, np.ndarray):
             img = Image.fromarray(image)
             image_np = image
@@ -526,32 +326,38 @@ class CLIPSegHFModel:
                 logits = self.model(**torch_inputs).logits
             arr = logits.cpu().squeeze().numpy().astype(np.float32)
 
-        skip_norm = prompt.strip().lower() == "null"
+        # skip_norm = prompt.strip().lower() == "null"
+        skip_norm = True
         if skip_norm:
-            prob = 1.0 / (1.0 + np.exp(-arr))
-            mask_u8 = (prob * 255).astype(np.uint8)
-        else:
-#FIXME
-            prob = 1.0 / (1.0 + np.exp(-arr))
-            # regular_prob = (prob * 255).astype(np.uint8)
-            cur_prob_max = float(arr.max())
-            self._max_prob_logit = max(getattr(self, "_max_prob_logit", cur_prob_max), cur_prob_max)
-            global_max_prob = 1.0 / (1.0 + np.exp(-self._max_prob_logit))
+            # prob = 1.0 / (1.0 + np.exp(-arr))
+            # mask_u8 = (prob * 255).astype(np.uint8)
+           # —– 1) raw sigmoid probability
+           prob = 1.0 / (1.0 + np.exp(-arr))
+    
+           # —– 2) update & track the global max logit seen so far
+           cur_max = float(arr.max())
+           # first time: _max_logit = cur_max
+           # thereafter: max of previous and current
+           self._max_logit = max(getattr(self, "_max_logit", cur_max), cur_max)
+    
+           # —– 3) compute what the max “full-bright” probability is
+           global_max_prob = 1.0 / (1.0 + np.exp(-self._max_logit))
+    
            # —– 4) scale your current mask so that
            #      prob == global_max_prob → 1.0 (full brightness),
            #      lower probs → proportionally dimmer
-            prob_scaled = prob / (global_max_prob + 1e-8)
-            prob_scaled = np.clip(prob_scaled, 0.0, 1.0)
-#
+           scaled = prob / (global_max_prob + 1e-8)
+           scaled = np.clip(scaled, 0.0, 1.0)
+    
+           # —– 5) to 8-bit mask
+           mask_u8 = (scaled * 255).astype(np.uint8)
+        else:
             scaled = self._rescale_global(arr)
             mask_u8 = (scaled * 255).astype(np.uint8)
 
         if resize_output_to_input:
-#FIXME
-            # prob_scaled = np.array(Image.fromarray(prob).resize(img.size, resample=Image.BILINEAR))
-            prob_scaled = np.array(Image.fromarray(prob_scaled).resize(img.size, resample=Image.BILINEAR))
-#
             mask_u8 = np.array(Image.fromarray(mask_u8).resize(img.size, resample=Image.BILINEAR))
+            scaled = np.array(Image.fromarray(scaled).resize(img.size, resample=Image.BILINEAR))
 
         # --- Step 5: Post-processing only on fresh inference ---
         if use_smoothing:
@@ -579,9 +385,6 @@ class CLIPSegHFModel:
 
         # --- Step 6: Render and cache ---
         colorized = colorize_mask_fast(mask_u8, self.lut)
-#FIXME
-        # regular_prob = colorize_mask_fast(regular_prob, self.lut)
-#
         overlayed = blend_overlay_gpu(image_np, colorized)
 
         # Store just raw mask + image for reuse
@@ -590,8 +393,19 @@ class CLIPSegHFModel:
 
         end = time.time()
         log(f"CLIPSeg inference time: {end - start:.3f} seconds")
-        return overlayed, prob_scaled
-    
+        return overlayed, scaled
+
+    def _make_overlay(self, frame_bgr: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
+        overlay = frame_bgr.copy()
+        color_img = np.zeros_like(frame_bgr)
+        color_img[mask_u8 > 0] = self.overlay_color
+        return cv2.addWeighted(color_img, self.overlay_alpha, overlay, 1.0, 0.0)
+
+    def _compute_iou(self, a_u8: np.ndarray, b_u8: np.ndarray) -> float:
+        # Assumes same shape, values are 0/255
+        inter = np.count_nonzero((a_u8 > 0) & (b_u8 > 0))
+        union = np.count_nonzero((a_u8 > 0) | (b_u8 > 0))
+        return float(inter) / float(union) if union else 0.0
 #FIXME
     def _largest_contour_from_mask(self, mask_u8: np.ndarray):
         contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -638,22 +452,9 @@ class CLIPSegHFModel:
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel, iterations=1)
         return mask
     
-    def _make_overlay(self, frame_bgr: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
-        overlay = frame_bgr.copy()
-        color_img = np.zeros_like(frame_bgr)
-        color_img[mask_u8 > 0] = self.overlay_color
-        return cv2.addWeighted(color_img, self.overlay_alpha, overlay, 1.0, 0.0)
-
-    def _compute_iou(self, a_u8: np.ndarray, b_u8: np.ndarray) -> float:
-        # Assumes same shape, values are 0/255
-        inter = np.count_nonzero((a_u8 > 0) & (b_u8 > 0))
-        union = np.count_nonzero((a_u8 > 0) | (b_u8 > 0))
-        return float(inter) / float(union) if union else 0.0
-    
     def _dbg(self, **k):
         print("[LOITER DBG]", " ".join(f"{kk}={vv}" for kk,vv in k.items()))
 #
-
     def loiter_calibrate(
         self,
         logits: np.ndarray,
@@ -697,9 +498,7 @@ class CLIPSegHFModel:
         # curr_region_mask = ((labels == best_lab).astype(np.uint8) * 255)
 
         area_frac = float(best_area) / float(total_area)
-        # t0 = time.perf_counter()
         curr_region_mask = self._area_targeted_mask(logits, target_frac=area_frac)
-        # t1 = time.perf_counter()
         # logits_rgb = (logits * 255).astype(np.uint8)
         # logits_rgb = colorize_mask_fast(logits_rgb, self.lut)
         # logits_rgb = depth_display_to_rgb(logits, target_hw=(H, W))
@@ -713,7 +512,7 @@ class CLIPSegHFModel:
         if not active_arm:
             # --- CALIBRATION PHASE ---
             cnt, area_px, solidity, ecc = self._largest_contour_from_mask(curr_region_mask)
-            # t2 = time.perf_counter()
+
             # Should this frame's best become the global reference?
             better = (best_region_max > self.loiter_max) or (
                 np.isclose(best_region_max, self.loiter_max, rtol=0, atol=1e-6)
@@ -785,7 +584,265 @@ class CLIPSegHFModel:
             overlay =np.hstack((rgb_overlay, logits_overlay))
 
         return found, sim_score, area_frac, overlay
-                 
+
+    # def loiter_calibrate(
+    #     self,
+    #     logits: np.ndarray,
+    #     frame_img: np.ndarray,
+    #     active_arm: bool = False
+    # ) -> Tuple[bool, float, float, Optional[np.ndarray]]:
+    #     """
+    #     Returns (found, sim_score, area_frac, overlay_bgr_or_None)
+    #     - found: whether we matched the stored region (IoU-based when active_arm=True)
+    #     - sim_score: global max in logits (unchanged)
+    #     - area_frac: area fraction of the *current best* region
+    #     - overlay: original frame with current region (and/or stored region) overlaid
+    #     """
+    #     found = False
+    #     H, W = logits.shape
+    #     total_area = H * W
+    #     sim_score = float(logits.max())
+
+    #     # 1) threshold → binary mask (per-frame)
+    #     thresh = np.percentile(logits, 90.0)
+    #     mask = (logits >= thresh).astype(np.uint8)  # 0/1
+    #     # mask255 = (mask * 255).astype(np.uint8)     # 0/255 for OpenCV
+
+    #     # 2) connected components
+    #     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8))
+    #     if num_labels <= 1:
+    #         return found, sim_score, 0.0, None
+
+    #     # 3) choose the "best" region in this frame:
+    #     #    primary key: highest region_max; tie-breaker: largest area
+    #     best_lab = -1
+    #     best_region_max = -1.0
+    #     best_area = -1
+
+    #     for lab in range(1, num_labels):
+    #         area = stats[lab, cv2.CC_STAT_AREA]
+    #         region_max = float(logits[labels == lab].max())
+    #         if (region_max > best_region_max) or (region_max == best_region_max and area > best_area):
+    #             best_region_max = region_max
+    #             best_area = area
+    #             best_lab = lab
+
+    #     # 4) materialize current best region mask (0/255)
+    #     curr_region_mask = ((labels == best_lab).astype(np.uint8) * 255)
+
+    #     area_frac = float(best_area) / float(total_area)
+    #     overlay = self._make_overlay(frame_img, curr_region_mask)
+
+    #     if not active_arm:
+    #         # --- CALIBRATION PHASE ---
+    #         # Choose best in this frame already computed as curr_region_mask
+    #         cnt, area_px, solidity, ecc = self._largest_contour_from_mask(curr_region_mask)
+
+    #         # Decide if this frame's best should become the global reference
+    #         better = (best_region_max > self.loiter_max) or (
+    #             np.isclose(best_region_max, self.loiter_max, rtol=0, atol=1e-6)
+    #             and (best_area > self.loiter_area_frac * total_area)
+    #         )
+
+    #         if better and cnt is not None:
+    #             self.loiter_max          = best_region_max
+    #             self.loiter_area_frac    = area_frac
+    #             self.loiter_mask         = curr_region_mask.copy()
+    #             self.loiter_cnt          = cnt
+    #             self.loiter_solidity     = solidity
+    #             self.loiter_eccentricity = ecc
+
+    #             # Optional: cache a crisp outline and draw it for visualization
+    #             self.loiter_contour = cnt
+    #             cv2.drawContours(overlay, [self.loiter_contour], -1, (0, 200, 255), 2)
+
+    #         return found, sim_score, area_frac, overlay
+    #     # if not active_arm:
+    #     #     # --- CALIBRATION PHASE ---
+    #     #     # Store the strongest region seen so far (your original logic),
+    #     #     # but now also store the *mask* for IoU matching later.
+    #     #     if best_region_max > self.loiter_max:
+    #     #         # Update running best
+    #     #         self.loiter_max = best_region_max
+    #     #         self.loiter_area_frac = area_frac
+    #     #         self.loiter_mask = curr_region_mask.copy()
+
+    #     #         # after you build curr_region_mask for the best_lab
+    #     #         cnt, area_px, solidity, ecc = self._largest_contour_from_mask(curr_region_mask)
+    #     #         if cnt is not None:
+    #     #             # choose best by your existing best_region_max (or tie-breaker by area)
+    #     #             if best_region_max > self.loiter_max:
+    #     #                 self.loiter_max = best_region_max
+    #     #                 self.loiter_area_frac = area_px / (logits.shape[0] * logits.shape[1])
+    #     #                 self.loiter_mask = curr_region_mask.copy()
+    #     #                 self.loiter_cnt  = cnt
+    #     #                 self.loiter_solidity = solidity
+    #     #                 self.loiter_eccentricity = ecc
+    #     #                 # optional: save the reference mask for inspection
+    #     #                 # cv2.imwrite("loiter_mask_ref.png", self.loiter_mask)
+
+    #     #         # Optional: cache a nice crisp contour for rendering if you want outlines
+    #     #         # (Contours are cosmetic; overlay already shows fill.)
+    #     #         contours, _ = cv2.findContours(self.loiter_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    #     #         self.loiter_contour = max(contours, key=cv2.contourArea) if contours else None
+
+    #     #         # (Optional) Visualize stored region outline on overlay
+    #     #         if self.loiter_contour is not None:
+    #     #             cv2.drawContours(overlay, [self.loiter_contour], -1, (0, 200, 255), 2)
+
+    #     #     return found, sim_score, area_frac, overlay
+    #     else:
+    #         if self.loiter_cnt is None:
+    #             return found, sim_score, area_frac, overlay  # no reference yet
+
+    #         cur_cnt, cur_area_px, cur_sol, cur_ecc = self._largest_contour_from_mask(curr_region_mask)
+    #         if cur_cnt is None:
+    #             return found, sim_score, area_frac, overlay
+
+    #         # 1) Area sanity (scale changes tolerated via fraction)
+    #         area_ok = abs(area_frac - self.loiter_area_frac) <= self.area_tolerance * self.loiter_area_frac
+
+    #         # 2) Shape distance
+    #         d = self._match_shape_distance(self.loiter_cnt, cur_cnt)  # lower = more similar
+    #         shape_ok = (d <= self.shape_thresh)
+
+    #         # 3) Optional: morphology bands for extra robustness
+    #         sol_ok = (abs(cur_sol - self.loiter_solidity) <= self.sol_tol * max(self.loiter_solidity, 1e-6))
+    #         ecc_ok = (abs(cur_ecc - self.loiter_eccentricity) <= self.ecc_tol * max(self.loiter_eccentricity, 1e-6))
+
+    #         if shape_ok and area_ok and sol_ok and ecc_ok:
+    #             found = True
+
+    #             # visualize both shapes (current in green, reference outline in orange)
+    #             overlay = frame_img.copy()
+    #             # fill current region
+    #             fill = np.zeros_like(frame_img); fill[curr_region_mask > 0] = (0,255,0)
+    #             overlay = cv2.addWeighted(fill, 0.4, overlay, 1.0, 0.0)
+    #             # draw reference outline
+    #             cv2.drawContours(overlay, [self.loiter_cnt], -1, (0,165,255), 2)
+    #             # current outline
+    #             cv2.drawContours(overlay, [cur_cnt], -1, (0,255,0), 2)
+
+    #             return found, sim_score, area_frac, overlay
+    #         # # --- ACTIVE/ARM PHASE ---
+    #         # # Need a stored reference to compare against
+    #         # if self.loiter_mask is None:
+    #         #     # Nothing to match to yet
+    #         #     return found, sim_score, area_frac, overlay
+
+    #         # # If shapes differ due to any resize, ensure same size:
+    #         # if self.loiter_mask.shape != curr_region_mask.shape:
+    #         #     curr_region_mask = cv2.resize(curr_region_mask, (self.loiter_mask.shape[1], self.loiter_mask.shape[0]),
+    #         #                                 interpolation=cv2.INTER_NEAREST)
+
+    #         # # IoU match
+    #         # iou = self._compute_iou(self.loiter_mask, curr_region_mask)
+
+    #         # # Optional secondary checks: keep your original tolerances
+    #         # area_ok = (area_frac >= 0.96 * self.loiter_area_frac)
+    #         # score_ok = (best_region_max >= 0.96 * self.loiter_max)
+
+    #     #FIXME
+    #         # # 1) basic presence / shapes
+    #         # self._dbg(
+    #         #     have_ref = self.loiter_mask is not None,
+    #         #     ref_shape = None if self.loiter_mask is None else self.loiter_mask.shape,
+    #         #     cur_shape = curr_region_mask.shape,
+    #         # )
+
+    #         # # 2) ensure same size
+    #         # if self.loiter_mask is not None and self.loiter_mask.shape != curr_region_mask.shape:
+    #         #     curr_region_mask = cv2.resize(curr_region_mask,
+    #         #                                 (self.loiter_mask.shape[1], self.loiter_mask.shape[0]),
+    #         #                                 interpolation=cv2.INTER_NEAREST)
+    #         #     self._dbg(resized=True, new_cur_shape=curr_region_mask.shape)
+    #         # else:
+    #         #     self._dbg(resized=False)
+
+    #         # # 3) compute IoU + guards
+    #         # iou = self._compute_iou(self.loiter_mask, curr_region_mask) if self.loiter_mask is not None else -1.0
+    #         # area_ok = (area_frac >= 0.96 * self.loiter_area_frac) if self.loiter_area_frac > 0 else False
+    #         # score_ok = (best_region_max >= 0.96 * self.loiter_max) if self.loiter_max > 0 else False
+
+    #         # self._dbg(
+    #         #     iou=round(iou,3),
+    #         #     iou_thresh=self.iou_thresh,
+    #         #     area_frac=round(area_frac,4),
+    #         #     area_ref=round(self.loiter_area_frac,4),
+    #         #     area_ok=area_ok,
+    #         #     score=round(best_region_max,3),
+    #         #     score_ref=round(self.loiter_max,3),
+    #         #     score_ok=score_ok,
+    #         #     pct_thresh=round(float(np.percentile(logits,90.0)),3)
+    #         # )
+    #     #
+    #         # # Decision: IoU is primary; area/score help reject spurious matches
+    #         # if (iou >= self.iou_thresh) and area_ok and score_ok:
+    #         #     found = True
+
+    #         #     # (Optional) draw both current (green) and stored (orange) for debugging
+    #         #     overlay = frame_img.copy()
+    #         #     overlay = self._make_overlay(overlay, self.loiter_mask)         # stored region
+    #         #     stored_color = (0, 165, 255)  # orange
+    #         #     stored_img = np.zeros_like(frame_img); stored_img[self.loiter_mask > 0] = stored_color
+    #         #     overlay = cv2.addWeighted(stored_img, 0.35, overlay, 1.0, 0.0)
+
+    #         #     curr_img = np.zeros_like(frame_img); curr_img[curr_region_mask > 0] = self.overlay_color
+    #         #     overlay = cv2.addWeighted(curr_img, 0.40, overlay, 1.0, 0.0)
+
+    #         #     # Optional outline for clarity
+    #         #     if self.loiter_contour is not None:
+    #         #         cv2.drawContours(overlay, [self.loiter_contour], -1, (0, 140, 255), 2)  # stored outline
+    #         #     contours, _ = cv2.findContours(curr_region_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    #         #     if contours:
+    #         #         cv2.drawContours(overlay, [max(contours, key=cv2.contourArea)], -1, (0, 255, 0), 2)  # current outline
+
+    #         #     return found, sim_score, area_frac, overlay
+
+    #         # Not matched; still return the current overlay for debugging
+    #         return found, sim_score, area_frac, overlay
+
+    # def loiter_calibrate(self, logits: np.ndarray, active_arm: bool = False) -> None:
+    #     found = False
+    #     H, W = logits.shape
+    #     total_area = H * W
+    #     sim_score = float(logits.max())
+    #     thresh = np.percentile(logits, 90.0)
+    #     # print(f"sim_score={sim_score:.3f}")
+        
+    #     mask = (logits >= thresh).astype(np.uint8) 
+        
+    #     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
+    #     if num_labels <= 1:
+    #         return found, sim_score, 0.0
+    #     # stats[k, cv2.CC_STAT_AREA] is the area of component k
+
+    #     if active_arm:
+    #         for lab in range(1, num_labels):
+    #             area = stats[lab, cv2.CC_STAT_AREA]
+    #             area_frac = area / total_area
+    #             region_max = float(logits[labels == lab].max())
+    #             if (region_max < 0.99*self.loiter_max) or (area_frac < 0.99*self.loiter_area_frac):
+    #                 continue
+    #             else:
+    #                 found = True
+    #                 # self.loiter_max = 0
+    #                 # self.loiter_area_frac = 0
+    #                 return found, sim_score, area_frac
+    #     else:
+    #         for lab in range(1, num_labels):
+    #             area = stats[lab, cv2.CC_STAT_AREA]
+    #             area_frac = area / total_area
+    #             # highest sim within this component
+    #             region_max = float(logits[labels == lab].max())
+
+    #             if region_max > self.loiter_max:
+    #                 print(f"New loiter region found: {region_max:.3f} (area_frac={area_frac*100:.1f}%)")
+    #                 self.loiter_max = region_max
+    #                 self.loiter_area_frac = area / total_area
+    #                 # self.loiter_area = area
+    #     return found, sim_score, area
+
 ################################################
 # 2. Lookup Table for Semantic Probability Map #
 ################################################
@@ -886,7 +943,7 @@ def blend_overlay_gpu(base: np.ndarray,
 
     # 6. Clamp to [0,255], cast → uint8, move to CPU, return as H×W×3
     blended = blended.clamp(0, 255).round().byte()                    # [3, H, W]
-    return blended.permute(1, 2, 0).cpu().numpy()    
+    return blended.permute(1, 2, 0).cpu().numpy()   
 
 def guided_smoothing(rgb: np.ndarray, seg_mask: np.ndarray, radius=4, eps=1e-3) -> np.ndarray:
     rgb_float = rgb.astype(np.float32) / 255.0
@@ -973,6 +1030,50 @@ def warp_mask(prev_rgb, curr_rgb, prev_mask):
     warped = cv2.remap(prev_mask, remap[..., 0], remap[..., 1], interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
     return warped.astype(np.uint8)
 
+#TODO: Integrate this with the state machine to track when the trajectory should end.
+def has_large_region_with_color(image: np.ndarray, target_rgb=(220, 20, 60),
+                                 color_thresh=30, area_thresh=0.05):
+    """
+    Returns True if any superpixel is close in color to `target_rgb`
+    and covers at least `area_thresh` of the image.
+    
+    Params:
+        image        : H x W x 3 RGB image
+        target_rgb   : RGB triplet to match (e.g., red)
+        color_thresh : Max Euclidean distance in RGB
+        area_thresh  : Fraction of image area (e.g., 0.05 = 5%)
+
+    Returns:
+        True/False
+    """
+    h, w = image.shape[:2]
+    seeds = cv2.ximgproc.createSuperpixelSEEDS(
+        w, h, image.shape[2],
+        num_superpixels=500,
+        num_levels=3,
+        prior=2,
+        histogram_bins=5,
+        double_step=False
+    )
+    seeds.iterate(image, num_iterations=2)
+    labels = seeds.getLabels()
+    output_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+
+    found_pixels = 0
+    target = np.array(target_rgb, dtype=np.float32)
+
+    for label in np.unique(labels):
+        mask = labels == label
+        region = image[mask]
+        mean_rgb = region.mean(axis=0)
+        dist = np.linalg.norm(mean_rgb - target)
+
+        if dist < color_thresh:
+            found_pixels += mask.sum()
+
+    area_frac = found_pixels / (h * w)
+    return area_frac > area_thresh
+
 def has_one_large_high_sim_region(
     image: np.ndarray,
     similarity_map: np.ndarray,
@@ -1009,104 +1110,6 @@ def has_one_large_high_sim_region(
             return True
 
     return False
-
-def has_one_large_high_sim_region_slic(
-    image: np.ndarray,
-    similarity_map: np.ndarray,
-    sim_thresh: float = 0.5,
-    area_thresh: float = 0.05,
-    num_superpixels: int = 15,
-    compactness: float = 5.0,
-    sigma: float = 1.0,
-    num_iterations: int = 200,
-    boundary_color: tuple = (0, 255, 0),  # BGR green
-) -> bool:
-    """
-    True if ∃ a SLIC superpixel whose mean(similarity_map) ≥ sim_thresh
-    and whose area ≥ area_thresh * image_area.
-    """
-    h, w = image.shape[:2]
-    # 1) compute SLIC labels (0…n_segments-1)
-    labels = slic(
-        image,
-        n_segments=num_superpixels,
-        compactness=compactness,
-        max_num_iter=num_iterations,  
-        sigma=sigma,
-        start_label=0,
-        channel_axis=-1,              # for color images
-        convert2lab=False,
-        slic_zero=True,
-    )
-    
-    # 2) flatten and bin-count
-    flat_lbl = labels.ravel()
-    flat_sim = similarity_map.ravel()
-    counts   = np.bincount(flat_lbl)
-    sums     = np.bincount(flat_lbl, weights=flat_sim)
-    
-    # 3) mean similarity and area fraction per superpixel
-    mean_sim   = sums / counts
-    area_frac  = counts / (h * w)
-    
-    found = bool(np.any((mean_sim >= sim_thresh) & (area_frac >= area_thresh)))
-
-    # 3) build overlay: draw superpixel boundaries on a copy
-    boundaries = find_boundaries(labels, mode='outer')
-    overlay = image.copy()
-    overlay[boundaries] = boundary_color
-
-    return found, overlay
-
-def has_large_high_sim_region_cc(sim_map: np.ndarray,
-                                 sim_thresh: float = 0.5,
-                                 area_thresh: float = 0.05) -> bool:
-    """
-    Return True if there is *any* connected component in the binary mask
-    (sim_map >= sim_thresh) whose pixel‐count ≥ area_thresh * total_pixels.
-    """
-    # threshold → binary mask (uint8)
-    mask = (sim_map >= sim_thresh).astype(np.uint8)
-
-    H, W = sim_map.shape
-    total     = H * W
-    min_pixels = int(area_thresh * total)
-
-    sim_score = float(sim_map.max())
-
-    # find connected components *with stats*
-    #    stats is an array of shape (num_labels, 5), where
-    #    stats[i, cv2.CC_STAT_AREA] is the pixel-count of label i.
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
-        mask, connectivity=8)
-
-    if num_labels <= 1:
-        return False, sim_score, 0.0, 0.0
-
-    best_score = 0.0
-    area_frac  = 0.0
-
-    for lab in range(1, num_labels):
-        area = stats[lab, cv2.CC_STAT_AREA]
-        if area < min_pixels:
-            continue
-
-        # highest sim within this component
-        region_max = float(sim_map[labels == lab].max())
-
-        if region_max > best_score:
-            best_score = region_max
-            area_frac  = area / total
-
-    found = (best_score >= sim_thresh)
-    return found, sim_score, area_frac, best_score
-    # # stats[1:, AREA] are the areas of the *foreground* labels 1..L-1
-    # areas = stats[1:, cv2.CC_STAT_AREA]
-    # max_area = int(areas.max())
-    # area_frac = max_area / total
-
-    # # any component big enough?
-    # return bool((areas >= min_pixels).any()), sim_score, area_frac
 
 def render_rescale(self, srgb_mono):
     '''This function takes a single channel semantic similarity and rescales it globally'''
