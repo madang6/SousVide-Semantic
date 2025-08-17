@@ -446,7 +446,7 @@ class FlightCommand(Node):
     def async_vision_loop(self):
         """Continuously grab + infer, store only the newest mask."""
         while not self.vision_shutdown:
-            imgz, _ = zch.get_image(self.pipeline)
+            imgz, _, _, _ = zch.get_image(self.pipeline)
             if imgz is None:
                 time.sleep(0.01)
                 continue

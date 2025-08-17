@@ -15,6 +15,31 @@ from px4_msgs.msg import (
     ActuatorMotors
 )
 
+def quat_xyzw_to_R(qx, qy, qz, qw):
+    # Normalize
+    n = np.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+    qx, qy, qz, qw = qx/n, qy/n, qz/n, qw/n
+    # Rotation (body->world) from quaternion (x,y,z,w)
+    xx, yy, zz = qx*qx, qy*qy, qz*qz
+    xy, xz, yz = qx*qy, qx*qz, qy*qz
+    wx, wy, wz = qw*qx, qw*qy, qw*qz
+    return np.array([
+        [1 - 2*(yy+zz),     2*(xy - wz),     2*(xz + wy)],
+        [    2*(xy + wz), 1 - 2*(xx+zz),     2*(yz - wx)],
+        [    2*(xz - wy),     2*(yz + wx), 1 - 2*(xx+yy)]
+    ], dtype=np.float32)
+
+def hom_from_R_t(R, t):
+    T = np.eye(4, dtype=np.float32)
+    T[:3,:3] = R
+    T[:3, 3] = t.astype(np.float32)
+    return T
+
+def pose_c2b(T_c2b, p_cam):
+    p_body_h  = T_c2b @ np.array([*p_cam, 1.0], dtype=np.float32)
+
+    return p_body_h
+
 def pose_from_similarity_xyz(similarity: np.ndarray,
                              xyz_m: np.ndarray,
                              top_percent: float = 10.0,
@@ -59,83 +84,42 @@ def pose_from_similarity_xyz(similarity: np.ndarray,
     else:
         uv_centroid = (None, None)
 
-    p_body = [p_cam[2], p_cam[0], -p_cam[1]]
+    return True, p_cam, uv_centroid, mask
 
-    return True, p_body, uv_centroid, mask
+def pose_b2w(x_ext, p_body_h, *, quat_is_world_to_body: bool = True):
+    t_wb = np.array(x_ext[0:3], dtype=np.float32)          # body pos in WORLD
+    qx, qy, qz, qw = map(float, x_ext[6:10])
 
-def cam_xyz_to_body_ned(p_cam_xyz: np.ndarray) -> np.ndarray:
-    """
-    Map a point from ZED camera frame (X right, Y down, Z forward)
-    to drone BODY NED (X north/forward, Y east/right, Z down).
-    Assumes camera optical axis aligns with body +X (north/forward) and is level.
-    """
-    Xc, Yc, Zc = float(p_cam_xyz[0]), float(p_cam_xyz[1]), float(p_cam_xyz[2])
-    # Simple axis remap: X_ned = Z_cam, Y_ned = X_cam, Z_ned = Y_cam
-    return np.array([Zc, Xc, Yc], dtype=np.float32)
+    R = quat_xyzw_to_R(qx, qy, qz, qw)
+    R_wb = R.T if quat_is_world_to_body else R            
 
-def quat_xyzw_to_dcm_body_to_world(q_xyzw: np.ndarray) -> np.ndarray:
-    """
-    q = [x, y, z, w] (body->world). Returns 3x3 DCM R_BW.
-    Normalizes q for safety.
-    """
-    x, y, z, w = map(float, q_xyzw)
-    n = np.sqrt(x*x + y*y + z*z + w*w)
-    if n < 1e-9:
-        # Identity fallback
-        return np.eye(3, dtype=np.float64)
-    x, y, z, w = x/n, y/n, z/n, w/n
+    T_b2w = hom_from_R_t(R_wb, t_wb)
+    p_world_h = T_b2w @ p_body_h
+    target_world = p_world_h[:3].astype(np.float32)
+    return target_world, t_wb, R_wb
 
-    xx, yy, zz = x*x, y*y, z*z
-    xy, xz, yz = x*y, x*z, y*z
-    wx, wy, wz = w*x, w*y, w*z
+# def pose_b2w(x_ext, p_body_h):
+#     t_wb = np.array(x_ext[0:3], dtype=np.float32)            # body pos [x,y,z]
+#     q_wb = np.array(x_ext[6:10], dtype=np.float32)           # qx,qy,qz,qw
+#     R_wb = quat_xyzw_to_R(*q_wb)
+#     T_b2w = hom_from_R_t(R_wb, t_wb)
 
-    # Standard right-handed DCM for q = [x,y,z,w]
-    R = np.array([
-        [1 - 2*(yy + zz),     2*(xy - wz),        2*(xz + wy)],
-        [    2*(xy + wz),  1 - 2*(xx + zz),       2*(yz - wx)],
-        [    2*(xz - wy),      2*(yz + wx),   1 - 2*(xx + yy)]
-    ], dtype=np.float64)
-    return R
+#     p_world_h = T_b2w @ p_body_h
+#     target_world = p_world_h[:3]
 
-def cam_to_body_from_Tcb(p_cam_xyz, T_cb_4x4):
-    p = np.asarray(p_cam_xyz, dtype=np.float64).reshape(3)
-    T = np.asarray(T_cb_4x4, dtype=np.float64)
-    R_cb = T[:3, :3]; t_cb = T[:3, 3]
-    return (R_cb @ p) + t_cb
+#     return target_world, t_wb
 
-def body_to_world(p_body: np.ndarray, R_bw: np.ndarray, p_world_current: np.ndarray) -> np.ndarray:
-    """
-    p_body: [X,Y,Z] in body NED
-    R_bw:  3x3 body->world rotation from x_ext quaternion
-    p_world_current: current vehicle position [X,Y,Z] in world NED from x_ext[0:3]
-    """
-    return (R_bw @ p_body.reshape(3,1)).ravel() + p_world_current.reshape(3)
-
-def build_world_target_from_cam_point(p_cam_xyz, T_cb_4x4, x_ext):
-    p_cam = np.asarray(p_cam_xyz, dtype=np.float64).reshape(3)
-    T_cb  = np.asarray(T_cb_4x4, dtype=np.float64)
-    x_ext = np.asarray(x_ext, dtype=np.float64)
-
-    p_body = cam_to_body_from_Tcb(p_cam, T_cb)
-
-    p_world_current = x_ext[0:3]
-    q_xyzw = x_ext[6:10]
-    R_bw = quat_xyzw_to_dcm_body_to_world(q_xyzw)
-
-    p_world = (R_bw @ p_body) + p_world_current
-    # Ensure ndarray returns:
-    return p_body.astype(np.float64), p_world.astype(np.float64), R_bw
 
 def publish_position_setpoint(timestamp: int,
-                              current_position: np.ndarray,
-                              desired_position_ned: np.ndarray,
+                              altitude_hold: np.ndarray,
+                              desired_position: np.ndarray,
                               traj_sp_pub) -> None:
     ts = TrajectorySetpoint(timestamp=int(timestamp))  # PX4 expects int (µs)
     # Hold current Z, command XY
     ts.position = [
-        float(desired_position_ned[0]),
-        float(desired_position_ned[1]),
-        float(current_position[2]),
+        float(desired_position[0]),
+        float(desired_position[1]),
+        float(altitude_hold),
     ]
     ts.velocity     = [float('nan'), float('nan'), float('nan')]
     ts.acceleration = [float('nan'), float('nan'), float('nan')]
@@ -143,6 +127,142 @@ def publish_position_setpoint(timestamp: int,
     ts.yaw          = float('nan')
     ts.yawspeed     = float('nan')
     traj_sp_pub.publish(ts)
+
+def traj_from_target_pose(
+    x_ext: np.ndarray,
+    p_cam: np.ndarray,
+    T_c2b: np.ndarray,
+    *,
+    dt: float = 1.0/20.0,
+    total_time: float = 6.0,
+    v_max: float = 1.0,
+    standoff_m: float = 0.0,
+    eps: float = 1e-6
+) -> tuple[np.ndarray, dict]:
+    """
+    Build a straight-line, speed-limited world-frame trajectory from the current body pose to the target.
+    Returns (trajectory[N,3], debug_info).
+    """
+    # CAMERA -> BODY (homogeneous)
+    p_body_h = pose_c2b(T_c2b, p_cam)          # [x,y,z,1] body(NED)
+    p_body   = p_body_h[:3].astype(np.float32)
+
+    # BODY -> WORLD (using mocap pose)
+    p_world_tgt, t_wb, R_wb = pose_b2w(x_ext, p_body_h)
+
+    # Standoff along the body-ray to the target
+    if standoff_m > 0.0:
+        r_body   = float(np.linalg.norm(p_body)) + eps
+        dir_body = p_body / r_body
+        # Stop short by standoff_m (don’t pass through target)
+        step_world = (R_wb @ (max(r_body - standoff_m, 0.0) * dir_body)).astype(np.float32)
+        p_world_goal = (t_wb + step_world).astype(np.float32)
+    else:
+        p_world_goal = p_world_tgt
+
+    # Build time-aware, speed-limited trajectory at dt
+    p0   = t_wb.copy()
+    dvec = p_world_goal - p0
+    dist = float(np.linalg.norm(dvec))
+    if dist < eps:
+        traj = np.vstack([p0, p_world_goal]).astype(np.float32)
+        dbg = {
+            "p_cam":      p_cam.astype(float),
+            "p_body":     p_body.astype(float),
+            "p_world_tgt":p_world_tgt.astype(float),
+            "p_world_goal":p_world_goal.astype(float),
+            "R_wb":       R_wb.astype(float),
+            "dist":       dist,
+            "steps":      1,
+            "step_cap":   0.0,
+        }
+        return traj, dbg
+
+    direction = dvec / dist
+    step_cap  = max(v_max, eps) * dt
+    t_needed  = min(total_time, dist / max(v_max, eps))
+    steps     = max(1, int(np.ceil(t_needed / dt)))
+
+    waypoints = [p0]
+    pos = p0.copy()
+    for _ in range(steps):
+        remaining = p_world_goal - pos
+        rdist = float(np.linalg.norm(remaining))
+        if rdist <= step_cap + eps:
+            pos = p_world_goal
+            waypoints.append(pos.copy())
+            break
+        pos = pos + direction * step_cap
+        waypoints.append(pos.copy())
+
+    if np.linalg.norm(waypoints[-1] - p_world_goal) > 1e-4:
+        waypoints.append(p_world_goal.copy())
+
+    traj = np.asarray(waypoints, dtype=np.float32)
+    dbg = {
+        "p_cam":        p_cam.astype(float),
+        "p_body":       p_body.astype(float),
+        "p_world_tgt":  p_world_tgt.astype(float),
+        "p_world_goal": p_world_goal.astype(float),
+        "R_wb":         R_wb.astype(float),
+        "dist":         dist,
+        "steps":        len(traj)-1,
+        "step_cap":     step_cap,
+        "dt":           dt,
+        "v_max":        v_max,
+        "total_time":   total_time,
+        "standoff_m":   float(standoff_m),
+    }
+    return traj, dbg
+# def traj_from_target_pose(
+#     x_ext: np.ndarray,
+#     p_cam: np.ndarray,
+#     T_c2b: np.ndarray,
+#     *,
+#     dt: float = 1.0/20.0,     # control period (s)
+#     total_time: float = 6.0,  # cap on trajectory duration (s)
+#     v_max: float = 1.0,       # max speed (m/s)
+#     eps: float = 1e-6
+# ) -> np.ndarray:
+#     """
+#     Returns an (N,3) array of world-frame waypoints from current body pose toward the target.
+#     Frames: camera(ZED)->body(NED)->world(NED)
+#     """
+#     # CAMERA -> BODY
+#     p_body_h = pose_c2b(T_c2b, p_cam)            # [x,y,z,1] body (NED)
+
+#     # BODY -> WORLD (mocap pose in x_ext)
+#     target_world, t_wb = pose_b2w(x_ext, p_body_h)  # both in world (NED)
+
+#     # Straight-line, speed-limited trajectory
+#     p0   = t_wb.astype(np.float32)
+#     dvec = target_world.astype(np.float32) - p0
+#     dist = float(np.linalg.norm(dvec))
+#     if dist < eps:
+#         return np.vstack([p0, target_world])  # trivial (already there)
+
+#     direction = dvec / dist
+#     step_cap  = max(v_max, eps) * dt
+#     max_steps = max(1, int(np.ceil(min(total_time, dist/max(v_max, eps)) / dt)))
+
+#     waypoints = [p0]
+#     pos = p0.copy()
+#     for _ in range(max_steps):
+#         remaining = target_world - pos
+#         rdist = float(np.linalg.norm(remaining))
+#         if rdist <= step_cap + eps:
+#             pos = target_world
+#             waypoints.append(pos.copy())
+#             break
+#         pos = pos + direction * step_cap
+#         waypoints.append(pos.copy())
+
+#     if np.linalg.norm(waypoints[-1] - target_world) > 1e-4:
+#         waypoints.append(target_world.copy())
+
+#     return np.asarray(waypoints, dtype=np.float32)
+
+
 
 def get_camera(height: int, width: int, fps: int, use_depth: bool = False) -> sl.Camera:
     """Initialize the ZED camera."""
@@ -201,8 +321,9 @@ def get_image(Camera: sl.Camera,
 
     if not hasattr(get_image, "_inited"):
         get_image._image = sl.Mat()
-        get_image._xyz = sl.Mat()
-        get_image._depth_viz = sl.Mat()
+        if use_depth:
+            get_image._xyz = sl.Mat()
+            get_image._depth_viz = sl.Mat()
         get_image._rt = sl.RuntimeParameters()
         # get_image._rt.confidence_threshold = 95
         # get_image._rt.texture_confidence_threshold = 100
@@ -227,8 +348,10 @@ def get_image(Camera: sl.Camera,
         timestamp = Camera.get_timestamp(sl.TIME_REFERENCE.CURRENT)  # Get timestamp
 
         # print(f"Image resolution: {image.get_width()} x {image.get_height()} || Image timestamp: {timestamp.get_milliseconds()}")
-
-        return img_np, xyz_np, depth_viz_np, timestamp.get_milliseconds()
+        if use_depth:
+            return img_np, xyz_np, depth_viz_np, timestamp.get_milliseconds()
+        else:
+            return img_np, None, None, timestamp.get_milliseconds()
 
     else:
         print("Failed to capture image.")

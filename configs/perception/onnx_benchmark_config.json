@@ -1,5 +1,5 @@
 {
-  "prompt": "cabinets",  
+  "prompt": "ladder",  
   "hf_model": "CIDAS/clipseg-rd64-refined",
   "input_video_path": "~/StanfordMSL/SousVide-Semantic/notebooks/test_space/sim_video_flightroom_lowres_loiter_5_expert_semantic.mp4",
   "onnx_model_path": "~/StanfordMSL/SousVide-Semantic/notebooks/clipseg_model.onnx",
@@ -7,7 +7,7 @@
   "camera_mode": "true",
 
   "camera_fps": 30,
-  "camera_duration": 20.0,
+  "camera_duration": 15.0,
   "camera_width": 640,
   "camera_height": 480
 }

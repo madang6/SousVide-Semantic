@@ -198,13 +198,10 @@ class FlightCommand(Node):
             self.range_min_pixels  = int(mission_config.get("range_min_pixels", 200))
             self.range_standoff   = float(mission_config.get('range_standoff', 0.5))  # standoff distance in meters
             self.range_kp         = float(mission_config.get('range_kp', 0.6))
-            self.range_vmax       = float(mission_config.get('range_vmax', 0.6))
+            self.range_vmax       = float(mission_config.get('range_vmax', 0.05))
             self.range_deadband   = float(mission_config.get('range_deadband', 0.05))
             self.range_k_rate     = float(mission_config.get('range_k_rate', 0.5))
             self.range_max_rate   = float(mission_config.get('range_max_rate', 0.3))
-
-            self.next_waypoint_world = None
-            self.next_waypoint_body  = None        
         else:
             self.isNN = True
             self.use_depth = False
@@ -215,7 +212,7 @@ class FlightCommand(Node):
         self.internal_estimator_subscriber = self.create_subscription(
             VehicleOdometry, drone_prefix+'/fmu/out/vehicle_odometry', self.internal_estimator_callback, qos_drone)
         self.external_estimator_subscriber = self.create_subscription(
-            VehicleOdometry, '/drone0/fmu/in/vehicle_visual_odometry', self.external_estimator_callback, qos_mocap)
+            VehicleOdometry, '/drone4/fmu/in/vehicle_visual_odometry', self.external_estimator_callback, qos_mocap)
         self.vehicle_rates_subcriber = self.create_subscription(
             VehicleRatesSetpoint, drone_prefix+'/fmu/out/vehicle_rates_setpoint', self.vehicle_rates_setpoint_callback, qos_drone)
 
@@ -270,20 +267,23 @@ class FlightCommand(Node):
         self.found              = False
         self.sim_score          = 0.0
         self.area_frac          = 0.0
-
 #policy switch flag
         self.ready_active     = False
         self.spin_cycle       = False
 
     #NOTE streamline testing non-mpc pilots
         # non-MPC (neural) case: give everything a neutral default
-        dt = 1.0 / hz                                     # hz (control rate)
-        self.Tpi = np.arange(0.0, 1.0 + dt, dt)
+        self.dt = 1.0 / hz                                     # hz (control rate)
+        self.Tpi = np.arange(0.0, 1.0 + self.dt, self.dt)
         self.obj = np.zeros((18,1))
         self.q0 = np.array([0.0, 0.0, 0.70710678, 0.70710678])          # determines starting orientation for ACTIVE mode to launch
         self.z0 = -0.50                                   # init altitude offset
         self.xref = np.zeros(10)                          # no reference state
         self.uref = -6.90*np.ones((4,))                   # reference input
+        self.alt_hold = float('nan')
+        self.trajectory = None
+        self.trajectory_length = None
+        self.trajectory_index = 1
         record_duration = self.Tpi[-1] + self.t_lg        # 
 
         # Initialize control variables
@@ -327,7 +327,7 @@ class FlightCommand(Node):
         self.pilot_name = mission_config["pilot"]
 
         # Create a timer to publish control commands
-        self.cmdLoop = self.create_timer(dt, self.commander)
+        self.cmdLoop = self.create_timer(self.dt, self.commander)
 
         # Earth to World Pose
         self.T_e2w = np.eye(4)
@@ -655,14 +655,16 @@ class FlightCommand(Node):
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
 
             # Check if we are still in the trajectory
-            if t_tr < (self.Tpi[-1]+self.t_lg):
+            if (t_tr <= (self.Tpi[-1]+self.t_lg)) and (self.trajectory_index < self.trajectory_length-1):
+                desired_position = self.trajectory[self.trajectory_index]
                 # Publish a TrajectorySetpoint to the fixed world waypoint (position only; others NaN)
                 zch.publish_position_setpoint(
                     self.get_current_timestamp_time(),
-                    x_ext[0:3],
-                    self.next_waypoint_world,
+                    self.alt_hold,
+                    desired_position,
                     self.trajectory_setpoint_publisher
                 )
+                self.trajectory_index += 1  # move to next waypoint for next loop
 
             else:
                 # trajectory has ended → HOLD Position
@@ -674,12 +676,14 @@ class FlightCommand(Node):
                 self.vision_model.running_min = float('inf')
                 self.vision_model.running_max = float('-inf')
 
+                self.alt_hold = float('nan')
+
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
 
-                self.spin_cycle = True
+                self.spin_cycle   = True
                 self.ready_active = False                                                 # Reset ready active flag
-                self.found = False
-                self.sm                    = StateMachine.HOLD
+                self.found        = False
+                self.sm           = StateMachine.HOLD
 
                 print('Trajectory Finished → HOLDing Position, readying for next query...')
 
@@ -697,6 +701,8 @@ class FlightCommand(Node):
                 self.active_arm   = False
                 self.found = False
                 self.last_print_time = 0.0
+
+                self.alt_hold = x_est[2] if np.isnan(self.alt_hold) else self.alt_hold
                 zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
 
                 self.sm = StateMachine.ACTIVE
@@ -710,8 +716,9 @@ class FlightCommand(Node):
                 print('=====================================================================')
                 print('SPIN Started.')
             elif self.pilot_name == "range_velocity" and t_tr < 6.0 and (self.active_arm is True and self.spin_cycle is False):
+                current_state = x_est.copy()
                 # One-time target solve while HOLDing
-                ok_pose, p_cam, (u_star, v_star), _ = zch.pose_from_similarity_xyz(
+                ok_pose, p_cam, _, _ = zch.pose_from_similarity_xyz(
                     similarity, depth,
                     top_percent=self.range_top_pct,
                     min_pixels=self.range_min_pixels
@@ -724,36 +731,39 @@ class FlightCommand(Node):
                 # cam -> body -> world
                 T_cb = np.array(self.drone_config["T_c2b"], dtype=np.float64)
 
-                p_body, p_world_target, R_bw = zch.build_world_target_from_cam_point(p_cam, T_cb, x_ext)
+                # p_body, p_world_target, R_bw = zch.build_world_target_from_cam_point(p_cam, T_cb, x_ext)
 
-                # Choose the final waypoint: either the true target, or a standoff along the same ray
-                # standoff_m = getattr(self, "standoff_m", 0.0)  # set in config; 0.0 => touch target
-                standoff_m = self.range_standoff
-                if standoff_m > 0.0:
-                    r_body   = np.linalg.norm(p_body) + 1e-9
-                    dir_body = p_body / r_body
-                    # stop short by standoff_m (don’t pass through the target)
-                    step_world = R_bw @ (max(r_body - standoff_m, 0.0) * dir_body)
-                    p_world_waypoint = x_ext[0:3] + step_world
-                else:
-                    p_world_waypoint = p_world_target
+                # hz   = 20.0
+                # dt   = 1.0 / hz
+                # vmax = getattr(self, "range_vmax", 1.0)          # m/s
+                # standoff_m = getattr(self, "range_standoff", 0.0)
 
-                # Save for ACTIVE
-                self.next_waypoint_world = p_world_waypoint.astype(np.float32)
-                self.next_waypoint_body  = p_body.astype(np.float32)
-                # self.target_ready        = True
-                self.ready_active        = True
-                # self.target_timestamp    = self.get_clock().now().nanoseconds/1e9
+                trajectory, dbg = zch.traj_from_target_pose(
+                    x_ext=current_state,
+                    p_cam=p_cam,
+                    T_c2b=T_cb,
+                    dt=self.dt,
+                    total_time=2.0,
+                    v_max=self.range_vmax,
+                    standoff_m=0.5
+                )
+                self.trajectory = trajectory
+                self.trajectory_length = trajectory.shape[0]
+
+                self.ready_active = True
 
                 now = time.time()
-                if now - self.last_print_time >= 0.5:  # 2 Hz = every 0.5s
+                if now - self.last_print_time >= 0.5:
                     print(
-                        "[HOLD→TARGET] cam={}  body={}  world_target={}  world_waypoint={}".format(
-                            np.asarray(p_cam, dtype=float).round(3),
-                            np.asarray(p_body, dtype=float).round(3),
-                            np.asarray(p_world_target, dtype=float).round(3),
-                            np.asarray(p_world_waypoint, dtype=float).round(3),
-                        )
+                        "[HOLD→TARGET] "
+                        f"drone={np.asarray(current_state[0:3]).round(3)}  "
+                        f"cam={np.asarray(dbg['p_cam']).round(3)}  "
+                        f"body={np.asarray(dbg['p_body']).round(3)}  "
+                        f"world_target={np.asarray(dbg['p_world_tgt']).round(3)}  "
+                        f"world_goal={np.asarray(dbg['p_world_goal']).round(3)}\n"
+                        f"dist={dbg['dist']:.3f} m  steps={dbg['steps']}  "
+                        # f"dt={dbg.get('dt',dt):.3f}s  vmax={dbg.get('v_max',vmax):.2f} m/s  "
+                        # f"step_cap={dbg['step_cap']:.3f} m  standoff={dbg.get('standoff_m',standoff_m):.2f} m"
                     )
                     self.last_print_time = now
             elif t_tr < 6.0:
@@ -769,7 +779,7 @@ class FlightCommand(Node):
                 self.get_current_timestamp_time(),
                 self.trajectory_setpoint_publisher,
                 self.vehicle_rates_setpoint_publisher,
-                0.9
+                0.75
                 )
             if t_tr < 7.0:
                 self.active_arm = False

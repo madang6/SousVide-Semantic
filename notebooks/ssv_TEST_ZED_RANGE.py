@@ -253,17 +253,10 @@ def main():
             xyz_np = ensure_hw_match((H, W), xyz_np)
 
             t0 = time.time()
-            ok, p_cam, (u_star, v_star), mask = zch.pose_from_similarity_xyz(
+            ok, p_cam, uv, mask = zch.pose_from_similarity_xyz(
                 similarity, xyz_np, top_percent=top_percent, min_pixels=min_pixels
             )
             tf = time.time()
-
-            # Estimate range (top-P% similarity pixels)
-            # ok, range_m = zch.euclidean_range_from_similarity(
-            #     similarity, xyz_np,
-            #     top_percent=top_percent,
-            #     min_pixels=min_pixels,
-            # )
 
             # Build frames for saving (imageio expects RGB)
             clipseg_rgb = overlay_rgb
@@ -286,13 +279,11 @@ def main():
 
             # Optional console
             if frame_count % max(1, int(fps_cam/2)) == 0:
-                r_cam = np.linalg.norm(p_cam)
                 print(
                     f"[{frame_count:04d}] "
                     f"[TIME] Capture={t1-t0:.2f} ms | "
-                    f"[POSE] Pixel centroid=({u_star},{v_star}) | "
-                    f"Camera frame (X,Y,Z) = ({p_cam[2]:.2f}, {p_cam[0]:.2f}, {p_cam[1]:.2f}) m | "
-                    f"Range = {r_cam:.2f} m"
+                    f"[POSE] Pixel centroid=({uv[0]},{uv[1]}) | "
+                    f"Camera frame (X,Y,Z) = ({p_cam[0]:.2f}, {p_cam[1]:.2f}, {p_cam[2]:.2f}) m | "
                 )
 
     finally:
