@@ -71,7 +71,7 @@ class CLIPSegHFModel:
         self.loiter_cnt = None
         self.loiter_solidity = None
         self.loiter_eccentricity = None
-        self.shape_thresh = 0.35           # tune 0.05–0.20 (lower = stricter)
+        self.shape_thresh = 0.375           # tune 0.05–0.20 (lower = stricter)
         self.area_tolerance = 0.15         # ±15%
         self.sol_tol = 0.10                # ±10% band
         self.ecc_tol = 0.15                # ±15% band
