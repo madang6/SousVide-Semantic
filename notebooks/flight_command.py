@@ -825,6 +825,7 @@ class FlightCommand(Node):
                 
             # Save data
             output_path = self.recorder.save()
+            # self.policy_duration = t_tr
 
             # Print statistics
             if output_path is not None:

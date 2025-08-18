@@ -782,7 +782,7 @@ class CLIPSegHFModel:
             cv2.drawContours(logits_overlay, [self.loiter_cnt], -1, (0, 165, 255), 2)
             cv2.drawContours(logits_overlay, [cur_cnt], -1, (0, 255, 0), 2)
 
-            overlay =np.hstack((rgb_overlay, logits_overlay))
+            overlay = rgb_overlay #np.hstack((rgb_overlay, logits_overlay))
 
         return found, sim_score, area_frac, overlay
                  
