@@ -664,8 +664,13 @@ class FlightCommand(Node):
             t0_lp  = time.time()                                                # Algorithm start time
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
 
+            # Convert current query point (camera frame) into world coordinates
+            p_body_h = zch.pose_c2b(self.T_c2b, self.query_p_cam)  # homogeneous [x,y,z,1]
+            p_world_tgt, _, _ = zch.pose_b2w(x_est, p_body_h)      # your existing helper
+            dist_to_query = float(np.linalg.norm(p_world_tgt - x_est[0:3]))
+
             # Check if we are still in the trajectory
-            if (t_tr <= (self.Tpi[-1]+self.t_lg)):
+            if (t_tr <= (self.Tpi[-1]+self.t_lg) and (dist_to_query > self.range_target_m):
                 zch.publish_position_setpoint_with_yawspeed(
                     self.get_current_timestamp_time(),
                     self.alt_hold if not np.isnan(self.alt_hold) else x_est[2],
