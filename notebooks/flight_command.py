@@ -658,8 +658,10 @@ class FlightCommand(Node):
             t0_lp  = time.time()                                                # Algorithm start time
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
 
+            should_exit, reason, m = zch.query_found(self.latest_similarity)
+            
             # Check if we are still in the trajectory
-            if t_tr < (self.Tpi[-1]+self.t_lg):
+            if t_tr < (self.Tpi[-1]+self.t_lg) and not should_exit:
                 # Compute the reference trajectory current point
                 t_ref = np.min((t_tr,self.Tpi[-1]))                             # Reference time (does not exceed ideal)
 
