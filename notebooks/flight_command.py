@@ -523,7 +523,7 @@ class FlightCommand(Node):
         frame = self.latest_frame
         img = self.latest_mask
         loiter_overlay = self.latest_loiter_overlay
-        # similarity = self.latest_similarity
+        similarity = self.latest_similarity
 
         # zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
         if self.sm == StateMachine.ACTIVE:
@@ -658,10 +658,10 @@ class FlightCommand(Node):
             t0_lp  = time.time()                                                # Algorithm start time
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
 
-            should_exit, reason, m = zch.query_found(self.latest_similarity)
+            sem_exit, reason, m = self.vision_model._query_found(similarity)
             
             # Check if we are still in the trajectory
-            if t_tr < (self.Tpi[-1]+self.t_lg) and not should_exit:
+            if t_tr < (self.Tpi[-1]+self.t_lg) or sem_exit:
                 # Compute the reference trajectory current point
                 t_ref = np.min((t_tr,self.Tpi[-1]))                             # Reference time (does not exceed ideal)
 
