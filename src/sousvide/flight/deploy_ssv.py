@@ -193,6 +193,8 @@ def simulate_roster(cohort_name:str,method_name:str,
                     scene_cfg_file, simulator, epcds_list, epcds_arr, objectives,
                     goal_poses, obj_centroids, env_bounds, rings, obstacles, n_iter_rrt
                 )
+                total_paths = sum(len(paths) for paths in raw_rrt_paths.values())
+                print(f"Total number of raw_rrt_paths: {total_paths}")
                 # else:
                 #     # Generate RRT paths
                 #     raw_rrt_paths = bd.generate_rrt_paths(

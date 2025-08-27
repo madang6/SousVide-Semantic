@@ -168,6 +168,8 @@ def generate_rollout_data(cohort_name:str,method_name:str,
             print("==== OBJECTIVES ====")
             print("objectives:", objectives)
             print("raw_rrt_paths keys:", list(raw_rrt_paths.keys()))
+            total_paths = sum(len(paths) for paths in raw_rrt_paths.values())
+            print(f"Total number of raw_rrt_paths: {total_paths}")
             print("====================")
 
             # Filter and parameterize trajectories

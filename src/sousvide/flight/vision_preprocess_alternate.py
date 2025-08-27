@@ -108,7 +108,8 @@ class CLIPSegHFModel:
             self.ort_session = ort.InferenceSession(
                 onnx_model_path,
                 sess_options=so,
-                providers=["TensorrtExecutionProvider"]#, "CUDAExecutionProvider", "CPUExecutionProvider"]
+                # providers=["TensorrtExecutionProvider"]#, "CUDAExecutionProvider", "CPUExecutionProvider"]
+                providers=["CUDAExecutionProvider"]
             )
             self.io_binding = self.ort_session.io_binding()
             self.use_onnx = True
@@ -327,7 +328,7 @@ class CLIPSegHFModel:
             arr = logits.cpu().squeeze().numpy().astype(np.float32)
 
         # skip_norm = prompt.strip().lower() == "null"
-        skip_norm = True
+        skip_norm = False
         if skip_norm:
             # prob = 1.0 / (1.0 + np.exp(-arr))
             # mask_u8 = (prob * 255).astype(np.uint8)
