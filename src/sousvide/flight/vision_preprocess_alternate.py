@@ -75,6 +75,20 @@ class CLIPSegHFModel:
         self.area_tolerance = 0.15         # ±15%
         self.sol_tol = 0.10                # ±10% band
         self.ecc_tol = 0.15                # ±15% band
+
+        self.t_calib = None
+        self.loiter_area_frac = 0.0
+        self.loiter_max = 0.0
+        self.p_s = 0.0
+        self.alpha = 0.20
+        self.low_mult = 0.50
+        self.high_mult = 1.75
+        self.low_patience = 10
+        self.high_patience = 6
+        self.low_streak = 0
+        self.high_streak = 0
+        self.min_max_mult = 0.60
+
     #
         # ONNX support
         self.use_onnx = False
@@ -593,6 +607,81 @@ class CLIPSegHFModel:
         return overlayed, prob_scaled
     
 #FIXME
+    def _query_found(self, logits: np.ndarray):
+        """
+        Decide whether to exit ACTIVE based on semantic fill ratio tied to the
+        calibrated reference (t_calib, loiter_area_frac) and an optional max-logit guard.
+    
+        Returns:
+          should_exit (bool), reason ('lost'|'filled'|''), metrics (dict)
+        """
+        # Require that loiter_calibrate has set these
+        if (self.t_calib is None) or (self.loiter_area_frac <= 0.0):
+            return False, "", {
+                "p_inst": 0.0, "p_s": getattr(self, "p_s", 0.0),
+                "thr": self.t_calib, "L": 0.0, "U": 0.0,
+                "max_ok": True, "max": float(logits.max()),
+                "ref_max": getattr(self, "loiter_max", 0.0),
+                "low_streak": getattr(self, "low_streak", 0),
+                "high_streak": getattr(self, "high_streak", 0)
+            }
+    
+        # --- params (ensure these exist in __init__)
+        # EWMA smoothing
+        alpha = getattr(self, "alpha", 0.20)
+        # hysteresis bands as multiples of reference area
+        low_mult  = getattr(self, "low_mult",  0.50)   # lost if below L for K frames
+        high_mult = getattr(self, "high_mult", 1.75)   # filled if above U for K2 frames
+        low_pat   = getattr(self, "low_patience", 10)
+        high_pat  = getattr(self, "high_patience", 6)
+        # optional max-logit sanity guard
+        min_max_mult = getattr(self, "min_max_mult", 0.60)  # allow ~40% drop vs calib
+    
+        # --- instantaneous proportion above fixed threshold
+        p_inst = float((logits >= self.t_calib).mean())
+    
+        # --- EWMA smoothing state
+        self.p_s = alpha * p_inst + (1.0 - alpha) * getattr(self, "p_s", 0.0)
+    
+        # --- hysteresis bands
+        L = low_mult  * self.loiter_area_frac
+        U = high_mult * self.loiter_area_frac
+    
+        # --- streak counters
+        if not hasattr(self, "low_streak"):  self.low_streak  = 0
+        if not hasattr(self, "high_streak"): self.high_streak = 0
+    
+        if self.p_s < L:
+            self.low_streak += 1
+        else:
+            self.low_streak = 0
+    
+        if self.p_s > U:
+            self.high_streak += 1
+        else:
+            self.high_streak = 0
+    
+        # --- optional max-logit sanity check
+        cur_max = float(logits.max())
+        ref_max = float(getattr(self, "loiter_max", 0.0))
+        max_ok = (ref_max <= 0.0) or (cur_max >= min_max_mult * ref_max)
+    
+        # --- exit decisions
+        should_exit, reason = False, ""
+        if self.low_streak >= low_pat and max_ok:
+            should_exit, reason = True, "lost"
+            self.low_streak = self.high_streak = 0
+        elif self.high_streak >= high_pat:
+            should_exit, reason = True, "filled"
+            self.low_streak = self.high_streak = 0
+    
+        return should_exit, reason, {
+            "p_inst": p_inst, "p_s": self.p_s, "thr": self.t_calib,
+            "L": L, "U": U, "low_streak": self.low_streak, "high_streak": self.high_streak,
+            "max_ok": max_ok, "max": cur_max, "ref_max": ref_max
+        }
+
+    
     def _largest_contour_from_mask(self, mask_u8: np.ndarray):
         contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
@@ -727,6 +816,13 @@ class CLIPSegHFModel:
                 self.loiter_cnt          = cnt
                 self.loiter_solidity     = solidity
                 self.loiter_eccentricity = ecc
+
+                # set semantic reference threshold
+                q = 1.0 - self.loiter_area_frac
+                self.t_calib = float(np.quantile(logits, q))
+                self.p_s = 0.0
+                self.low_streak = 0
+                self.high_streak = 0
 
                 # Optional visualization of stored outline
                 cv2.drawContours(overlay, [self.loiter_cnt], -1, (0, 200, 255), 5)
