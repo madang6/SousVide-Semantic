@@ -857,12 +857,12 @@ class CLIPSegHFModel:
         sol_ok = (abs(cur_sol - self.loiter_solidity) <= self.sol_tol * max(self.loiter_solidity, 1e-6))
         ecc_ok = (abs(cur_ecc - self.loiter_eccentricity) <= self.ecc_tol * max(self.loiter_eccentricity, 1e-6))
 
-        print(
-            f"[LOITER DBG] d={d:.3f} (thr={self.shape_thresh}) shape_ok={shape_ok} | "
-            f"area={cur_area_frac:.3f}, ref={self.loiter_area_frac:.3f}, ok={area_ok} | "
-            f"sol={cur_sol:.3f}, ref={self.loiter_solidity:.3f}, ok={sol_ok} | "
-            f"ecc={cur_ecc:.3f}, ref={self.loiter_eccentricity:.3f}, ok={ecc_ok}"
-        )
+        # print(
+        #     f"[LOITER DBG] d={d:.3f} (thr={self.shape_thresh}) shape_ok={shape_ok} | "
+        #     f"area={cur_area_frac:.3f}, ref={self.loiter_area_frac:.3f}, ok={area_ok} | "
+        #     f"sol={cur_sol:.3f}, ref={self.loiter_solidity:.3f}, ok={sol_ok} | "
+        #     f"ecc={cur_ecc:.3f}, ref={self.loiter_eccentricity:.3f}, ok={ecc_ok}"
+        # )
         if shape_ok and area_ok and sol_ok and ecc_ok:
             found = True
             # visualize both shapes (current in green, reference outline in orange)

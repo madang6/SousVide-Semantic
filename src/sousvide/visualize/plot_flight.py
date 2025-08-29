@@ -182,15 +182,47 @@ def compute_TDT(Xact:np.ndarray):
 
     return TDT
 
+def _active_mask_from_Uact(Uact: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+    """Contiguous mask from first to last column where any input |u|>eps."""
+    if Uact.ndim != 2 or Uact.shape[1] == 0:
+        return np.zeros((0,), dtype=bool)
+    nz_any = np.any(np.abs(Uact) > eps, axis=0)  # shape (K,)
+    if not np.any(nz_any):
+        return nz_any
+    i0 = int(np.argmax(nz_any))
+    i1 = len(nz_any) - int(np.argmax(nz_any[::-1]))  # one past last True
+    m = np.zeros_like(nz_any, dtype=bool)
+    m[i0:i1] = True
+    return m
+
 def plot_flight(cohort:str,
-                scenes:List[Tuple[str,str]],
                 Nfiles:Union[None,int]=None,
                 dt_trim:float=0.0,Nrnd:int=3,
                 land_check:bool=False,
-                plot_raw:bool=True
+                plot_raw:bool=True,
+                strip_idle: bool = False
                 ):
     
     flights = preprocess_trajectory_data(cohort,Nfiles,dt_trim,land_check=land_check)
+
+    if strip_idle:
+        for f in flights:
+            m = _active_mask_from_Uact(f['Uact'])
+            if m.size == 0 or not np.any(m):
+                continue  # nothing to trim
+
+            # 1D time arrays
+            if 'Tact' in f: f['Tact'] = f['Tact'][m]
+            if 'Tref' in f and f['Tref'] is not None: f['Tref'] = f['Tref'][m]
+
+            # 2D (rows, time) arrays
+            for k in ['Uact','Uref','Xact','Xref','Xest','Xext']:
+                if k in f and f[k] is not None and f[k].ndim == 2 and f[k].shape[1] == m.shape[0]:
+                    f[k] = f[k][:, m]
+
+            # Tsol is (5, K) — mask along time
+            if 'Tsol' in f and f['Tsol'] is not None and f['Tsol'].ndim == 2 and f['Tsol'].shape[1] == m.shape[0]:
+                f['Tsol'] = f['Tsol'][:, m]
 
     # ============================================================================
     # Compute the effective control frequency
@@ -331,6 +363,7 @@ def plot_flight(cohort:str,
         for i in range(4):
             for idx,flight in enumerate(flights):
                 axs3[i,1].plot(flight['Tact'],flight['Uact'][i,:],color='tab:blue',alpha=0.5,label=dlabels[0] if idx == 0 else None)
+                # print(flight['Uact'][i,:])
             axs3[i,1].plot(flight['Tref'],flight['Xref'][i,:],color='k', linestyle='--',linewidth=0.8,label=dlabels[1])
             axs3[i,1].set_ylabel(ylabels[i])
             

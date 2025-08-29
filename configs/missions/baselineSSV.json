@@ -14,6 +14,6 @@
     "onnx_model_path": "~/StanfordMSL/SousVide-Semantic/notebooks/clipseg_model.onnx",
 
     
-    "linger": 2.0,
+    "linger": 4.0,
     "images_per_second": 10
 }

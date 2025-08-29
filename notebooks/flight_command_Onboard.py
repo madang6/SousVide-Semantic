@@ -26,6 +26,7 @@ from px4_msgs.msg import (
     OffboardControlMode,
     VehicleOdometry,
     VehicleRatesSetpoint,
+    VehicleLocalPositionSetpoint,
     TrajectorySetpoint
 )
 
@@ -189,8 +190,22 @@ class FlightCommand(Node):
                     f"'{mission_config['course']}_tXUi.pkl' was found."
                 )
             self.ctl = vr_mpc.VehicleRateMPC(tXUi,drone_config,hz,use_RTI=True,tpad=mission_config["linger"])
+        elif mission_config["pilot"] == "range_velocity":
+            self.isNN = False
+            self.use_depth = True
+            # range controller tunables
+            self.range_target_m   = float(mission_config.get('range_target_m', 2.0))
+            self.range_top_pct    = float(mission_config.get('range_top_percent', 10.0))  # top-P% similarity pixels
+            self.range_min_pixels  = int(mission_config.get("range_min_pixels", 200))
+            self.range_standoff   = float(mission_config.get('range_standoff', 0.5))  # standoff distance in meters
+            self.range_kp         = float(mission_config.get('range_kp', 0.6))
+            self.range_vmax       = float(mission_config.get('range_vmax', 0.05))
+            self.range_deadband   = float(mission_config.get('range_deadband', 0.05))
+            self.range_k_rate     = float(mission_config.get('range_k_rate', 0.5))
+            self.range_max_rate   = float(mission_config.get('range_max_rate', 0.3))
         else:
             self.isNN = True
+            self.use_depth = False
             self.ctl = Pilot(mission_config["cohort"],mission_config["pilot"])
             self.ctl.set_mode('deploy')
 
@@ -198,16 +213,17 @@ class FlightCommand(Node):
         self.internal_estimator_subscriber = self.create_subscription(
             VehicleOdometry, drone_prefix+'/fmu/out/vehicle_odometry', self.internal_estimator_callback, qos_drone)
         self.external_estimator_subscriber = self.create_subscription(
-            VehicleOdometry, '/drone0/fmu/in/vehicle_visual_odometry', self.external_estimator_callback, qos_mocap)
+            VehicleOdometry, '/drone4/fmu/in/vehicle_visual_odometry', self.external_estimator_callback, qos_mocap)
         self.vehicle_rates_subcriber = self.create_subscription(
             VehicleRatesSetpoint, drone_prefix+'/fmu/out/vehicle_rates_setpoint', self.vehicle_rates_setpoint_callback, qos_drone)
-        
+
         # Create publishers
         self.vehicle_command_publisher = self.create_publisher(VehicleCommand,drone_prefix+'/fmu/in/vehicle_command', qos_drone)
         self.offboard_control_mode_publisher = self.create_publisher(OffboardControlMode,drone_prefix+'/fmu/in/offboard_control_mode', qos_drone)
         self.vehicle_rates_setpoint_publisher = self.create_publisher(VehicleRatesSetpoint, drone_prefix+'/fmu/in/vehicle_rates_setpoint', qos_drone)
         self.trajectory_setpoint_publisher = self.create_publisher(TrajectorySetpoint, drone_prefix+'/fmu/in/trajectory_setpoint', qos_drone)
-
+        self.vehicle_local_position_publisher = self.create_publisher(VehicleLocalPositionSetpoint, drone_prefix+'/fmu/in/vehicle_local_position_setpoint', qos_drone)
+        
         # Initialize CLIPSeg Model
         self.prompt = mission_config.get('prompt', '')
         print(f"Query Set to: {self.prompt}")
@@ -232,7 +248,7 @@ class FlightCommand(Node):
         )
 
         # Initalize camera (if exists)
-        self.pipeline = zch.get_camera(cam_dim[0],cam_dim[1],cam_fps)
+        self.pipeline = zch.get_camera(cam_dim[0],cam_dim[1],cam_fps,use_depth=self.use_depth)
         if self.pipeline is not None:
             self.cam_dim,self.cam_fps = cam_dim,cam_fps
         else:
@@ -247,6 +263,7 @@ class FlightCommand(Node):
         self.latest_loiter_overlay    = None
         self.latest_mask       = None
         self.latest_similarity = None
+        self.latest_depth_xyz  = None
 #has_one_large_high_sim_region
         self.finding_thread     = None
         self.finding_shutdown   = False
@@ -254,57 +271,44 @@ class FlightCommand(Node):
         self.found              = False
         self.sim_score          = 0.0
         self.area_frac          = 0.0
-        # self.sim_thresh        = 0.65
-        # self.area_thresh       = 0.02
-
 #policy switch flag
         self.ready_active     = False
         self.spin_cycle       = False
 
-#NOTE streamline testing non-mpc pilots
-        if not self.isNN:
-            # MPC case: unpack the precomputed trajectory exactly as you do today
-            self.Tpi = tXUi[0, :]                             # time vector
-            self.obj = th.tXU_to_obj(tXUi)                    # your “object” vector
-            self.q0, self.z0 = tXUi[7:11,0], tXUi[3,0]         # initial quaternion & altitude
-            self.xref = tXUi[1:11,0]                          # 10-state at t=0
-            mean_u = np.mean(tXUi[14:18,:], axis=0).reshape(1,-1)
-            self.uref = np.vstack((-mean_u, tXUi[11:14,:]))    # reference inputs over time
+    #NOTE streamline testing non-mpc pilots
+        # non-MPC (neural) case: give everything a neutral default
+        self.dt   = 1.0 / hz                                     # hz (control rate)
+        self.Tpi  = np.arange(0.0, 1.0 + self.dt, self.dt)
+        self.obj  = np.zeros((18,1))
+        self.q0   = np.array([0.0, 0.0, 0.70710678, 0.70710678])          # determines starting orientation for ACTIVE mode to launch
+        self.z0   = -0.50                                   # init altitude offset
+        self.xref = np.zeros(10)                          # no reference state
+        self.uref = -6.90*np.ones((4,))                   # reference input
+    #FIXME
+        self.alt_hold          = float('nan')
+        self.trajectory        = None
+        self.trajectory_length = None
+        self.query_p_cam       = None
 
-            # seed your odometry messages to match the first pose in the traj
-            self.vo_est.q[0], self.vo_est.q[1:4] = tXUi[10,0], tXUi[7:10,0]
-            self.vo_ext.q[0], self.vo_ext.q[1:4] = tXUi[10,0], tXUi[7:10,0]
-
-            # record for the full traj duration + linger
-            record_duration = self.Tpi[-1] + self.t_lg
-    #NOTE neural network case
-        else:
-            # non-MPC (neural) case: give everything a neutral default
-            dt = 1.0 / hz          # hz (control rate)
-            self.Tpi = np.arange(0.0, 1.0 + dt, dt)
-            self.obj = np.zeros((18,1))
-            self.q0 = np.array([0.0, 0.0, 0.70710678, 0.70710678])          # determines starting orientation for ACTIVE mode to launch
-            self.z0 = -0.50                                    # init altitude offset
-            self.xref = np.zeros(10)                          # no reference state
-            self.uref = -6.90*np.ones((4,))                   # reference input
-            # leave vo_est/.vo_ext.q alone so they start at whatever your first callback gives
-            record_duration = self.Tpi[-1] + self.t_lg        # 
+        self.yaw_rate_cmd   = 0.0
+        self.kp_yaw         = 0.5                 # gentle
+        self.max_yaw_rate   = 0.30                 # rad/s
+        self.yaw_deadband   = 10.0                  # ±10°
+        self.max_yaw_accel  = 0.60                  # rad/s^2
+        self._yawspeed_prev = 0.0
+    #
+        record_duration = self.Tpi[-1] + self.t_lg        # 
 
         # Initialize control variables
-#NOTE commented out variables don't exist for RRT* generated tXUi
         self.node_start = False                                 # Node start flag
         self.node_status_informed = False                       # Node status informed flag
-        # self.Tpi,self.CPi = Tpi,CPi                             # trajectory time and control points
 
         self.drone_config = drone_config                        # drone configuration
-        # self.k_sm,self.N_sm = 0, len(Tpi)-1                     # current segment index and total number of segments
         self.k_rdy = 0                                          # ready counter
         self.t_tr0 = 0.0                                        # trajectory start time
         self.vo_est = VehicleOdometry()                         # current state vector (estimated)
         self.vo_ext = VehicleOdometry()                         # current state vector (external)
         self.vrs = VehicleRatesSetpoint()                       # current vehicle rates setpoint
-        self.znn = (torch.zeros(self.ctl.model.Nz)              # current visual feature vector
-                    if isinstance(self.ctl,Pilot) else None)   
 
         # State Machine and Failsafe variables
         self.sm = StateMachine.INIT                                    # state machine
@@ -316,7 +320,7 @@ class FlightCommand(Node):
         self.recorder = rf.FlightRecorder(
             drone_config["nx"],
             drone_config["nu"],
-            self.ctl.hz,
+            hz,
             record_duration,
             cam_dim,
             self.obj,
@@ -331,7 +335,10 @@ class FlightCommand(Node):
         self.pilot_name = mission_config["pilot"]
 
         # Create a timer to publish control commands
-        self.cmdLoop = self.create_timer(1/self.ctl.hz, self.commander)
+        self.cmdLoop = self.create_timer(self.dt, self.commander)
+
+        # Camera to body 
+        self.T_c2b = np.array(self.drone_config["T_c2b"], dtype=np.float64)
 
         # Earth to World Pose
         self.T_e2w = np.eye(4)
@@ -345,29 +352,10 @@ class FlightCommand(Node):
         print('Scene Name      :',mission_config["scene"])
         print('Pilot Name       :',mission_config["pilot"])
         print('Quad Name        :',drone_config["name"])
-        print('Control Frequency:',self.ctl.hz)
+        print('Control Frequency:',hz)
         print('Images Per Second:',mission_config["images_per_second"])
         print('Failsafe Tolerances (q_init,z_init):',mission_config["failsafes"]["attitude_tolerance"],mission_config["failsafes"]["height_tolerance"])
         print('=====================================================================')
-        if self.isNN is False:
-            Qk,Rk = np.diagonal(self.ctl.Qk),np.diagonal(self.ctl.Rk)
-            QN = np.diagonal(self.ctl.QN)
-
-            print('--------------------------> MPC Weights <----------------------------')
-            print('Stagewise Weights:')
-            print('Position:',Qk[0:3])
-            print('Velocity:',Qk[3:6])
-            print('Attitude:',Qk[6:10])
-            print('')
-            print('Thrust  :',Rk[0])
-            print('Rates   :',Rk[1:4])
-            print('')
-            print('Terminal Weights:')
-            print('Position:',QN[0:3])
-            print('Velocity:',QN[3:6])
-            print('Attitude:',QN[6:10])
-            print('=====================================================================')
-
         print('--------------------> Trajectory Information <-----------------------')
         print('---------------------------------------------------------------------')
         print('Starting Location & Orientation:')
@@ -407,8 +395,11 @@ class FlightCommand(Node):
         try:
             if self.pipeline:
                 zch.close_camera(self.pipeline)
-            if not self.isNN:
-                self.ctl.clear_generated_code()
+            # if not self.isNN:
+            #     try:
+            #         self.ctl.clear_generated_code()
+            #     except Exception as e:
+            #         print(f"Error during controller cleanup: {e}. This is OK in this script")
         except Exception as e:
             print(f"Error during device cleanup: {e}")
 
@@ -445,16 +436,19 @@ class FlightCommand(Node):
         """Get current trajectory time."""
         return self.get_clock().now().nanoseconds/1e9 - self.t_tr0
 
-    def async_vision_loop(self):
-        """Continuously grab + infer, store only the newest mask."""
+    def async_vision_and_query_loop(self):
+        """Continuously grab + infer, store only the newest mask.
+           Continuously create straight-line trajectories to the query."""
         while not self.vision_shutdown:
-            imgz, _, _, _ = zch.get_image(self.pipeline)
+            # grab next image
+            imgz, depth_xyz, _, _ = zch.get_image(self.pipeline, use_depth=self.use_depth)
             if imgz is None:
                 time.sleep(0.01)
                 continue
             t0_img = time.time()
             frame = cv2.cvtColor(imgz, cv2.COLOR_BGR2RGB)
-            mask, similarity = self.vision_model.clipseg_hf_inference(
+            # process next image with CLIPSeg
+            mask, raw_similarity = self.vision_model.clipseg_hf_inference(
                 frame,
                 self.prompt,
                 resize_output_to_input=True,
@@ -464,8 +458,18 @@ class FlightCommand(Node):
                 verbose=False
             )
             self.latest_frame = frame
+            self.latest_depth_xyz = depth_xyz
             self.latest_mask = mask
-            self.latest_similarity = similarity
+            self.latest_similarity = raw_similarity
+
+            ok_pose, p_cam, _, _ = zch.pose_from_similarity_xyz(
+                self.latest_similarity, self.latest_depth_xyz,
+                top_percent=self.range_top_pct,
+                min_pixels=self.range_min_pixels
+            )
+            if ok_pose:
+                self.query_p_cam = p_cam
+
             t_elap = time.time() - t0_img
             self.img_times.append(t_elap)
         
@@ -491,31 +495,60 @@ class FlightCommand(Node):
         x, y, z, w = q
         return np.arctan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
 
-    def build_yaw_qp(self, xyz, yaw0, t0):
-        """Background build of the spin trajectory."""
-        cfg = th.generate_spin_keyframes(
-            name=f"loiter_spin_{t0:.2f}",
-            Nco=6,
-            xyz=xyz,
-            theta0=yaw0, theta1=yaw0,
-            time=5.0
-        )
-        out = ms.solve(cfg)
-        if out is False:
-            print(f"Spin QP failed at t0={t0:.2f}")
-            return
-        self.Tps_spin, self.CPs_spin = out
-        self.tXUd_spin       = th.TS_to_tXU(self.Tps_spin, self.CPs_spin,
-                                            self.drone_config,
-                                            self.ctl.hz)
-        # self.spin_start_time = t0
-        self.spin_ready     = True
-        print("Spin QP ready")
 #FIXME
+    def yaw_error_comp(self, similarity: np.ndarray):
+        """
+        Compute normalized horizontal yaw error (~[-1,1]) from a similarity/logit map.
+        Positive => target left of center (command CCW yawspeed); negative => right (CW).
+        """
+        yaw_err_norm = 0.0
+        try:
+            S = similarity  # avoid an unnecessary copy
+            if S is None:
+                return 0.0
+
+            S = S.astype(np.float32, copy=False)
+            # Ignore negatives if logits: treat them as 0 weight
+            np.maximum(S, 0.0, out=S)
+
+            M = cv2.moments(S, binaryImage=False)  # intensity-weighted centroid
+            m00 = M.get("m00", 0.0)
+            if m00 > 1e-6:
+                cx = M["m10"] / m00
+                W = int(S.shape[1])
+                cx_img = 0.5 * W
+                # object right of center -> negative error -> CW yaw
+                yaw_err_norm = float((cx - cx_img) / max(1.0, cx_img))
+                # sanitize
+                if not np.isfinite(yaw_err_norm):
+                    yaw_err_norm = 0.0
+                else:
+                    yaw_err_norm = float(np.clip(yaw_err_norm, -1.0, 1.0))
+            # else: leave at 0.0
+            return yaw_err_norm
+        except Exception:
+            # Fail safe: neutral command
+            return 0.0
+        
+    # def yaw_error_comp(self, similarity: np.ndarray):
+    #     yaw_err_norm = 0.0
+    #     cx = None
+    #     S = similarity.copy()
+    #     if S is not None:
+    #         S = S.astype(np.float32)
+    #         S = np.maximum(S, 0.0)
+    #         M  = cv2.moments(S, binaryImage=False)
+    #         if M["m00"] > 1e-6:
+    #             cx = M["m10"] / M["m00"]
+    #             W  = S.shape[1]
+    #             cx_img = 0.5 * W
+    #             yaw_err_norm = float((cx - cx_img) / max(1.0, cx_img))
+    #     return yaw_err_norm
+
     def pid_yaw_rate(self, err_norm: float):
         Kp = getattr(self, "yaw_kp", 1.2)       # rad/s per unit error
         Ki = getattr(self, "yaw_ki", 0.0)       # keep 0 unless you really need it
-        Kd = getattr(self, "yaw_kd", 0.15)      # rad/s per unit error derivative
+        Kd = getattr(self, "yaw_kd", 0.5)      # rad/s per unit error derivative
       
         rate_max   = getattr(self, "yaw_rate_max", 0.8)  # clamp for safety
         i_max      = getattr(self, "yaw_i_limit", 0.5)   # integral windup guard
@@ -525,68 +558,78 @@ class FlightCommand(Node):
         if not hasattr(self, "_yaw_e0"):  self._yaw_e0 = 0.0
     
         # --- PID ---
-        de = (err_norm - self._yaw_e0) / max(1e-3, dt)
-        self._yaw_i = float(np.clip(self._yaw_i + err_norm*dt, -i_max, i_max))
+        de = (err_norm - self._yaw_e0) / max(1e-3, self.dt)
+        self._yaw_i = float(np.clip(self._yaw_i + err_norm*self.dt, -i_max, i_max))
         self._yaw_e0 = err_norm
     
         u = Kp*err_norm + Ki*self._yaw_i + Kd*de
         return float(np.clip(u, -rate_max, rate_max))
-
+#
+#NOTE COMMANDER
     def commander(self) -> None:
         """Main control loop for generating commands."""
         # Looping Callback Actions
         x_est,u_pr = zch.vo2x(self.vo_est,self.T_e2w)[0:10],zch.vrs2uvr(self.vrs)
-        x_ext,znn,obj = zch.vo2x(self.vo_ext)[0:10],self.znn,self.obj
+        x_ext,obj = zch.vo2x(self.vo_ext)[0:10],self.obj
         x_est[6:10] = th.obedient_quaternion(x_est[6:10],self.xref[6:10])
         x_ext[6:10] = th.obedient_quaternion(x_ext[6:10],self.xref[6:10])
 
         frame = self.latest_frame
-        img = self.latest_mask
-        loiter_overlay = self.latest_loiter_overlay
+        # img = self.latest_mask
         similarity = self.latest_similarity
-
+        # depth = self.latest_depth_xyz
+        loiter_overlay = self.latest_loiter_overlay
+#NOTE HEARTBEATS
         # zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
         if self.sm == StateMachine.ACTIVE:
             # Active/Spin: use body-rate control
-            zch.heartbeat_offboard_control_mode(
-                self.get_current_timestamp_time(),
-                self.offboard_control_mode_publisher,
-                body_rate=True,
-                velocity=False
-            )
-        
+            if self.pilot_name == 'range_velocity':
+                zch.heartbeat_offboard_control_mode(
+                    self.get_current_timestamp_time(),
+                    self.offboard_control_mode_publisher,
+                    body_rate=False, position=False, velocity=True
+                )
+            else:
+                zch.heartbeat_offboard_control_mode(
+                    self.get_current_timestamp_time(),
+                    self.offboard_control_mode_publisher,
+                    body_rate=True, position=False, velocity=False
+                )
         elif self.sm == StateMachine.HOLD:
             # Hold: use velocity control for smooth hover
             zch.heartbeat_offboard_control_mode(
                 self.get_current_timestamp_time(),
                 self.offboard_control_mode_publisher,
                 body_rate=False,
+                position=True,
                 velocity=True
             )
-
         elif self.sm == StateMachine.SPIN:
             # for yaw-in-place: hold position via zero velocity, spin via body_rate
             zch.heartbeat_offboard_control_mode(
                 self.get_current_timestamp_time(), self.offboard_control_mode_publisher,
-                body_rate=False,
-                velocity=True   # drive the XY/Z & yaw velocity loops
+                body_rate=False,  # drive the yaw-rate loop
+                position=True,
+                velocity=True   # drive the XY/Z velocity loops
             )
-        
         else:
             # INIT, READY, LAND, etc.—default to body-rate so commands don’t break
             zch.heartbeat_offboard_control_mode(
                 self.get_current_timestamp_time(),
                 self.offboard_control_mode_publisher,
                 body_rate=True,
+                position=False,
                 velocity=False
             )
-#FIXME        
+
+    #FIXME        
         if self.key_pressed == '\x1b':     # ESC
             print("ESC detected, landing…")
             self.sm = StateMachine.LAND
             self.key_pressed = None        # reset
         elif self.key_pressed == 'h':      # H key
             print("H key detected, switching to HOLD mode…")
+            self.alt_hold = float(x_est[2])
             self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
             zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
             self.sm = StateMachine.HOLD
@@ -599,16 +642,21 @@ class FlightCommand(Node):
             self.key_pressed = None        # reset
         elif self.key_pressed == 'q':      # q key
             print("Q key detected, switching to HOLD startup mode…")
+            self.alt_hold = float(x_est[2])
             self.k_rdy = 0                                                  # Reset ready counter
             self.ready_active = False                                       # Reset ready active flag
             self.spin_cycle   = True
             self.found = False
             self.finding_shutdown = False
+            self.last_print_time = 0.0
             self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
             zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
             self.sm = StateMachine.HOLD
             self.key_pressed = None        # reset
-
+    #
+###########################################
+#NOTE              INIT
+###########################################
         # State Machine
         if self.sm == StateMachine.INIT:
             # Looping State Actions
@@ -624,7 +672,7 @@ class FlightCommand(Node):
                 if not self.vision_started and self.pipeline is not None:
                     self.vision_shutdown = False
                     self.vision_thread = threading.Thread(
-                        target=self.async_vision_loop,
+                        target=self.async_vision_and_query_loop,
                         daemon=True,
                         name="ZedVisionThread"
                     )
@@ -650,7 +698,9 @@ class FlightCommand(Node):
             else:
                 # Looping State Actions
                 print('Waiting for state information...')
-
+###########################################
+#NOTE                READY
+###########################################
         elif self.sm == StateMachine.READY:
             # Check if we are ready to start (matching attitude and altitude)
             if np.linalg.norm(x_est[6:10]-self.q0) < self.q0_tol and np.abs(x_est[2]-self.z0) < self.z0_tol:
@@ -662,7 +712,6 @@ class FlightCommand(Node):
                 # Print State Information
                 print('=====================================================================')
                 print('Trajectory Started.')
-                # print('In Segment:',self.k_sm+1,'/',self.N_sm)
             else:
                 # Looping State Actions
                 self.k_rdy += 1
@@ -671,8 +720,9 @@ class FlightCommand(Node):
                     q0ds,q0cr = np.around(self.q0,2),np.around(x_est[6:10],2)
 
                     print(f"Desired/Current Altitude+Attitude: ({z0ds}/{z0cr})({q0ds}/{q0cr})")
-                    # print(f"Desired/Current Altitude: ({z0ds}/{z0cr})")
-                
+###########################################
+#NOTE                ACTIVE
+###########################################
         elif self.sm == StateMachine.ACTIVE:
             # Looping State Actions
             t0_lp  = time.time()                                                # Algorithm start time
@@ -681,75 +731,130 @@ class FlightCommand(Node):
             sem_exit, reason, m = self.vision_model._query_found(similarity)
             
             # Check if we are still in the trajectory
-            if t_tr < (self.Tpi[-1]+self.t_lg) or sem_exit:
+            if t_tr < (self.Tpi[-1]+self.t_lg) and not sem_exit:
                 # keep your references if you record them
                 t_ref = np.min((t_tr, self.Tpi[-1]))
                 x_ref = self.xref
                 u_ref = self.uref
             #FIXME
-                # --- compute yaw error from stored contour (same as HOLD) ---
-                yaw_err_norm = 0.0
+                # Determine yaw rate using PID
+                yaw_err_norm = self.yaw_error_comp(similarity)
+                yaw_rate_cmd = self.pid_yaw_rate(yaw_err_norm)
+
+                # Determine velocity set point
+                k_gate = 1.5
+
+                T_b2w = zch.get_T_b2w(x_est, quat_is_world_to_body=False)
+                R_b2w = np.asarray(T_b2w, dtype=np.float64)[:3, :3]
+
+                # R_c2b = np.asarray(self.T_c2b, dtype=np.float64)[:3, :3]
+                # f_cam = np.array([0.0, 0.0, 1.0], dtype=np.float64)    # +z in camera frame = optical axis
+                # f_body = R_c2b @ f_cam                                 # camera → body
+                f_body = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+                f_world = R_b2w @ f_body                                # body → world
+
+                v_xy = f_world[:2]
+                n_xy = float(np.linalg.norm(v_xy))
+
+                v_dir_xy = (v_xy / n_xy).astype(np.float64)
+
+                yaw_err = float(np.clip(yaw_err_norm, -1.0, 1.0))
+                alpha = float(np.clip(1.0 - k_gate * abs(yaw_err), 0.0, 1.0))   # 0..1
+                v_fwd = float(np.clip(1.0 * alpha, 0.0, 1.0))
+
+                vx, vy = (v_fwd * v_dir_xy[0], v_fwd * v_dir_xy[1])
+
+################DEBUG#####################
                 now_s = time.time()
-                if not hasattr(self, "_yaw_t_act"): self._yaw_t_act = now_s
-                dt_pid = max(1e-3, now_s - self._yaw_t_act)
-                self._yaw_t_act = now_s
-            
-                if self.latest_frame is not None:
-                    H, W = self.latest_frame.shape[:2]
-                    cx_img = W * 0.5
-                    if getattr(self.vision_model, "loiter_cnt", None) is not None:
-                        M = cv2.moments(self.vision_model.loiter_cnt)
-                        if M.get("m00", 0.0) > 1e-6:
-                            cx = M["m10"] / M["m00"]
-                            yaw_err_norm = float((cx - cx_img) / max(1.0, cx_img))
-            
-                yaw_rate_cmd = self._pid_yaw_rate(yaw_err_norm, dt_pid)
-            
-                # --- VERY gentle forward velocity in *world frame* along current yaw ---
-                # NOTE: PX4 TrajectorySetpoint.velocity is in local frame; convert "forward"
-                # (body-x) to local XY using the current yaw.
-                qx, qy, qz, qw = x_est[6:10]
-                yaw = R.from_quat([qx, qy, qz, qw]).as_euler('xyz')[2]
-            
-                v_fwd = getattr(self, "forward_speed_mps", 0.10)   # gentle ~0.1 m/s
-                vx = float(v_fwd * np.cos(yaw))
-                vy = float(v_fwd * np.sin(yaw))
-                vz = 0.0
-            
-                # ensure the mode is in velocity for this cycle (legal to send heartbeat again)
-                zch.heartbeat_offboard_control_mode(
+                if not hasattr(self, "_last_active_print"):
+                    self._last_active_print = 0.0
+                if now_s - self._last_active_print > 2.0:   # 0.5 Hz
+                    self._last_active_print = now_s
+
+                    pos = x_est[0:3]
+                    vel = x_est[3:6]
+
+                    qx, qy, qz, qw = x_est[6:10]
+                    rpy = R.from_quat([qx, qy, qz, qw]).as_euler('xyz', degrees=True)
+
+                    print("=== ACTIVE DEBUG ===")
+                    print(f"Pos (m): {pos}")
+                    print(f"Vel (m/s): {vel}")
+                    print(f"Orientation RPY (deg): {rpy}")
+                    print(f"Commanded vel (m/s): [{vx:.3f}, {vy:.3f}, 0.0]")
+                    print(f"Commanded yawspeed (rad/s): {yaw_rate_cmd:.3f}")
+                    print("====================")
+###########################################
+
+                zch.publish_visual_servoing_setpoint(
                     self.get_current_timestamp_time(),
-                    self.offboard_control_mode_publisher,
-                    body_rate=False,
-                    velocity=True
+                    self.alt_hold,
+                    yaw_rate_cmd,
+                    np.array([vx, vy, 0.0], dtype=np.float32),
+                    self.trajectory_setpoint_publisher)
+                
+                t_sol = np.hstack((0.0,0.0,0.0,0.0,time.time()-t0_lp))
+                u_cmd = np.array([vx, vy, 0.0, yaw_rate_cmd], dtype=float)  # shape (nu,)
+
+                # Minimal refs/aux (placeholders; sizes must match shapes the recorder was built with)
+                xref = np.zeros(self.recorder.Xref.shape[0], dtype=float)   # shape (nx,)
+                xref[2] = self.alt_hold
+                uref = np.zeros(self.recorder.Uref.shape[0], dtype=float)   # shape (nu,)
+                adv  = np.zeros(self.recorder.Adv.shape[0],  dtype=float)   # shape (nu,)
+                # tsol = np.zeros(self.recorder.Tsol.shape[0], dtype=float)   # Ntsol
+
+                # Record (image can be your latest frame or a blank stub of the right size)
+                # img = self.latest_frame if self.latest_frame is not None else np.zeros_like(self.recorder.Imgs[0])
+                S = np.maximum(similarity, 0).astype(np.float32)                        # clip negatives if logits
+                S8 = cv2.normalize(S, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+                S_bgr = cv2.cvtColor(S8, cv2.COLOR_GRAY2BGR) 
+                # self.recorder.record(S_bgr)
+                self.recorder.record(
+                    img=S_bgr,
+                    tcr=t_tr,
+                    ucr=u_cmd,
+                    xref=xref,
+                    uref=uref,
+                    xest=x_est,
+                    xext=x_est,
+                    adv=adv,
+                    tsol=t_sol
                 )
+
+                # # --- forward velocity in *world frame* along current yaw ---
+                # # NOTE: PX4 TrajectorySetpoint.velocity is in local frame; convert "forward"
+                # # (body-x) to local XY using the current yaw.
+                # qx, qy, qz, qw = x_est[6:10]
+                # yaw = R.from_quat([qx, qy, qz, qw]).as_euler('xyz')[2]
             
-                # Publish a velocity-only TrajectorySetpoint with yawspeed
-                ts = TrajectorySetpoint(timestamp=int(self.get_current_timestamp_time()))
-                ts.position     = [float('nan')]*3
-                ts.velocity     = [vx, vy, vz]
-                ts.acceleration = [float('nan')]*3
-                ts.jerk         = [float('nan')]*3
-                ts.yaw          = float('nan')           # NaN → use yawspeed
-                ts.yawspeed     = float(yaw_rate_cmd)
-                self.trajectory_setpoint_publisher.publish(ts)
-              #
-                # Record data
-                u_cmd = np.array([vx, vy, vz, yaw_rate_cmd], dtype=float)
-                t_sol = np.hstack((t_sol_ctl,time.time()-t0_lp))
-                self.recorder.record(img,t_tr,u_act,x_ref,u_ref,x_est,x_ext,adv,t_sol)
+                # v_fwd = getattr(self, "forward_speed_mps", 1.0)   # gentle ~0.1 m/s
+                # vx = float(v_fwd * np.cos(yaw))
+                # vy = float(v_fwd * np.sin(yaw))
+                # vz = 0.0
+            
+                # # Publish a velocity-only TrajectorySetpoint with yawspeed
+                # ts = TrajectorySetpoint(timestamp=int(self.get_current_timestamp_time()))
+                # ts.position     = [float('nan'), float('nan'), float(self.alt_hold)]#[float('nan')]*3
+                # ts.velocity     = [vx, vy, float('nan')]
+                # ts.acceleration = [float('nan')]*3
+                # ts.jerk         = [float('nan')]*3
+                # ts.yaw          = float('nan')           # NaN → use yawspeed
+                # ts.yawspeed     = float(yaw_rate_cmd)
+                # self.trajectory_setpoint_publisher.publish(ts)
+            #
             else:
                 # trajectory has ended → HOLD Position
+                self.alt_hold = float(x_est[2])
+                self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
                 self.policy_duration       = t_tr
                 self.hold_prompt           = self.prompt
-            #FIXME
+            #FIXME uncomment for multi-obj, comment out for single
                 # self.prompt                = self.prompt_2
                 # self.vision_model.running_min = float('inf')
                 # self.vision_model.running_max = float('-inf')
                 # self.vision_model._max_prob_logit = float('-inf')
             #
                 # self.hold_state = x_est.copy()
-                self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
                 # self.finding_shutdown = False
             #NOTE True for multi-obj, False for single
                 # self.spin_cycle = True
@@ -760,6 +865,9 @@ class FlightCommand(Node):
                 self.sm                    = StateMachine.HOLD
                 print('Trajectory Finished → HOLDing Position, readying for next query...')
 
+###########################################
+#NOTE                HOLD
+###########################################
         elif self.sm == StateMachine.HOLD:
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
             # zch.publish_velocity_hold(
@@ -779,62 +887,50 @@ class FlightCommand(Node):
                 print('ACTIVE Started.')
             elif (self.ready_active is False and self.spin_cycle is True) and t_tr > 3.0:
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
+                self.alt_hold = float(x_est[2])
                 zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
                 self.sm = StateMachine.SPIN
                 
                 print('=====================================================================')
                 print('SPIN Started.')
             elif (self.ready_active is True and self.spin_cycle is False) and t_tr < 3.0:
-                yaw_err_norm = 0.0
-                dt_pid = 0.05  # ~20 Hz fallback
-                now_s = time.time()
-                if not hasattr(self, "_yaw_t0"): self._yaw_t0 = now_s
-                dt_pid = max(1e-3, now_s - self._yaw_t0)
-                self._yaw_t0 = now_s
-            
-                if self.latest_frame is not None:
-                    H, W = self.latest_frame.shape[:2]
-                    cx_img = W * 0.5
-            
-                    if getattr(self.vision_model, "loiter_cnt", None) is not None:
-                        M = cv2.moments(self.vision_model.loiter_cnt)
-                        if M.get("m00", 0.0) > 1e-6:
-                            cx = M["m10"] / M["m00"]
-                            yaw_err_norm = float((cx - cx_img) / max(1.0, cx_img))  # [-1,1] approx
+                yaw_err_norm = self.yaw_error_comp(similarity)
             
                 # --- PID → yaw-rate and hold velocities while we re-center the mask ---
-                yaw_rate_cmd = self._pid_yaw_rate(yaw_err_norm, dt_pid)
+                yaw_rate_cmd = self.pid_yaw_rate(yaw_err_norm)
             
                 # Use existing helper: zero-velocity hold + commanded yaw-rate (no new APIs)
-                zch.publish_velocity_hold_with_yaw_rate(
+                zch.publish_velocity_and_altitude_hold_with_yaw_rate(
                     self.get_current_timestamp_time(),
-                    self.trajectory_setpoint_publisher,
-                    yaw_rate_cmd
+                    self.alt_hold,
+                    yaw_rate_cmd,
+                    self.trajectory_setpoint_publisher
                 )
             elif t_tr < 6.0:
-                zch.publish_position_hold(self.get_current_timestamp_time(), self.hold_state, self.trajectory_setpoint_publisher)
-                zch.publish_velocity_hold(
+                zch.publish_velocity_and_altitude_hold(
                     self.get_current_timestamp_time(),
+                    self.alt_hold,
                     self.trajectory_setpoint_publisher
                 )
             else:
                 self.sm = StateMachine.LAND
                 print('Trajectory Finished → Landing...')
-            
             self.recorder.record(frame)
-
+###########################################
+#NOTE                SPIN
+###########################################
         elif self.sm == StateMachine.SPIN:
             t_tr = self.get_current_trajectory_time()
 
-            zch.publish_velocity_hold_with_yaw_rate(
+            zch.publish_velocity_and_altitude_hold_with_yaw_rate(
                 self.get_current_timestamp_time(),
-                self.trajectory_setpoint_publisher,
-                0.9
+                self.alt_hold,
+                0.75,
+                self.trajectory_setpoint_publisher
                 )
-
             if t_tr < 7.0:
                 self.active_arm = False
-
+                # self.recorder.record(img)
             elif t_tr >= 7.0 and t_tr < 14.0:
                 self.active_arm = True
                 # self.recorder.record(vp.colorize_mask_fast((similarity*255).astype(np.uint8),self.vision_model.lut))
@@ -848,24 +944,19 @@ class FlightCommand(Node):
                     f", sim_score_diff={self.sim_score-self.vision_model.loiter_max:.3f} "
                     f", area_frac_diff={(self.vision_model.loiter_area_frac-self.area_frac)*100:.1f}%")
 
-                    # self.finding_shutdown = True
                     self.sim_score = 0.0
                     self.area_frac = 0.0
                     self.found = False
-                    self.active_arm = False
+                    # self.active_arm = True
                     self.vision_model.loiter_max = 0.0
                     self.vision_model.loiter_area_frac = 0.0
-                #FIXME
-                    self.loiter_mask = None            
-                    self.loiter_contour = None
-                    self.loiter_cnt = None
-                    self.loiter_solidity = None
-                    self.loiter_eccentricity = None
-                #
+                    
                     self.ready_active = True
                     self.spin_cycle = False
                     self.sm                    = StateMachine.HOLD
                     print(f'Query {self.prompt} Found → HOLDing Position')
+
+                # self.recorder.record(img)
             else:
                 self.t_tr0 = self.get_clock().now().nanoseconds / 1e9
 
@@ -879,42 +970,22 @@ class FlightCommand(Node):
                 self.active_arm = False
                 self.vision_model.loiter_max = 0.0
                 self.vision_model.loiter_area_frac = 0.0
-            #FIXME
-                self.loiter_mask = None            
-                self.loiter_contour = None
-                self.loiter_cnt = None
-                self.loiter_solidity = None
-                self.loiter_eccentricity = None
-            #
+
                 self.ready_active = False
                 self.spin_cycle = False
                 self.sm   = StateMachine.HOLD
                 print(f'Query {self.prompt} Not Found → HOLDing Position, Preparing to Land')
+                # self.recorder.record(img)
             self.recorder.record(loiter_overlay)
-
-#TODO Remove
-        # elif self.sm == StateMachine.SPIN:
-        #     t_tr  = self.get_current_trajectory_time()
-
-        #     if t_tr < 5.0:
-        #         zch.publish_velocity_hold_with_yaw_rate(
-        #             self.get_current_timestamp_time(),
-        #             self.trajectory_setpoint_publisher,
-        #             self.vehicle_rates_setpoint_publisher,
-        #             0.8
-        #         )
-        #     else:
-        #         self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
-        #         self.sm                    = StateMachine.HOLD
-        #         print('Trajectory Finished → HOLDing Position')
-#
+###########################################
+#NOTE               LAND
+###########################################
         else:
             # State Actions
             zch.land(self.get_current_timestamp_time(),self.vehicle_command_publisher)
                 
             # Save data
             output_path = self.recorder.save()
-            # self.policy_duration = t_tr
 
             # Print statistics
             if output_path is not None:
@@ -931,8 +1002,6 @@ class FlightCommand(Node):
                 Tcmp = Tsol[:-1, valid]                     # shape (Ntsol–1, n_active)
                 Tcmd = cmd_times[valid]                     # shape (n_active,)
             #    
-                # Tcmp = self.recorder.Tsol[:-1,:]
-                # Tcmd = self.recorder.Tsol[-1,:]
 
                 Tcmp = Tcmp[~np.all(Tcmp == 0, axis=1)]
                 Tcmp_tot = np.sum(Tcmp,axis=0)

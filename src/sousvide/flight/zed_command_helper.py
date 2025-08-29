@@ -98,6 +98,16 @@ def pose_b2w(x_ext, p_body_h, *, quat_is_world_to_body: bool = True):
     target_world = p_world_h[:3].astype(np.float32)
     return target_world, t_wb, R_wb
 
+def get_T_b2w(x_ext, quat_is_world_to_body: bool = False):
+    t_wb = np.array(x_ext[0:3], dtype=np.float32)          # body pos in WORLD
+    qx, qy, qz, qw = map(float, x_ext[6:10])
+
+    R = quat_xyzw_to_R(qx, qy, qz, qw)
+    R_wb = R.T if quat_is_world_to_body else R            
+
+    T_b2w = hom_from_R_t(R_wb, t_wb)
+    return T_b2w
+
 # def pose_b2w(x_ext, p_body_h):
 #     t_wb = np.array(x_ext[0:3], dtype=np.float32)            # body pos [x,y,z]
 #     q_wb = np.array(x_ext[6:10], dtype=np.float32)           # qx,qy,qz,qw
@@ -109,6 +119,19 @@ def pose_b2w(x_ext, p_body_h, *, quat_is_world_to_body: bool = True):
 
 #     return target_world, t_wb
 
+def publish_visual_servoing_setpoint(timestamp: int,
+                                     altitude_hold: float,
+                                     yaw_rate: float,
+                                     velocity: np.ndarray,
+                                     traj_sp_pub) -> None:
+    ts = TrajectorySetpoint(timestamp=timestamp)
+    ts.position     = [float('nan'), float('nan'), float(altitude_hold)]
+    ts.velocity     = [float(velocity[0].astype(np.float32)), float(velocity[1].astype(np.float32)), float('nan')]     # hold zero velocity
+    ts.acceleration = [float('nan')] * 3
+    ts.jerk         = [float('nan')] * 3
+    ts.yaw          = float('nan')
+    ts.yawspeed     = float(yaw_rate)  # set yaw speed to desired rate
+    traj_sp_pub.publish(ts)
 
 def publish_position_setpoint(timestamp: int,
                               altitude_hold: np.ndarray,
@@ -456,6 +479,16 @@ def publish_velocity_hold(timestamp: int, traj_sp_pub) -> None:
     ts.yawspeed     = float('nan')
     traj_sp_pub.publish(ts)
 
+def publish_velocity_and_altitude_hold(timestamp: int, alt_hold: float, traj_sp_pub) -> None:
+    ts = TrajectorySetpoint(timestamp=timestamp)
+    ts.velocity     = [0.0, 0.0, float('nan')]     # hold zero velocity
+    ts.position     = [float('nan'), float('nan'), alt_hold]#[float('nan')]*3
+    ts.acceleration = [float('nan')]*3
+    ts.jerk         = [float('nan')]*3
+    ts.yaw          = float('nan')
+    ts.yawspeed     = float('nan')
+    traj_sp_pub.publish(ts)
+
 def publish_velocity_hold_with_yaw_rate(timestamp: int,
                                         traj_sp_pub,
                                         yaw_rate: float) -> None:
@@ -463,6 +496,20 @@ def publish_velocity_hold_with_yaw_rate(timestamp: int,
     ts = TrajectorySetpoint(timestamp=timestamp)
     ts.velocity     = [0.0, 0.0, 0.0]
     ts.position     = [float('nan')] * 3
+    ts.acceleration = [float('nan')] * 3
+    ts.jerk         = [float('nan')] * 3
+    ts.yaw          = float('nan')
+    ts.yawspeed     = yaw_rate  # set yaw speed to desired rate
+    traj_sp_pub.publish(ts)
+
+def publish_velocity_and_altitude_hold_with_yaw_rate(timestamp: int,
+                                        alt_hold: float,
+                                        yaw_rate: float,
+                                        traj_sp_pub) -> None:
+    # zero-velocity setpoint → holds X/Y/Z
+    ts = TrajectorySetpoint(timestamp=timestamp)
+    ts.velocity     = [0.0, 0.0, float('nan')]     # hold zero velocity
+    ts.position     = [float('nan'), float('nan'), float(alt_hold)]
     ts.acceleration = [float('nan')] * 3
     ts.jerk         = [float('nan')] * 3
     ts.yaw          = float('nan')
@@ -572,12 +619,13 @@ def heartbeat_offboard_control_mode(
     ocm_publisher: Publisher,
     *,
     body_rate: bool = False,
+    position: bool = False,
     velocity: bool  = False
 ) -> None:
     """Offboard heartbeat that can enable either body-rate or velocity control."""
     offboard_control_mode = OffboardControlMode(
         timestamp   = timestamp,
-        position    = False,         
+        position    = position,         
         velocity    = velocity,      # control mode for instruments-only
         acceleration= False,
         attitude    = False,

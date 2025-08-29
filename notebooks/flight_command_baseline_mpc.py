@@ -670,7 +670,7 @@ class FlightCommand(Node):
             dist_to_query = float(np.linalg.norm(p_world_tgt - x_est[0:3]))
 
             # Check if we are still in the trajectory
-            if (t_tr <= (self.Tpi[-1]+self.t_lg) and (dist_to_query > self.range_target_m):
+            if (t_tr <= (self.Tpi[-1]+self.t_lg) and (dist_to_query > self.range_target_m)):
                 zch.publish_position_setpoint_with_yawspeed(
                     self.get_current_timestamp_time(),
                     self.alt_hold if not np.isnan(self.alt_hold) else x_est[2],
