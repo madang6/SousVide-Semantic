@@ -25,24 +25,25 @@ export ACADOS_SOURCE_DIR="<acados_root>"
  ```
 cd <repository-path>/SousVide-Semantic/
 
-conda create --name <env-name> -y python=3.10
+conda create --name sousvide-semantic-flight -y python=3.10
 
 conda env config vars set PYTHONNOUSERSITE=1
 conda deactivate
-conda activate <env-name>
+conda activate sousvide-semantic-flight
 
 python -m pip install --upgrade pip
 
-pip install numpy==1.26.3
+pip install numpy==1.26.4
 
 conda deactivate
 ```
 4) Install Zed SDK and pyzed (Zed Python bindings)
 Follow instructions on Zed website for this part, including the bindings.
+They can also be installed at /usr/local/zed/get_python_api.py
 
-5) Install pyzed in <env-name> and rest of dependencies
+6) Install pyzed outside of conda and rest of dependencies
 ```
-conda activate <env-name>
+conda activate sousvide-semantic-flight
 
 python3 -m pip install --no-deps \
 --ignore-installed /usr/local/zed/pyzed-5.0-cp310-cp310-linux_aarch64.whl
@@ -51,26 +52,29 @@ conda deactivate
 
 conda env update --name sousvide-semantic-flight --file environment.yml
 
-pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+```
+Obtain the correct versions of pytorch, torchvision, and torchaudio.
+```
+pip install torch-2.6.0-cp310-cp310-linux_aarch64.whl
+pip install torchvision-0.21.0-cp310-cp310-linux_aarch64.whl
+pip install torchaudio-2.6.0-cp310-cp310-linux_aarch64.whl
 
-conda install -c "nvidia/label/cuda-11.8.0" cuda-toolkit
+```
+Install cuda toolkit inside the conda environment.
+```
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+sudo apt-get update
+sudo apt-get -y install cuda-toolkit-12-9 cuda-compat-12-9
 
-CC=/usr/bin/gcc-11 CXX=/usr/bin/g++-11 pip install ninja git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
+```
+Update ~/.bashrc with the following:
+```
+export PATH=/usr/local/cuda-12.9/bin:$PATH
+export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:$LD_LIBRARY_PATH
+source /opt/ros/humble/setup.bash
+source ~/StanfordMSL/TrajBridge/TrajBridge/install/setup.bash
 
-pip install nerfstudio==1.1.1
-pip uninstall gsplat
-CC=/usr/bin/gcc-11 CXX=/usr/bin/g++-11 pip install git+https://github.com/nerfstudio-project/gsplat.git@c7b0a383657307a13dff56cb2f832e3ab7f029fd
-
-cd ~/StanfordMSL/SousVide-Semantic
-
-git submodule add -b semantic_field_v1 https://github.com/StanfordMSL/gemsplat.git ~/data/StanfordMSL/SousVide-Semantic/gemsplat
-
-cd gemsplat
-pip install -e .
-
-conda install conda-forge::albumentations==2.0.5 --freeze-installed
-
-ns-install-cli (this might fail)
 ```
 ## Run SOUS VIDE Examples
 Check out the notebook examples in the notebooks folder:
@@ -80,5 +84,44 @@ Check out the notebook examples in the notebooks folder:
   4. <b>sv_extended</b>: Produces the policy for the extended trajectory in Section VI.C.
   5. <b>sv_cluttered</b>: Produces the policy for the cluttered environment trajectory in Section VI.C.
 
-## [COMING SOON (2025)] Deploy SOUS VIDE in the Real World
-Deploy SOUS VIDE policies on an [MSL Drone](https://github.com/StanfordMSL/TrajBridge/wiki/3.-Drone-Hardware). Tutorial and code coming soon!
+## Deploy Semantic SOUS VIDE in the Real World
+Deploy SOUS VIDE policies on an [MSL Drone](https://github.com/StanfordMSL/TrajBridge/wiki/3.-Drone-Hardware).
+
+ssh into the drone using a computer on the same network.
+```
+sudo jetson_clocks
+sudo micro-xrce-dds-agent serial --dev /dev/ttyTHS1 --baudrate 921600
+```
+NOTE: If the ttyTHS1 doesn't work, try ttyTHS0
+
+ssh into the drone in a second terminal on the same network.
+```
+cd ~/StanfordMSL/SousVide-Semantic/notebooks
+conda activate sousvide-semantic-flight
+./run
+```
+
+## APPENDIX
+# Installing vscode on Jetson Orin systems without snap:
+```
+# On the Jetson host
+sudo apt update
+sudo apt install -y wget gpg apt-transport-https ca-certificates
+
+# import Microsoft’s GPG key
+wget -qO- https://packages.microsoft.com/keys/microsoft.asc \
+  | gpg --dearmor \
+  | sudo tee /usr/share/keyrings/packages.microsoft.gpg > /dev/null
+
+# add the Code repo, specifying arm64
+echo "deb [arch=arm64 signed-by=/usr/share/keyrings/packages.microsoft.gpg] \
+https://packages.microsoft.com/repos/code stable main" \
+  | sudo tee /etc/apt/sources.list.d/vscode.list
+
+# install VS Code
+sudo apt update
+sudo apt install -y code
+
+# verify
+code --version
+```
