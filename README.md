@@ -3,13 +3,13 @@
 ## Installation
 1) Clone repository and load the submodules.
 ```
-git clone https://github.com/StanfordMSL/SousVide.git
+git clone https://github.com/madang6/SousVide-Semantic.git
 git submodule update --recursive --init
 ```
 2) Build ACADOS locally.
 ```
 # Navigate to acados folder
-cd <repository-path>/SousVide/FiGS/acados/
+cd <repository-path>/SousVide-Semantic/FiGS-Semantic/acados/
 
 # Compile
 mkdir -p build
@@ -25,31 +25,31 @@ export ACADOS_SOURCE_DIR="<acados_root>"
  ```
 cd <repository-path>/SousVide-Semantic/
 
-conda create --name <env-name> -y python=3.10
+conda create --name sousvide-semantic -y python=3.10
 
 conda env config vars set PYTHONNOUSERSITE=1
 conda deactivate
-conda activate <env-name>
+conda activate sousvide-semantic
 
 python -m pip install --upgrade pip
 
-pip install numpy==1.26.3
+pip install numpy==1.26.4
 
 conda deactivate
 ```
 4) Install Zed SDK and pyzed (Zed Python bindings)
 Follow instructions on Zed website for this part, including the bindings.
 
-5) Install pyzed in <env-name> and rest of dependencies
+5) Install pyzed in sousvide-semantic and rest of dependencies
 ```
-conda activate <env-name>
+conda activate sousvide-semantic
 
 python3 -m pip install --no-deps \
 --ignore-installed /usr/local/zed/pyzed-5.0-cp310-cp310-linux_aarch64.whl
 
 conda deactivate
 
-conda env update <env-name> environment_x86.yml
+conda env update sousvide-semantic environment_<VER>.yml
 
 pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
 
