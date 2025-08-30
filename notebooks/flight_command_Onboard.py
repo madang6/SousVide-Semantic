@@ -51,6 +51,7 @@ class StateMachine(Enum):
     LAND   = 3
     HOLD   = 4
     SPIN   = 5
+    TEST   = 6
 
 class FlightCommand(Node):
     """Node for generating commands from SFTI."""
@@ -222,7 +223,6 @@ class FlightCommand(Node):
         self.offboard_control_mode_publisher = self.create_publisher(OffboardControlMode,drone_prefix+'/fmu/in/offboard_control_mode', qos_drone)
         self.vehicle_rates_setpoint_publisher = self.create_publisher(VehicleRatesSetpoint, drone_prefix+'/fmu/in/vehicle_rates_setpoint', qos_drone)
         self.trajectory_setpoint_publisher = self.create_publisher(TrajectorySetpoint, drone_prefix+'/fmu/in/trajectory_setpoint', qos_drone)
-        self.vehicle_local_position_publisher = self.create_publisher(VehicleLocalPositionSetpoint, drone_prefix+'/fmu/in/vehicle_local_position_setpoint', qos_drone)
         
         # Initialize CLIPSeg Model
         self.prompt = mission_config.get('prompt', '')
@@ -587,7 +587,7 @@ class FlightCommand(Node):
                 zch.heartbeat_offboard_control_mode(
                     self.get_current_timestamp_time(),
                     self.offboard_control_mode_publisher,
-                    body_rate=False, position=False, velocity=True
+                    body_rate=False, position=True, velocity=True
                 )
             else:
                 zch.heartbeat_offboard_control_mode(
@@ -653,6 +653,13 @@ class FlightCommand(Node):
             zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
             self.sm = StateMachine.HOLD
             self.key_pressed = None        # reset
+        elif self.key_pressed == 'p':      #
+            print("P key detected, switching to TEST mode")
+            self.alt_hold = float(x_est[2])
+            self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
+            zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
+            self.sm = StateMachine.TEST
+            self.key_pressed = None        # reset
     #
 ###########################################
 #NOTE              INIT
@@ -707,11 +714,11 @@ class FlightCommand(Node):
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
                 self.k_rdy = 0                                                  # Reset ready counter
                 zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
-                self.sm = StateMachine.ACTIVE
+                self.sm = StateMachine.TEST
                 
                 # Print State Information
                 print('=====================================================================')
-                print('Trajectory Started.')
+                print('TEST Started.')
             else:
                 # Looping State Actions
                 self.k_rdy += 1
@@ -721,10 +728,102 @@ class FlightCommand(Node):
 
                     print(f"Desired/Current Altitude+Attitude: ({z0ds}/{z0cr})({q0ds}/{q0cr})")
 ###########################################
+#NOTE                TEST
+###########################################
+        elif self.sm == StateMachine.TEST:
+            x_cur = x_est
+            t0_lp  = time.time()                                                # Algorithm start time
+            t_tr = self.get_current_trajectory_time()
+
+            zch.publish_velocity_and_altitude_hold(
+                    self.get_current_timestamp_time(),
+                    self.alt_hold,
+                    self.trajectory_setpoint_publisher
+                )
+            
+            if t_tr < (5.0):
+                # Determine yaw rate using PID
+                k_gate       = 1.5
+                yaw_err_norm = self.yaw_error_comp(similarity)
+                yaw_rate_cmd = self.pid_yaw_rate(yaw_err_norm)
+                yaw_err      = float(np.clip(yaw_err_norm, -1.0, 1.0))
+                alpha        = float(np.clip(1.0 - k_gate * abs(yaw_err), 0.0, 1.0))
+
+                R_b2w          = zch.quat_xyzw_to_R(*x_cur[6:10].astype(np.float64))
+                fwd            = R_b2w[:,0]
+                vx_dir, vy_dir = fwd[0], fwd[1]
+                norm_xy        = np.hypot(vx_dir, vy_dir)
+                v_fwd          = float(np.clip(1.0 * alpha, 0.0, 1.0))
+                vx, vy         = v_fwd * vx_dir, v_fwd * vy_dir
+
+################DEBUG#####################
+                now_s = time.time()
+                if not hasattr(self, "_last_active_print"):
+                    self._last_active_print = 0.0
+                if now_s - self._last_active_print > 1.0:   # 1 Hz
+                    self._last_active_print = now_s
+
+                    pos = x_cur[0:3]
+                    vel = x_cur[3:6]
+
+                    qx, qy, qz, qw = x_cur[6:10]
+                    rpy = R.from_quat([qx, qy, qz, qw]).as_euler('xyz', degrees=True)
+
+                    print("=== ACTIVE DEBUG ===")
+                    print("f_world:", fwd)
+                    print(f"Pos (m): {pos}")
+                    print(f"Vel (m/s): {vel}")
+                    print(f"Orientation RPY (deg): {rpy}")
+                    print(f"Commanded vel (m/s): [{vx:.3f}, {vy:.3f}, 0.0]")
+                    print(f"Commanded yawspeed (rad/s): {yaw_rate_cmd:.3f}")
+                    print("====================")
+###########################################
+                t_sol = np.hstack((0.0,0.0,0.0,0.0,time.time()-t0_lp))
+                u_cmd = np.array([vx, vy, 0.0, yaw_rate_cmd], dtype=float)  # shape (nu,)
+
+                # Minimal refs/aux (placeholders; sizes must match shapes the recorder was built with)
+                xref = np.zeros(self.recorder.Xref.shape[0], dtype=float)   # shape (nx,)
+                xref[2] = self.alt_hold
+                uref = np.zeros(self.recorder.Uref.shape[0], dtype=float)   # shape (nu,)
+                adv  = np.zeros(self.recorder.Adv.shape[0],  dtype=float)   # shape (nu,)
+                # tsol = np.zeros(self.recorder.Tsol.shape[0], dtype=float)   # Ntsol
+
+                # Record (image can be your latest frame or a blank stub of the right size)
+                # img = self.latest_frame if self.latest_frame is not None else np.zeros_like(self.recorder.Imgs[0])
+                S = np.maximum(similarity, 0).astype(np.float32)                        # clip negatives if logits
+                S8 = cv2.normalize(S, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+                S_bgr = cv2.cvtColor(S8, cv2.COLOR_GRAY2BGR) 
+                # self.recorder.record(S_bgr)
+                self.recorder.record(
+                    img=S_bgr,
+                    tcr=t_tr,
+                    ucr=u_cmd,
+                    xref=xref,
+                    uref=uref,
+                    xest=x_est,
+                    xext=x_est,
+                    adv=adv,
+                    tsol=t_sol
+                )
+            else:
+                # trajectory has ended → HOLD Position
+                self.alt_hold = float(x_est[2])
+                self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
+                self.policy_duration       = t_tr
+                self.hold_prompt           = self.prompt
+
+                self.spin_cycle = False
+
+                self.ready_active = False                                                 # Reset ready active flag
+                self.found = False
+                self.sm                    = StateMachine.HOLD
+                print('Trajectory Finished → HOLDing Position, readying for next query...')
+###########################################
 #NOTE                ACTIVE
 ###########################################
         elif self.sm == StateMachine.ACTIVE:
             # Looping State Actions
+            x_cur = x_est
             t0_lp  = time.time()                                                # Algorithm start time
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
 
@@ -738,50 +837,48 @@ class FlightCommand(Node):
                 u_ref = self.uref
             #FIXME
                 # Determine yaw rate using PID
+                k_gate       = 1.5
                 yaw_err_norm = self.yaw_error_comp(similarity)
                 yaw_rate_cmd = self.pid_yaw_rate(yaw_err_norm)
+                yaw_err      = float(np.clip(yaw_err_norm, -1.0, 1.0))
+                alpha        = float(np.clip(1.0 - k_gate * abs(yaw_err), 0.0, 1.0))
 
-                # Determine velocity set point
-                k_gate = 1.5
+                R_b2w          = zch.quat_xyzw_to_R(*x_cur[6:10].astype(np.float64))
+                fwd            = R_b2w[:,0]
+                # vx_dir, vy_dir = fwd[0], fwd[1]
+                # norm_xy        = np.hypot(vx_dir, vy_dir)
 
-                T_b2w = zch.get_T_b2w(x_est, quat_is_world_to_body=False)
-                R_b2w = np.asarray(T_b2w, dtype=np.float64)[:3, :3]
+                # if norm_xy > 1e-6:
+                #     vx_dir, vy_dir = vx_dir/norm_xy, vy_dir/norm_xy
 
-                # R_c2b = np.asarray(self.T_c2b, dtype=np.float64)[:3, :3]
-                # f_cam = np.array([0.0, 0.0, 1.0], dtype=np.float64)    # +z in camera frame = optical axis
-                # f_body = R_c2b @ f_cam                                 # camera → body
-                f_body = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-                f_world = R_b2w @ f_body                                # body → world
+                # v_fwd          = float(np.clip(1.0 * alpha, 0.0, 1.0))
+                # vx, vy         = v_fwd * vx_dir, v_fwd * vy_dir
 
-                v_xy = f_world[:2]
-                n_xy = float(np.linalg.norm(v_xy))
+                yaw_world      = float(np.arctan2(R_b2w[1, 0], R_b2w[0, 0]))
+                v_fwd          = float(np.clip(1.0 * alpha, 0.0, 1.0))
+                vx, vy         = v_fwd * np.cos(yaw_world), v_fwd * np.sin(yaw_world)
 
-                v_dir_xy = (v_xy / n_xy).astype(np.float64)
-
-                yaw_err = float(np.clip(yaw_err_norm, -1.0, 1.0))
-                alpha = float(np.clip(1.0 - k_gate * abs(yaw_err), 0.0, 1.0))   # 0..1
-                v_fwd = float(np.clip(1.0 * alpha, 0.0, 1.0))
-
-                vx, vy = (v_fwd * v_dir_xy[0], v_fwd * v_dir_xy[1])
+                vx_send, vy_send = vx, vy
 
 ################DEBUG#####################
                 now_s = time.time()
                 if not hasattr(self, "_last_active_print"):
                     self._last_active_print = 0.0
-                if now_s - self._last_active_print > 2.0:   # 0.5 Hz
+                if now_s - self._last_active_print > 1.0:   # 0.5 Hz
                     self._last_active_print = now_s
 
-                    pos = x_est[0:3]
-                    vel = x_est[3:6]
+                    pos = x_cur[0:3]
+                    vel = x_cur[3:6]
 
-                    qx, qy, qz, qw = x_est[6:10]
-                    rpy = R.from_quat([qx, qy, qz, qw]).as_euler('xyz', degrees=True)
+                    yaw_from_fwd = np.degrees(np.arctan2(fwd[1], fwd[0]))
 
                     print("=== ACTIVE DEBUG ===")
+                    print("f_world:", fwd)
                     print(f"Pos (m): {pos}")
                     print(f"Vel (m/s): {vel}")
-                    print(f"Orientation RPY (deg): {rpy}")
-                    print(f"Commanded vel (m/s): [{vx:.3f}, {vy:.3f}, 0.0]")
+                    print(f"Yaw(planar) deg: {np.degrees(yaw_world):.2f}  (from fwd: {yaw_from_fwd:.2f})")
+                    print(f"Computed vel (m/s): [{vx:.3f}, {vy:.3f}, 0.0]"),
+                    print(f"SENT vel (m/s): [{vx_send:.3f}, {vy_send:.3f}, 0.0]")
                     print(f"Commanded yawspeed (rad/s): {yaw_rate_cmd:.3f}")
                     print("====================")
 ###########################################
@@ -790,11 +887,11 @@ class FlightCommand(Node):
                     self.get_current_timestamp_time(),
                     self.alt_hold,
                     yaw_rate_cmd,
-                    np.array([vx, vy, 0.0], dtype=np.float32),
+                    np.array([vx_send, vy_send, 0.0], dtype=np.float32),
                     self.trajectory_setpoint_publisher)
                 
                 t_sol = np.hstack((0.0,0.0,0.0,0.0,time.time()-t0_lp))
-                u_cmd = np.array([vx, vy, 0.0, yaw_rate_cmd], dtype=float)  # shape (nu,)
+                u_cmd = np.array([vx_send, vy_send, 0.0, yaw_rate_cmd], dtype=float)  # shape (nu,)
 
                 # Minimal refs/aux (placeholders; sizes must match shapes the recorder was built with)
                 xref = np.zeros(self.recorder.Xref.shape[0], dtype=float)   # shape (nx,)

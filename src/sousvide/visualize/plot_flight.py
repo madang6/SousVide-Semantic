@@ -200,10 +200,12 @@ def plot_flight(cohort:str,
                 dt_trim:float=0.0,Nrnd:int=3,
                 land_check:bool=False,
                 plot_raw:bool=True,
-                strip_idle: bool = False
+                strip_idle: bool = False,
+                baseline=False
                 ):
     
     flights = preprocess_trajectory_data(cohort,Nfiles,dt_trim,land_check=land_check)
+
 
     if strip_idle:
         for f in flights:
@@ -358,23 +360,41 @@ def plot_flight(cohort:str,
             fancybox=True, ncol=5)
 
         # Plot Inputs
-        ylabels = ["$f_n$","$\omega_x$","$\omega_y$","$\omega_z$"]
+        if baseline:
+            ylabels = ['vx', 'vy', 'none','yaw_rate']
+            for i in range(4):
+                for idx,flight in enumerate(flights):
+                    axs3[i,1].plot(flight['Tact'],flight['Xact'][i+3,:],color='tab:blue',alpha=0.5,label=dlabels[0] if idx == 0 else None)
+                    # print(flight['Uact'][i,:])
+                axs3[i,1].plot(flight['Tact'],flight['Uact'][i,:],color='k', linestyle='--',linewidth=0.8,label=dlabels[1])
+                axs3[i,1].set_ylabel(ylabels[i])
+                
+                if i == 2:
+                    axs3[i,1].set_ylim([ -1.0,1.0])
+                else:
+                    axs3[i,1].set_ylim([-1.0, 1.0])
 
-        for i in range(4):
-            for idx,flight in enumerate(flights):
-                axs3[i,1].plot(flight['Tact'],flight['Uact'][i,:],color='tab:blue',alpha=0.5,label=dlabels[0] if idx == 0 else None)
-                # print(flight['Uact'][i,:])
-            axs3[i,1].plot(flight['Tref'],flight['Xref'][i,:],color='k', linestyle='--',linewidth=0.8,label=dlabels[1])
-            axs3[i,1].set_ylabel(ylabels[i])
-            
-            if i == 0:
-                axs3[i,1].set_ylim([ 0.0,-1.2])
-            else:
-                axs3[i,1].set_ylim([-3.0, 3.0])
+            axs3[0,1].set_title('Velocities')
+            axs3[3,1].legend(["Actual","Inputs"],loc='upper center', bbox_to_anchor=(0.5, -0.2),
+                fancybox=True, ncol=5)
+        else:
+            ylabels = ["$f_n$","$\omega_x$","$\omega_y$","$\omega_z$"]
 
-        axs3[0,1].set_title('Inputs')
-        axs3[3,1].legend(["Actual","Desired"],loc='upper center', bbox_to_anchor=(0.5, -0.2),
-            fancybox=True, ncol=5)
+            for i in range(4):
+                for idx,flight in enumerate(flights):
+                    axs3[i,1].plot(flight['Tact'],flight['Uact'][i,:],color='tab:blue',alpha=0.5,label=dlabels[0] if idx == 0 else None)
+                    # print(flight['Uact'][i,:])
+                axs3[i,1].plot(flight['Tref'],flight['Xref'][i,:],color='k', linestyle='--',linewidth=0.8,label=dlabels[1])
+                axs3[i,1].set_ylabel(ylabels[i])
+                
+                if i == 0:
+                    axs3[i,1].set_ylim([ 0.0,-1.2])
+                else:
+                    axs3[i,1].set_ylim([-3.0, 3.0])
+
+            axs3[0,1].set_title('Inputs')
+            axs3[3,1].legend(["Actual","Desired"],loc='upper center', bbox_to_anchor=(0.5, -0.2),
+                fancybox=True, ncol=5)
             
         # Plot Control Time
         ylabels = ["$Observe$","Orient","Decide","Act","Full Policy"]

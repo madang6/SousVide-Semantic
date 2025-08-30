@@ -40,6 +40,38 @@ def pose_c2b(T_c2b, p_cam):
 
     return p_body_h
 
+def pose_b2w(x_ext, p_body_h, *, quat_is_world_to_body: bool = True):
+    t_wb = np.array(x_ext[0:3], dtype=np.float32)          # body pos in WORLD
+    qx, qy, qz, qw = map(float, x_ext[6:10])
+
+    R = quat_xyzw_to_R(qx, qy, qz, qw)
+    R_wb = R.T if quat_is_world_to_body else R            
+
+    T_b2w = hom_from_R_t(R_wb, t_wb)
+    p_world_h = T_b2w @ p_body_h
+    target_world = p_world_h[:3].astype(np.float32)
+    return target_world, t_wb, R_wb
+
+def get_T_b2w(x_ext, quat_is_world_to_body: bool = False):
+    t_wb = np.array(x_ext[0:3], dtype=np.float32)          # body pos in WORLD
+    qx, qy, qz, qw = map(float, x_ext[6:10])
+
+    R = quat_xyzw_to_R(qx, qy, qz, qw)
+    R_wb = R.T if quat_is_world_to_body else R            
+
+    T_b2w = hom_from_R_t(R_wb, t_wb)
+    return T_b2w
+
+def get_R_b2n(x_ext, quat_is_world_to_body: bool = False) -> np.ndarray:
+    """Body -> NED rotation. Wraps your existing body->'world'(ENU) and converts to NED."""
+    T_b2w = get_T_b2w(x_ext, quat_is_world_to_body=quat_is_world_to_body)  # your existing function
+    R_b2e = np.asarray(T_b2w, dtype=np.float64)[:3, :3]                    # body -> ENU
+    C_ENU_TO_NED = np.array([[0, 1, 0],
+                         [1, 0, 0],
+                         [0, 0,-1]], dtype=np.float64)
+    R_b2n = C_ENU_TO_NED @ R_b2e                                           # ENU -> NED
+    return R_b2n
+
 def pose_from_similarity_xyz(similarity: np.ndarray,
                              xyz_m: np.ndarray,
                              top_percent: float = 10.0,
@@ -85,28 +117,6 @@ def pose_from_similarity_xyz(similarity: np.ndarray,
         uv_centroid = (None, None)
 
     return True, p_cam, uv_centroid, mask
-
-def pose_b2w(x_ext, p_body_h, *, quat_is_world_to_body: bool = True):
-    t_wb = np.array(x_ext[0:3], dtype=np.float32)          # body pos in WORLD
-    qx, qy, qz, qw = map(float, x_ext[6:10])
-
-    R = quat_xyzw_to_R(qx, qy, qz, qw)
-    R_wb = R.T if quat_is_world_to_body else R            
-
-    T_b2w = hom_from_R_t(R_wb, t_wb)
-    p_world_h = T_b2w @ p_body_h
-    target_world = p_world_h[:3].astype(np.float32)
-    return target_world, t_wb, R_wb
-
-def get_T_b2w(x_ext, quat_is_world_to_body: bool = False):
-    t_wb = np.array(x_ext[0:3], dtype=np.float32)          # body pos in WORLD
-    qx, qy, qz, qw = map(float, x_ext[6:10])
-
-    R = quat_xyzw_to_R(qx, qy, qz, qw)
-    R_wb = R.T if quat_is_world_to_body else R            
-
-    T_b2w = hom_from_R_t(R_wb, t_wb)
-    return T_b2w
 
 # def pose_b2w(x_ext, p_body_h):
 #     t_wb = np.array(x_ext[0:3], dtype=np.float32)            # body pos [x,y,z]
