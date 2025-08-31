@@ -60,14 +60,6 @@ pip install torchvision-0.21.0-cp310-cp310-linux_aarch64.whl
 pip install torchaudio-2.6.0-cp310-cp310-linux_aarch64.whl
 
 ```
-Install cuda toolkit inside the conda environment.
-```
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt-get update
-sudo apt-get -y install cuda-toolkit-12-9 cuda-compat-12-9
-
-```
 Update ~/.bashrc with the following:
 ```
 export PATH=/usr/local/cuda-12.9/bin:$PATH
