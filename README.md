@@ -75,6 +75,7 @@ Check out the notebook examples in the notebooks folder:
   3. <b>sv_robustness</b>: Produces the policies used in Section VI.A and VI.B.
   4. <b>sv_extended</b>: Produces the policy for the extended trajectory in Section VI.C.
   5. <b>sv_cluttered</b>: Produces the policy for the cluttered environment trajectory in Section VI.C.
+  6. ssv_ONNX_BENCHMARK: Verifies (a) your ZED camera works, (b) you have a clipseg_onnx.onnx file and (c) you're getting good enough performance for onboard Semantic SOUS VIDE
 
 ## Deploy Semantic SOUS VIDE in the Real World
 Deploy SOUS VIDE policies on an [MSL Drone](https://github.com/StanfordMSL/TrajBridge/wiki/3.-Drone-Hardware).
