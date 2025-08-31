@@ -94,7 +94,7 @@ def main():
 
             # Inference
             t0 = time.time()
-            overlay = model.clipseg_hf_inference(
+            overlay, _ = model.clipseg_hf_inference(
                 frame_rgb,
                 prompt,
                 resize_output_to_input=True,
@@ -105,6 +105,7 @@ def main():
             )
             t1 = time.time()
             times.append(t1 - t0)
+
             frames.append(overlay)
             frame_count += 1
 
