@@ -85,7 +85,7 @@ def main():
         start_time = time.time()
 
         while (time.time() - start_time) < duration:
-            frame, timestamp = zed.get_image(camera)
+            frame, _, _, timestamp = zed.get_image(camera)
             if frame is None:
                 continue
 
