@@ -26,7 +26,7 @@ from px4_msgs.msg import (
     OffboardControlMode,
     VehicleOdometry,
     VehicleRatesSetpoint,
-    VehicleLocalPositionSetpoint,
+    VehicleAttitudeSetpoint,
     TrajectorySetpoint
 )
 
@@ -223,6 +223,7 @@ class FlightCommand(Node):
         self.offboard_control_mode_publisher = self.create_publisher(OffboardControlMode,drone_prefix+'/fmu/in/offboard_control_mode', qos_drone)
         self.vehicle_rates_setpoint_publisher = self.create_publisher(VehicleRatesSetpoint, drone_prefix+'/fmu/in/vehicle_rates_setpoint', qos_drone)
         self.trajectory_setpoint_publisher = self.create_publisher(TrajectorySetpoint, drone_prefix+'/fmu/in/trajectory_setpoint', qos_drone)
+        self.vehicle_attitude_setpoint_publisher = self.create_publisher(VehicleAttitudeSetpoint, drone_prefix+'/fmu/in/vehicle_attitude_setpoint', qos_drone)
         
         # Initialize CLIPSeg Model
         self.prompt = mission_config.get('prompt', '')
@@ -284,6 +285,7 @@ class FlightCommand(Node):
         self.z0   = -0.50                                   # init altitude offset
         self.xref = np.zeros(10)                          # no reference state
         self.uref = -6.90*np.ones((4,))                   # reference input
+        self.thrust_body = float(-0.41)
     #FIXME
         self.alt_hold          = float('nan')
         self.trajectory        = None
@@ -587,7 +589,7 @@ class FlightCommand(Node):
                 zch.heartbeat_offboard_control_mode(
                     self.get_current_timestamp_time(),
                     self.offboard_control_mode_publisher,
-                    body_rate=False, position=True, velocity=True
+                    body_rate=False, position=False, velocity=False, attitude=True
                 )
             else:
                 zch.heartbeat_offboard_control_mode(
@@ -751,10 +753,20 @@ class FlightCommand(Node):
 
                 R_b2w          = zch.quat_xyzw_to_R(*x_cur[6:10].astype(np.float64))
                 fwd            = R_b2w[:,0]
-                vx_dir, vy_dir = fwd[0], fwd[1]
-                norm_xy        = np.hypot(vx_dir, vy_dir)
+                # vx_dir, vy_dir = fwd[0], fwd[1]
+                # norm_xy        = np.hypot(vx_dir, vy_dir)
+
+                # if norm_xy > 1e-6:
+                #     vx_dir, vy_dir = vx_dir/norm_xy, vy_dir/norm_xy
+
+                # v_fwd          = float(np.clip(1.0 * alpha, 0.0, 1.0))
+                # vx, vy         = v_fwd * vx_dir, v_fwd * vy_dir
+
+                yaw_world      = float(np.arctan2(R_b2w[1, 0], R_b2w[0, 0]))
                 v_fwd          = float(np.clip(1.0 * alpha, 0.0, 1.0))
-                vx, vy         = v_fwd * vx_dir, v_fwd * vy_dir
+                vx, vy         = v_fwd * np.cos(yaw_world), v_fwd * np.sin(yaw_world)
+
+                vx_send, vy_send = vx, vy
 
 ################DEBUG#####################
                 now_s = time.time()
@@ -766,16 +778,18 @@ class FlightCommand(Node):
                     pos = x_cur[0:3]
                     vel = x_cur[3:6]
 
-                    qx, qy, qz, qw = x_cur[6:10]
-                    rpy = R.from_quat([qx, qy, qz, qw]).as_euler('xyz', degrees=True)
+                    yaw_from_fwd = np.degrees(np.arctan2(fwd[1], fwd[0]))
 
-                    print("=== ACTIVE DEBUG ===")
-                    print("f_world:", fwd)
+                    # qx, qy, qz, qw = x_cur[6:10]
+                    # rpy = R.from_quat([qx, qy, qz, qw]).as_euler('xyz', degrees=True)
+
+                    print("=== TEST DEBUG ===")
+
                     print(f"Pos (m): {pos}")
-                    print(f"Vel (m/s): {vel}")
-                    print(f"Orientation RPY (deg): {rpy}")
-                    print(f"Commanded vel (m/s): [{vx:.3f}, {vy:.3f}, 0.0]")
+                    print(f"{('Vel (m/s): ' + str(vel.tolist())):<48}SENT vel (m/s): [{vx_send:.3f}, {vy_send:.3f}, 0.000]")
+                    print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f} (from fwd: {yaw_from_fwd:.2f})")
                     print(f"Commanded yawspeed (rad/s): {yaw_rate_cmd:.3f}")
+
                     print("====================")
 ###########################################
                 t_sol = np.hstack((0.0,0.0,0.0,0.0,time.time()-t0_lp))
@@ -836,6 +850,7 @@ class FlightCommand(Node):
                 x_ref = self.xref
                 u_ref = self.uref
             #FIXME
+######################################INTRACTIBLE#######################################
                 # Determine yaw rate using PID
                 k_gate       = 1.5
                 yaw_err_norm = self.yaw_error_comp(similarity)
@@ -858,7 +873,16 @@ class FlightCommand(Node):
                 v_fwd          = float(np.clip(1.0 * alpha, 0.0, 1.0))
                 vx, vy         = v_fwd * np.cos(yaw_world), v_fwd * np.sin(yaw_world)
 
+                # Px4 does something insane with velocities here, so we have to transform
+                v_w       = np.array([vx, vy, 0.0], dtype=float)
+                R_w2b     = R_b2w.T
+                v_b_frd   = R_w2b @ v_w                                  # body FRD (X fwd, Y right, Z down)
+                v_b_flu   = np.array([v_b_frd[0], -v_b_frd[1], -v_b_frd[2]], dtype=float)  # body FLU
+
                 vx_send, vy_send = vx, vy
+                # vx_send, vy_send = v_b_flu[0], v_b_flu[1]
+                # vx_send = -1.0*v_fwd
+                # vy_send = 0.0
 
 ################DEBUG#####################
                 now_s = time.time()
@@ -873,16 +897,22 @@ class FlightCommand(Node):
                     yaw_from_fwd = np.degrees(np.arctan2(fwd[1], fwd[0]))
 
                     print("=== ACTIVE DEBUG ===")
-                    print("f_world:", fwd)
                     print(f"Pos (m): {pos}")
-                    print(f"Vel (m/s): {vel}")
-                    print(f"Yaw(planar) deg: {np.degrees(yaw_world):.2f}  (from fwd: {yaw_from_fwd:.2f})")
-                    print(f"Computed vel (m/s): [{vx:.3f}, {vy:.3f}, 0.0]"),
-                    print(f"SENT vel (m/s): [{vx_send:.3f}, {vy_send:.3f}, 0.0]")
+                    print(f"{('Vel (m/s): EST. ' + str(vel.tolist())):<48} COMP. [{vx:.3f}, {vy:.3f}, 0.000] SENT. [{vx_send:.3f}, {vy_send:.3f}, 0.000]")
+                    # print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f}")
+                    print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f} (from fwd: {yaw_from_fwd:.2f})")
                     print(f"Commanded yawspeed (rad/s): {yaw_rate_cmd:.3f}")
+
                     print("====================")
 ###########################################
 
+                # zch.publish_visual_servoing_setpoint(
+                #     self.get_current_timestamp_time(),
+                #     self.thrust_body,
+                #     float('nan'),
+                #     float('nan'),
+                #     yaw_rate_cmd,
+                #     self.vehicle_attitude_setpoint_publisher)
                 zch.publish_visual_servoing_setpoint(
                     self.get_current_timestamp_time(),
                     self.alt_hold,
@@ -891,6 +921,7 @@ class FlightCommand(Node):
                     self.trajectory_setpoint_publisher)
                 
                 t_sol = np.hstack((0.0,0.0,0.0,0.0,time.time()-t0_lp))
+                # u_cmd = np.array([self.thrust_body, 0.0, 0.0, yaw_rate_cmd], dtype=float)  # shape (nu,)
                 u_cmd = np.array([vx_send, vy_send, 0.0, yaw_rate_cmd], dtype=float)  # shape (nu,)
 
                 # Minimal refs/aux (placeholders; sizes must match shapes the recorder was built with)

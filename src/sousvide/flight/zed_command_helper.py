@@ -11,6 +11,7 @@ from px4_msgs.msg import (
     OffboardControlMode,
     VehicleOdometry,
     VehicleRatesSetpoint,
+    VehicleAttitudeSetpoint,
     TrajectorySetpoint,
     ActuatorMotors
 )
@@ -129,6 +130,23 @@ def pose_from_similarity_xyz(similarity: np.ndarray,
 
 #     return target_world, t_wb
 
+# def publish_visual_servoing_setpoint(timestamp: int,
+#                                      thrust: float,
+#                                      pitch: float,
+#                                      roll: float,
+#                                      yaw_rate: float,
+#                                      traj_sp_pub) -> None:
+#     ts = VehicleAttitudeSetpoint(timestamp=timestamp)
+#     # ts.position     = [float('nan'), float('nan'), float(altitude_hold)]
+#     # ts.velocity     = [float(velocity[0].astype(np.float32)), float(velocity[1].astype(np.float32)), float('nan')]     # hold zero velocity
+#     # ts.acceleration = [float('nan')] * 3
+#     # ts.jerk         = [float('nan')] * 3
+#     ts.thrust_body         = np.array([0.0, 0.0, float(thrust)], dtype=np.float32)
+#     ts.pitch_body          = float(pitch)
+#     ts.roll_body           = float(roll)
+#     ts.yaw_body            = float('nan')
+#     ts.yaw_sp_move_rate    = float(yaw_rate)  # set yaw speed to desired rate
+#     traj_sp_pub.publish(ts)
 def publish_visual_servoing_setpoint(timestamp: int,
                                      altitude_hold: float,
                                      yaw_rate: float,
@@ -142,6 +160,8 @@ def publish_visual_servoing_setpoint(timestamp: int,
     ts.yaw          = float('nan')
     ts.yawspeed     = float(yaw_rate)  # set yaw speed to desired rate
     traj_sp_pub.publish(ts)
+
+
 
 def publish_position_setpoint(timestamp: int,
                               altitude_hold: np.ndarray,
@@ -630,7 +650,8 @@ def heartbeat_offboard_control_mode(
     *,
     body_rate: bool = False,
     position: bool = False,
-    velocity: bool  = False
+    velocity: bool  = False,
+    attitude: bool = False
 ) -> None:
     """Offboard heartbeat that can enable either body-rate or velocity control."""
     offboard_control_mode = OffboardControlMode(
@@ -638,7 +659,7 @@ def heartbeat_offboard_control_mode(
         position    = position,         
         velocity    = velocity,      # control mode for instruments-only
         acceleration= False,
-        attitude    = False,
+        attitude    = attitude,
         body_rate   = body_rate,     # default control mode for Sous Vide
         actuator    = False
     )
