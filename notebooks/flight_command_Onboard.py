@@ -27,6 +27,7 @@ from px4_msgs.msg import (
     VehicleOdometry,
     VehicleRatesSetpoint,
     VehicleAttitudeSetpoint,
+    VehicleLocalPosition,
     TrajectorySetpoint
 )
 
@@ -215,16 +216,22 @@ class FlightCommand(Node):
             VehicleOdometry, drone_prefix+'/fmu/out/vehicle_odometry', self.internal_estimator_callback, qos_drone)
         self.external_estimator_subscriber = self.create_subscription(
             VehicleOdometry, '/drone4/fmu/in/vehicle_visual_odometry', self.external_estimator_callback, qos_mocap)
+        self.local_position_estimator_subscriber = self.create_subscription(
+            VehicleLocalPosition, drone_prefix+'/fmu/out/vehicle_local_position', self.external_estimator_callback, qos_drone)
         self.vehicle_rates_subcriber = self.create_subscription(
             VehicleRatesSetpoint, drone_prefix+'/fmu/out/vehicle_rates_setpoint', self.vehicle_rates_setpoint_callback, qos_drone)
-
+        self.trajectory_setpoint_out_subscriber = self.create_subscription(
+            TrajectorySetpoint, drone_prefix+'/fmu/out/trajectory_setpoint', self.trajectory_setpoint_out_callback, qos_drone)
+        self.trajectory_setpoint_in_subscriber = self.create_subscription(
+            TrajectorySetpoint, drone_prefix+'/fmu/in/trajectory_setpoint',self.trajectory_setpoint_in_callback, qos_drone)
+        
         # Create publishers
         self.vehicle_command_publisher = self.create_publisher(VehicleCommand,drone_prefix+'/fmu/in/vehicle_command', qos_drone)
         self.offboard_control_mode_publisher = self.create_publisher(OffboardControlMode,drone_prefix+'/fmu/in/offboard_control_mode', qos_drone)
         self.vehicle_rates_setpoint_publisher = self.create_publisher(VehicleRatesSetpoint, drone_prefix+'/fmu/in/vehicle_rates_setpoint', qos_drone)
         self.trajectory_setpoint_publisher = self.create_publisher(TrajectorySetpoint, drone_prefix+'/fmu/in/trajectory_setpoint', qos_drone)
         self.vehicle_attitude_setpoint_publisher = self.create_publisher(VehicleAttitudeSetpoint, drone_prefix+'/fmu/in/vehicle_attitude_setpoint', qos_drone)
-        
+
         # Initialize CLIPSeg Model
         self.prompt = mission_config.get('prompt', '')
         print(f"Query Set to: {self.prompt}")
@@ -309,8 +316,11 @@ class FlightCommand(Node):
         self.k_rdy = 0                                          # ready counter
         self.t_tr0 = 0.0                                        # trajectory start time
         self.vo_est = VehicleOdometry()                         # current state vector (estimated)
+        self.vo_est_ned = VehicleLocalPosition()                # current state vector (estimated, NED)
         self.vo_ext = VehicleOdometry()                         # current state vector (external)
         self.vrs = VehicleRatesSetpoint()                       # current vehicle rates setpoint
+        self.tsp_out = TrajectorySetpoint()                     # current trajectory setpoint
+        self.tsp_in = TrajectorySetpoint()                      # current trajectory setpoint
 
         # State Machine and Failsafe variables
         self.sm = StateMachine.INIT                                    # state machine
@@ -421,6 +431,10 @@ class FlightCommand(Node):
     def internal_estimator_callback(self, vehicle_odometry:VehicleOdometry):
         """Callback function for internal vehicle_odometry topic subscriber."""
         self.vo_est = vehicle_odometry
+    
+    def internal_estimator_ned_callback(self, vehicle_local_position:VehicleLocalPosition):
+        """Callback function for internal vehicle_local_position topic subscriber."""
+        self.vo_est_ned = vehicle_local_position
 
     def external_estimator_callback(self, vehicle_odometry:VehicleOdometry):
         """Callback function for external vehicle_odometry topic subscriber."""
@@ -429,6 +443,14 @@ class FlightCommand(Node):
     def vehicle_rates_setpoint_callback(self, vehicle_rates_setpoint:VehicleRatesSetpoint):
         """Callback function for vehicle_rates topic subscriber."""
         self.vrs = vehicle_rates_setpoint
+
+    def trajectory_setpoint_out_callback(self, trajectory_setpoint:TrajectorySetpoint):
+        """Callback function for trajectory_setpoint topic subscriber."""
+        self.tsp_out = trajectory_setpoint
+
+    def trajectory_setpoint_in_callback(self, trajectory_setpoint:TrajectorySetpoint):
+        """Callback function for trajectory_setpoint topic subscriber."""
+        self.tsp_in = trajectory_setpoint
 
     def get_current_timestamp_time(self) -> int:
         """Get current timestamp in milliseconds."""
@@ -566,6 +588,22 @@ class FlightCommand(Node):
     
         u = Kp*err_norm + Ki*self._yaw_i + Kd*de
         return float(np.clip(u, -rate_max, rate_max))
+    
+    def wrap_to_pi(self, a: float) -> float:
+        # returns angle in (-pi, pi]
+        return (a + np.pi) % (2*np.pi) - np.pi
+
+    def rotate_vo_to_lpos(self, vx_vo: float, vy_vo: float, yaw_vo: float, heading_lpos: float) -> tuple[float, float]:
+        """
+        Rotate XY velocity from the VehicleOdometry yaw frame into VehicleLocalPosition yaw frame.
+        yaw_vo: yaw from your VO/odometry pipeline (rad)
+        heading_lpos: VehicleLocalPosition.heading (rad, NED)
+        """
+        dpsi = self.wrap_to_pi(heading_lpos - yaw_vo)
+        c, s = float(np.cos(dpsi)), float(np.sin(dpsi))
+        vx_lp =  c*vx_vo + s*vy_vo
+        vy_lp = -s*vx_vo + c*vy_vo
+        return float(vx_lp), float(vy_lp)
 #
 #NOTE COMMANDER
     def commander(self) -> None:
@@ -589,7 +627,7 @@ class FlightCommand(Node):
                 zch.heartbeat_offboard_control_mode(
                     self.get_current_timestamp_time(),
                     self.offboard_control_mode_publisher,
-                    body_rate=False, position=False, velocity=False, attitude=True
+                    body_rate=False, position=True, velocity=True, attitude=False
                 )
             else:
                 zch.heartbeat_offboard_control_mode(
@@ -766,6 +804,12 @@ class FlightCommand(Node):
                 v_fwd          = float(np.clip(1.0 * alpha, 0.0, 1.0))
                 vx, vy         = v_fwd * np.cos(yaw_world), v_fwd * np.sin(yaw_world)
 
+                # Px4 does something insane with velocities here, so we have to transform
+                v_w       = np.array([vx, vy, 0.0], dtype=float)
+                R_w2b     = R_b2w.T
+                v_b_frd   = R_w2b @ v_w                                  # body FRD (X fwd, Y right, Z down)
+                v_b_flu   = np.array([v_b_frd[0], -v_b_frd[1], -v_b_frd[2]], dtype=float)  # body FLU
+
                 vx_send, vy_send = vx, vy
 
 ################DEBUG#####################
@@ -786,10 +830,13 @@ class FlightCommand(Node):
                     print("=== TEST DEBUG ===")
 
                     print(f"Pos (m): {pos}")
-                    print(f"{('Vel (m/s): ' + str(vel.tolist())):<48}SENT vel (m/s): [{vx_send:.3f}, {vy_send:.3f}, 0.000]")
+                    print(f"{('Vel (m/s): EST. ' + str(vel.tolist())):<48} "
+                          f"CMP. [{vx:.3f}, {vy:.3f}, 0.000] "
+                          f"CMD. [{vx_send:.3f}, {vy_send:.3f}, 0.000] "
+                          f"PUB-IN. [{self.tsp_in.velocity[0]:.3f}, {self.tsp_in.velocity[1]:.3f}, {self.tsp_in.velocity[2]:.3f}] "
+                          f"PUB-OUT. [{self.tsp_out.velocity[0]:.3f}, {self.tsp_out.velocity[1]:.3f}, {self.tsp_out.velocity[2]:.3f}] ")
                     print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f} (from fwd: {yaw_from_fwd:.2f})")
                     print(f"Commanded yawspeed (rad/s): {yaw_rate_cmd:.3f}")
-
                     print("====================")
 ###########################################
                 t_sol = np.hstack((0.0,0.0,0.0,0.0,time.time()-t0_lp))
@@ -850,6 +897,12 @@ class FlightCommand(Node):
                 x_ref = self.xref
                 u_ref = self.uref
             #FIXME
+                # --- vo_ext readout: position, velocity, orientation (planar yaw) ---
+                pos_ext = x_ext[0:3]
+                vel_ext = x_ext[3:6]
+                R_b2w_ext = zch.quat_xyzw_to_R(*x_ext[6:10].astype(np.float64))
+                yaw_ext = float(np.arctan2(R_b2w_ext[1, 0], R_b2w_ext[0, 0]))
+                yaw_ext_deg = float(np.degrees(np.arctan2(R_b2w_ext[1, 0], R_b2w_ext[0, 0])))
 ######################################INTRACTIBLE#######################################
                 # Determine yaw rate using PID
                 k_gate       = 1.5
@@ -872,14 +925,17 @@ class FlightCommand(Node):
                 yaw_world      = float(np.arctan2(R_b2w[1, 0], R_b2w[0, 0]))
                 v_fwd          = float(np.clip(1.0 * alpha, 0.0, 1.0))
                 vx, vy         = v_fwd * np.cos(yaw_world), v_fwd * np.sin(yaw_world)
+                # vx, vy         = v_fwd * np.cos(yaw_ext), v_fwd * np.sin(yaw_ext)
 
                 # Px4 does something insane with velocities here, so we have to transform
-                v_w       = np.array([vx, vy, 0.0], dtype=float)
-                R_w2b     = R_b2w.T
-                v_b_frd   = R_w2b @ v_w                                  # body FRD (X fwd, Y right, Z down)
-                v_b_flu   = np.array([v_b_frd[0], -v_b_frd[1], -v_b_frd[2]], dtype=float)  # body FLU
+                # v_w       = np.array([vx, vy, 0.0], dtype=float)
+                # R_w2b     = R_b2w.T
+                # v_b_frd   = R_w2b @ v_w                                  # body FRD (X fwd, Y right, Z down)
+                # v_b_flu   = np.array([v_b_frd[0], -v_b_frd[1], -v_b_frd[2]], dtype=float)  # body FLU
 
-                vx_send, vy_send = vx, vy
+                vx_send, vy_send = self.rotate_vo_to_lpos(vx, vy, yaw_world, self.vo_est_ned.heading)
+
+                # vx_send, vy_send = vx, vy
                 # vx_send, vy_send = v_b_flu[0], v_b_flu[1]
                 # vx_send = -1.0*v_fwd
                 # vy_send = 0.0
@@ -897,10 +953,17 @@ class FlightCommand(Node):
                     yaw_from_fwd = np.degrees(np.arctan2(fwd[1], fwd[0]))
 
                     print("=== ACTIVE DEBUG ===")
-                    print(f"Pos (m): {pos}")
-                    print(f"{('Vel (m/s): EST. ' + str(vel.tolist())):<48} COMP. [{vx:.3f}, {vy:.3f}, 0.000] SENT. [{vx_send:.3f}, {vy_send:.3f}, 0.000]")
+                    # print(f"Pos (m): EST-INT {pos}")
+                    print(f"{('Pos (m): EST' + np.array2string(pos, precision=3, separator=', ')):<48} "
+                          f"EXT. [{vel_ext[0]:.3f}, {vel_ext[1]:.3f}, {vel_ext[2]:.3f}] ")
+                    print(f"{('Vel (m/s): EST. ' + str(vel.tolist())):<48} "
+                          f"CMP. [{vx:.3f}, {vy:.3f}, 0.000] "
+                          f"CMD. [{vx_send:.3f}, {vy_send:.3f}, 0.000] "
+                          f"PUB-IN. [{self.tsp_in.velocity[0]:.3f}, {self.tsp_in.velocity[1]:.3f}, {self.tsp_in.velocity[2]:.3f}] "
+                          f"PUB-OUT. [{self.tsp_out.velocity[0]:.3f}, {self.tsp_out.velocity[1]:.3f}, {self.tsp_out.velocity[2]:.3f}] ")
+                    # print(f"{('Vel (m/s): EST. ' + str(vel.tolist())):<48} COMP. [{vx:.3f}, {vy:.3f}, 0.000] SENT. [{vx_send:.3f}, {vy_send:.3f}, 0.000]")
                     # print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f}")
-                    print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f} (from fwd: {yaw_from_fwd:.2f})")
+                    print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f} (from fwd: {yaw_from_fwd:.2f}) EXT: {yaw_ext_deg:.2f}")
                     print(f"Commanded yawspeed (rad/s): {yaw_rate_cmd:.3f}")
 
                     print("====================")
@@ -1053,13 +1116,13 @@ class FlightCommand(Node):
             zch.publish_velocity_and_altitude_hold_with_yaw_rate(
                 self.get_current_timestamp_time(),
                 self.alt_hold,
-                0.75,
+                0.9,
                 self.trajectory_setpoint_publisher
                 )
-            if t_tr < 7.0:
+            if t_tr < 8.0:
                 self.active_arm = False
                 # self.recorder.record(img)
-            elif t_tr >= 7.0 and t_tr < 14.0:
+            elif t_tr >= 8.0 and t_tr < 24.0:
                 self.active_arm = True
                 # self.recorder.record(vp.colorize_mask_fast((similarity*255).astype(np.uint8),self.vision_model.lut))
                 if self.found:
