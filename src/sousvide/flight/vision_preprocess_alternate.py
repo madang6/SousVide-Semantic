@@ -768,7 +768,7 @@ class CLIPSegHFModel:
         # 2) connected components
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
         if num_labels <= 1:
-            return found, sim_score, 0.0, None
+            return found, sim_score, 0.0, None, 0.0
 
         # 3) choose the "best" region in this frame:
         best_lab = -1
@@ -830,11 +830,11 @@ class CLIPSegHFModel:
                 # cv2.drawContours(logits_overlay, [self.loiter_cnt], -1, (0, 200, 255), 2)
                 # overlay = logits_overlay
 
-            return found, sim_score, area_frac, overlay
+            return found, sim_score, area_frac, overlay, 0.0
 
         # --- ACTIVE / ARM PHASE ---
         if self.loiter_cnt is None:
-            return found, sim_score, area_frac, overlay
+            return found, sim_score, area_frac, overlay, 0.0
 
         # rebuild mask to match reference area
         curr_region_mask = self._area_targeted_mask(logits, target_frac=self.loiter_area_frac)
@@ -844,7 +844,7 @@ class CLIPSegHFModel:
 
         cur_cnt, cur_area_px, cur_sol, cur_ecc = self._largest_contour_from_mask(curr_region_mask)
         if cur_cnt is None:
-            return found, sim_score, cur_area_frac, overlay
+            return found, sim_score, cur_area_frac, overlay, 0.0
 
         # 1) Area sanity using cur_area_frac
         area_ok = abs(cur_area_frac - self.loiter_area_frac) <= self.area_tolerance * self.loiter_area_frac
@@ -863,7 +863,14 @@ class CLIPSegHFModel:
         #     f"sol={cur_sol:.3f}, ref={self.loiter_solidity:.3f}, ok={sol_ok} | "
         #     f"ecc={cur_ecc:.3f}, ref={self.loiter_eccentricity:.3f}, ok={ecc_ok}"
         # )
-        if shape_ok and area_ok and sol_ok and ecc_ok:
+
+        # --- SEMANTIC GATE (relaxed ~96% of calibration threshold) ---
+        vals = logits[curr_region_mask > 0]
+        t_relaxed = 0.96 * self.t_calib
+        frac_hot  = (vals >= t_relaxed).mean()
+        sem_ok    = (frac_hot >= 0.5)
+
+        if shape_ok and area_ok and sol_ok and ecc_ok and sem_ok:
             found = True
             # visualize both shapes (current in green, reference outline in orange)
             rgb_overlay = frame_img.copy()
@@ -880,7 +887,7 @@ class CLIPSegHFModel:
 
             overlay = rgb_overlay #np.hstack((rgb_overlay, logits_overlay))
 
-        return found, sim_score, area_frac, overlay
+        return found, sim_score, cur_area_frac, overlay, frac_hot
                  
 ################################################
 # 2. Lookup Table for Semantic Probability Map #

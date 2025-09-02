@@ -21,6 +21,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
+from geometry_msgs.msg import PoseStamped
 from px4_msgs.msg import (
     VehicleCommand,
     OffboardControlMode,
@@ -216,8 +217,10 @@ class FlightCommand(Node):
             VehicleOdometry, drone_prefix+'/fmu/out/vehicle_odometry', self.internal_estimator_callback, qos_drone)
         self.external_estimator_subscriber = self.create_subscription(
             VehicleOdometry, '/drone4/fmu/in/vehicle_visual_odometry', self.external_estimator_callback, qos_mocap)
+        self.measurement_subscriber = self.create_subscription(
+            PoseStamped, '/vrpn_mocap/ssv/pose', self.mocap_measurement_callback, qos_mocap)
         self.local_position_estimator_subscriber = self.create_subscription(
-            VehicleLocalPosition, drone_prefix+'/fmu/out/vehicle_local_position', self.external_estimator_callback, qos_drone)
+            VehicleLocalPosition, drone_prefix+'/fmu/out/vehicle_local_position', self.internal_estimator_ned_callback, qos_drone)
         self.vehicle_rates_subcriber = self.create_subscription(
             VehicleRatesSetpoint, drone_prefix+'/fmu/out/vehicle_rates_setpoint', self.vehicle_rates_setpoint_callback, qos_drone)
         self.trajectory_setpoint_out_subscriber = self.create_subscription(
@@ -277,6 +280,7 @@ class FlightCommand(Node):
         self.finding_shutdown   = False
         self.finding_started    = False
         self.found              = False
+        self.frac_hot           = 0.0
         self.sim_score          = 0.0
         self.area_frac          = 0.0
 #policy switch flag
@@ -316,7 +320,8 @@ class FlightCommand(Node):
         self.k_rdy = 0                                          # ready counter
         self.t_tr0 = 0.0                                        # trajectory start time
         self.vo_est = VehicleOdometry()                         # current state vector (estimated)
-        self.vo_est_ned = VehicleLocalPosition()                # current state vector (estimated, NED)
+        self.vl_est_ned = VehicleLocalPosition()                # current state vector (estimated, NED)
+        self.vo_meas = PoseStamped()                            # current state vector (measured)
         self.vo_ext = VehicleOdometry()                         # current state vector (external)
         self.vrs = VehicleRatesSetpoint()                       # current vehicle rates setpoint
         self.tsp_out = TrajectorySetpoint()                     # current trajectory setpoint
@@ -434,11 +439,15 @@ class FlightCommand(Node):
     
     def internal_estimator_ned_callback(self, vehicle_local_position:VehicleLocalPosition):
         """Callback function for internal vehicle_local_position topic subscriber."""
-        self.vo_est_ned = vehicle_local_position
+        self.vl_est_ned = vehicle_local_position
 
     def external_estimator_callback(self, vehicle_odometry:VehicleOdometry):
         """Callback function for external vehicle_odometry topic subscriber."""
         self.vo_ext = vehicle_odometry
+
+    def mocap_measurement_callback(self, pose_stamped:PoseStamped):
+        """Callback function for mocap measurement topic subscriber."""
+        self.vo_meas = pose_stamped
 
     def vehicle_rates_setpoint_callback(self, vehicle_rates_setpoint:VehicleRatesSetpoint):
         """Callback function for vehicle_rates topic subscriber."""
@@ -503,7 +512,7 @@ class FlightCommand(Node):
                 time.sleep(0.02)
                 continue
             else:
-                self.found, self.sim_score, self.area_frac, self.latest_loiter_overlay = self.vision_model.loiter_calibrate(
+                self.found, self.sim_score, self.area_frac, self.latest_loiter_overlay, self.frac_hot = self.vision_model.loiter_calibrate(
                 logits=self.latest_similarity,           # your logits/similarity map
                 frame_img=self.latest_frame,         # original frame in BGR
                 active_arm = self.active_arm
@@ -601,8 +610,8 @@ class FlightCommand(Node):
         """
         dpsi = self.wrap_to_pi(heading_lpos - yaw_vo)
         c, s = float(np.cos(dpsi)), float(np.sin(dpsi))
-        vx_lp =  c*vx_vo + s*vy_vo
-        vy_lp = -s*vx_vo + c*vy_vo
+        vx_lp =  c*vx_vo - s*vy_vo
+        vy_lp =  s*vx_vo + c*vy_vo
         return float(vx_lp), float(vy_lp)
 #
 #NOTE COMMANDER
@@ -692,6 +701,24 @@ class FlightCommand(Node):
             self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
             zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
             self.sm = StateMachine.HOLD
+            self.key_pressed = None        # reset
+        elif self.key_pressed == 'k':
+            print('K key detected, switching to HOLD->ACTIVE')
+            self.alt_hold = float(x_est[2])
+            self.k_rdy = 0   
+            self.sim_score = 0.0
+            self.frac_hot  = 0.0
+            self.area_frac = 0.0
+            self.found = False
+            self.vision_model.loiter_max = 0.0
+            self.vision_model.loiter_area_frac = 0.0
+            self.last_print_time = 0.0
+            self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
+            zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
+            self.ready_active = True
+            self.spin_cycle = False
+            self.sm                    = StateMachine.HOLD
+            print(f'Query {self.prompt} Found → HOLDing Position')
             self.key_pressed = None        # reset
         elif self.key_pressed == 'p':      #
             print("P key detected, switching to TEST mode")
@@ -903,6 +930,26 @@ class FlightCommand(Node):
                 R_b2w_ext = zch.quat_xyzw_to_R(*x_ext[6:10].astype(np.float64))
                 yaw_ext = float(np.arctan2(R_b2w_ext[1, 0], R_b2w_ext[0, 0]))
                 yaw_ext_deg = float(np.degrees(np.arctan2(R_b2w_ext[1, 0], R_b2w_ext[0, 0])))
+
+                # pos_ned = self.vo_est_ned.position
+                # vel_ned = self.vo_est_ned.velocity
+                # yaw_ned = self.vl_est_ned.heading
+                orientation_meas = self.vo_meas.pose.orientation
+                qx_meas, qy_meas, qz_meas, qw_meas = orientation_meas.x, orientation_meas.y, orientation_meas.z, orientation_meas.w
+                yaw_meas = zch.quat_xyzw_to_R(qx_meas, qy_meas, qz_meas, qw_meas)
+                yaw_meas = float(np.arctan2(yaw_meas[1, 0], yaw_meas[0, 0]))
+                yaw_meas_deg = float(np.degrees(yaw_meas))
+
+                vl_head_ok = self.vl_est_ned.heading_good_for_control
+                yaw_ned_deg = float(np.degrees(self.vl_est_ned.heading))
+                vl_pos_ok = self.vl_est_ned.xy_valid
+                vl_vel_ok = self.vl_est_ned.v_xy_valid
+                vl_ned_vx = self.vl_est_ned.vx
+                vl_ned_vy = self.vl_est_ned.vy
+                vl_ned_vz = self.vl_est_ned.vz
+                
+                vo_vel_frame = self.vo_est.velocity_frame
+                vo_pos_frame = self.vo_est.pose_frame
 ######################################INTRACTIBLE#######################################
                 # Determine yaw rate using PID
                 k_gate       = 1.5
@@ -933,9 +980,8 @@ class FlightCommand(Node):
                 # v_b_frd   = R_w2b @ v_w                                  # body FRD (X fwd, Y right, Z down)
                 # v_b_flu   = np.array([v_b_frd[0], -v_b_frd[1], -v_b_frd[2]], dtype=float)  # body FLU
 
-                vx_send, vy_send = self.rotate_vo_to_lpos(vx, vy, yaw_world, self.vo_est_ned.heading)
-
-                # vx_send, vy_send = vx, vy
+                # vx_send, vy_send = self.rotate_vo_to_lpos(vx, vy, yaw_world, self.vl_est_ned.heading)
+                vx_send, vy_send = vx, vy
                 # vx_send, vy_send = v_b_flu[0], v_b_flu[1]
                 # vx_send = -1.0*v_fwd
                 # vy_send = 0.0
@@ -944,7 +990,7 @@ class FlightCommand(Node):
                 now_s = time.time()
                 if not hasattr(self, "_last_active_print"):
                     self._last_active_print = 0.0
-                if now_s - self._last_active_print > 1.0:   # 0.5 Hz
+                if now_s - self._last_active_print > 0.5:   
                     self._last_active_print = now_s
 
                     pos = x_cur[0:3]
@@ -954,17 +1000,43 @@ class FlightCommand(Node):
 
                     print("=== ACTIVE DEBUG ===")
                     # print(f"Pos (m): EST-INT {pos}")
-                    print(f"{('Pos (m): EST' + np.array2string(pos, precision=3, separator=', ')):<48} "
-                          f"EXT. [{vel_ext[0]:.3f}, {vel_ext[1]:.3f}, {vel_ext[2]:.3f}] ")
-                    print(f"{('Vel (m/s): EST. ' + str(vel.tolist())):<48} "
-                          f"CMP. [{vx:.3f}, {vy:.3f}, 0.000] "
-                          f"CMD. [{vx_send:.3f}, {vy_send:.3f}, 0.000] "
-                          f"PUB-IN. [{self.tsp_in.velocity[0]:.3f}, {self.tsp_in.velocity[1]:.3f}, {self.tsp_in.velocity[2]:.3f}] "
-                          f"PUB-OUT. [{self.tsp_out.velocity[0]:.3f}, {self.tsp_out.velocity[1]:.3f}, {self.tsp_out.velocity[2]:.3f}] ")
+                    if vl_pos_ok:
+                        print(f"{('Pos (m): VO. ' + np.array2string(pos, precision=3, separator=', ')):<48} "
+                            f"VO Frame. {vo_pos_frame} "
+                            f"VLP XY OK. [{vl_pos_ok}] "
+                            f"EXT. [{vel_ext[0]:.3f}, {vel_ext[1]:.3f}, {vel_ext[2]:.3f}] "
+                            f"MEAS. [{self.vo_meas.pose.position.x:.3f}, {self.vo_meas.pose.position.y:.3f}, {self.vo_meas.pose.position.z:.3f}]")
+                    else:
+                        print(f"{('Pos (m): VO. ' + np.array2string(pos, precision=3, separator=', ')):<48} "
+                            f"VO Frame. {vo_pos_frame} "
+                            f"EXT. [{vel_ext[0]:.3f}, {vel_ext[1]:.3f}, {vel_ext[2]:.3f}] "
+                            f"MEAS. [{self.vo_meas.pose.position.x:.3f}, {self.vo_meas.pose.position.y:.3f}, {self.vo_meas.pose.position.z:.3f}]")
+                    if vl_vel_ok:
+                        print(f"{('Vel (m/s): VO. ' + str(vel.tolist())):<48} "
+                            f"VO Frame. {vo_vel_frame} "
+                            f"VLP VX/VY OK. {vl_vel_ok} "
+                            f"VLP. [{vl_ned_vx:.3f}, {vl_ned_vy:.3f}, {vl_ned_vz:.3f}] "
+                            f"CMP. [{vx:.3f}, {vy:.3f}, 0.000] "
+                            f"CMD. [{vx_send:.3f}, {vy_send:.3f}, 0.000] "
+                            f"PUB-IN. [{self.tsp_in.velocity[0]:.3f}, {self.tsp_in.velocity[1]:.3f}, {self.tsp_in.velocity[2]:.3f}] "
+                            f"PUB-OUT. [{self.tsp_out.velocity[0]:.3f}, {self.tsp_out.velocity[1]:.3f}, {self.tsp_out.velocity[2]:.3f}] ")
+                    else:
+                        print(f"{('Vel (m/s): VO. ' + str(vel.tolist())):<48} "
+                            f"VO Frame. {vo_vel_frame} "
+                            f"CMP. [{vx:.3f}, {vy:.3f}, 0.000] "
+                            f"CMD. [{vx_send:.3f}, {vy_send:.3f}, 0.000] "
+                            f"PUB-IN. [{self.tsp_in.velocity[0]:.3f}, {self.tsp_in.velocity[1]:.3f}, {self.tsp_in.velocity[2]:.3f}] "
+                            f"PUB-OUT. [{self.tsp_out.velocity[0]:.3f}, {self.tsp_out.velocity[1]:.3f}, {self.tsp_out.velocity[2]:.3f}] ")
                     # print(f"{('Vel (m/s): EST. ' + str(vel.tolist())):<48} COMP. [{vx:.3f}, {vy:.3f}, 0.000] SENT. [{vx_send:.3f}, {vy_send:.3f}, 0.000]")
                     # print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f}")
-                    print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f} (from fwd: {yaw_from_fwd:.2f}) EXT: {yaw_ext_deg:.2f}")
+                    if vl_head_ok:
+                        print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f} (from fwd: {yaw_from_fwd:.2f}) VLP: {yaw_ned_deg:.2f} MEAS: {yaw_meas_deg:.2f} EXT: {yaw_ext_deg:.2f}")
+                    else:
+                        print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f} (from fwd: {yaw_from_fwd:.2f}) MEAS: {yaw_meas_deg:.2f} EXT: {yaw_ext_deg:.2f}")
                     print(f"Commanded yawspeed (rad/s): {yaw_rate_cmd:.3f}")
+
+                    # print(f"[ACTIVE FILL] p_inst={m['p_inst']:.3f} p_s={m['p_s']:.3f} "
+                    #       f"L={m['L']:.3f} U={m['U']:.3f} max_ok={m['max_ok']} exit={sem_exit} reason={reason}")
 
                     print("====================")
 ###########################################
@@ -990,6 +1062,8 @@ class FlightCommand(Node):
                 # Minimal refs/aux (placeholders; sizes must match shapes the recorder was built with)
                 xref = np.zeros(self.recorder.Xref.shape[0], dtype=float)   # shape (nx,)
                 xref[2] = self.alt_hold
+                xref[0] = self.vo_meas.pose.position.x
+                xref[1] = self.vo_meas.pose.position.y
                 uref = np.zeros(self.recorder.Uref.shape[0], dtype=float)   # shape (nu,)
                 adv  = np.zeros(self.recorder.Adv.shape[0],  dtype=float)   # shape (nu,)
                 # tsol = np.zeros(self.recorder.Tsol.shape[0], dtype=float)   # Ntsol
@@ -1133,9 +1207,11 @@ class FlightCommand(Node):
                     f", sim_score={self.sim_score:.3f} "
                     f", area_frac={self.area_frac*100:.1f}% "
                     f", sim_score_diff={self.sim_score-self.vision_model.loiter_max:.3f} "
+                    f", frac_hot={self.frac_hot*100:.1f}% "
                     f", area_frac_diff={(self.vision_model.loiter_area_frac-self.area_frac)*100:.1f}%")
 
                     self.sim_score = 0.0
+                    self.frac_hot  = 0.0
                     self.area_frac = 0.0
                     self.found = False
                     # self.active_arm = True
@@ -1156,6 +1232,7 @@ class FlightCommand(Node):
                 f", sim_score={self.sim_score:.3f} "
                 f", area_frac={self.area_frac*100:.1f}% "
                 f", sim_score_diff={self.vision_model.loiter_max-self.sim_score:.3f} "
+                f", frac_hot={self.frac_hot*100:.1f}% "
                 f", area_frac_diff={(self.vision_model.loiter_area_frac-self.area_frac)*100:.1f}%")
 
                 self.active_arm = False
