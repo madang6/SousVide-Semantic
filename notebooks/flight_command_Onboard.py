@@ -26,6 +26,7 @@ from px4_msgs.msg import (
     VehicleCommand,
     OffboardControlMode,
     VehicleOdometry,
+    VehicleAttitude,
     VehicleRatesSetpoint,
     VehicleAttitudeSetpoint,
     VehicleLocalPosition,
@@ -219,6 +220,8 @@ class FlightCommand(Node):
             VehicleOdometry, '/drone4/fmu/in/vehicle_visual_odometry', self.external_estimator_callback, qos_mocap)
         self.measurement_subscriber = self.create_subscription(
             PoseStamped, '/vrpn_mocap/ssv/pose', self.mocap_measurement_callback, qos_mocap)
+        self.attitude_estimator_subscriber = self.create_subscription(
+            VehicleAttitude, drone_prefix+'/fmu/out/vehicle_attitude', self.attitude_estimator_callback, qos_drone)
         self.local_position_estimator_subscriber = self.create_subscription(
             VehicleLocalPosition, drone_prefix+'/fmu/out/vehicle_local_position', self.internal_estimator_ned_callback, qos_drone)
         self.vehicle_rates_subcriber = self.create_subscription(
@@ -287,6 +290,9 @@ class FlightCommand(Node):
         self.ready_active     = False
         self.spin_cycle       = False
 
+    #NOTE The true NED offset from mocap?
+        self.true_ned_offset = 172.0
+
     #NOTE streamline testing non-mpc pilots
         # non-MPC (neural) case: give everything a neutral default
         self.dt   = 1.0 / hz                                     # hz (control rate)
@@ -321,6 +327,7 @@ class FlightCommand(Node):
         self.t_tr0 = 0.0                                        # trajectory start time
         self.vo_est = VehicleOdometry()                         # current state vector (estimated)
         self.vl_est_ned = VehicleLocalPosition()                # current state vector (estimated, NED)
+        self.va_est = VehicleAttitude()                         # current state vector (estimated, attitude)
         self.vo_meas = PoseStamped()                            # current state vector (measured)
         self.vo_ext = VehicleOdometry()                         # current state vector (external)
         self.vrs = VehicleRatesSetpoint()                       # current vehicle rates setpoint
@@ -440,6 +447,10 @@ class FlightCommand(Node):
     def internal_estimator_ned_callback(self, vehicle_local_position:VehicleLocalPosition):
         """Callback function for internal vehicle_local_position topic subscriber."""
         self.vl_est_ned = vehicle_local_position
+
+    def attitude_estimator_callback(self, vehicle_attitude:VehicleAttitude):
+        """Callback function for internal vehicle_attitude topic subscriber."""
+        self.va_est = vehicle_attitude
 
     def external_estimator_callback(self, vehicle_odometry:VehicleOdometry):
         """Callback function for external vehicle_odometry topic subscriber."""
@@ -562,21 +573,6 @@ class FlightCommand(Node):
         except Exception:
             # Fail safe: neutral command
             return 0.0
-        
-    # def yaw_error_comp(self, similarity: np.ndarray):
-    #     yaw_err_norm = 0.0
-    #     cx = None
-    #     S = similarity.copy()
-    #     if S is not None:
-    #         S = S.astype(np.float32)
-    #         S = np.maximum(S, 0.0)
-    #         M  = cv2.moments(S, binaryImage=False)
-    #         if M["m00"] > 1e-6:
-    #             cx = M["m10"] / M["m00"]
-    #             W  = S.shape[1]
-    #             cx_img = 0.5 * W
-    #             yaw_err_norm = float((cx - cx_img) / max(1.0, cx_img))
-    #     return yaw_err_norm
 
     def pid_yaw_rate(self, err_norm: float):
         Kp = getattr(self, "yaw_kp", 1.2)       # rad/s per unit error
@@ -610,8 +606,8 @@ class FlightCommand(Node):
         """
         dpsi = self.wrap_to_pi(heading_lpos - yaw_vo)
         c, s = float(np.cos(dpsi)), float(np.sin(dpsi))
-        vx_lp =  c*vx_vo - s*vy_vo
-        vy_lp =  s*vx_vo + c*vy_vo
+        vx_lp =  c*vx_vo + s*vy_vo
+        vy_lp =  -s*vx_vo + c*vy_vo
         return float(vx_lp), float(vy_lp)
 #
 #NOTE COMMANDER
@@ -628,6 +624,48 @@ class FlightCommand(Node):
         similarity = self.latest_similarity
         # depth = self.latest_depth_xyz
         loiter_overlay = self.latest_loiter_overlay
+
+    #NOTE states and measurements
+        #MOCAP FUSED
+        pos_ext = x_ext[0:3]
+        vel_ext = x_ext[3:6]
+        R_b2w_ext = zch.quat_xyzw_to_R(*x_ext[6:10].astype(np.float64))
+        yaw_ext = float(np.arctan2(R_b2w_ext[1, 0], R_b2w_ext[0, 0]))
+        yaw_ext_deg = float(np.degrees(np.arctan2(R_b2w_ext[1, 0], R_b2w_ext[0, 0])))
+
+        #VehicleAttitude
+        attitude_est    = self.va_est.q
+        qx_est, qy_est, qz_est, qw_est = attitude_est[0], attitude_est[1], attitude_est[2], attitude_est[3]
+        R_b2w_est = zch.quat_xyzw_to_R(qx_est, qy_est, qz_est, qw_est)
+        yaw_est = float(np.arctan2(R_b2w_est[1, 0], R_b2w_est[0, 0]))
+        yaw_est_deg = float(np.degrees(yaw_est))
+
+        #VRPN / MOCAP FLU
+        orientation_meas = self.vo_meas.pose.orientation
+        qx_meas, qy_meas, qz_meas, qw_meas = orientation_meas.x, orientation_meas.y, orientation_meas.z, orientation_meas.w
+        R_bw2_meas = zch.quat_xyzw_to_R(qx_meas, qy_meas, qz_meas, qw_meas)
+        yaw_meas = float(np.arctan2(R_bw2_meas[1, 0], R_bw2_meas[0, 0]))
+        yaw_meas_deg = float(np.degrees(yaw_meas))
+
+        #VehicleLocalPosition
+        vl_head_ok = self.vl_est_ned.heading_good_for_control
+        yaw_vl_deg = float(np.degrees(self.vl_est_ned.heading))
+        vl_pos_ok = self.vl_est_ned.xy_valid
+        vl_vel_ok = self.vl_est_ned.v_xy_valid
+        vl_ned_vx = self.vl_est_ned.vx
+        vl_ned_vy = self.vl_est_ned.vy
+        vl_ned_vz = self.vl_est_ned.vz
+        
+        #VehicleOdometry
+        vo_vel_frame = self.vo_est.velocity_frame
+        vo_pos_frame = self.vo_est.pose_frame
+
+        R_b2w         = zch.quat_xyzw_to_R(*x_est[6:10].astype(np.float64))
+        fwd           = R_b2w[:,0]
+        yaw_world     = float(np.arctan2(R_b2w[1, 0], R_b2w[0, 0]))
+        psi_cmd_ned   = self.wrap_to_pi(yaw_meas + np.deg2rad(self.true_ned_offset))
+        yaw_ned_deg = float(np.degrees(psi_cmd_ned))
+
 #NOTE HEARTBEATS
         # zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
         if self.sm == StateMachine.ACTIVE:
@@ -793,7 +831,9 @@ class FlightCommand(Node):
                     z0ds,z0cr = np.around(self.z0,2),np.around(x_est[2],2)
                     q0ds,q0cr = np.around(self.q0,2),np.around(x_est[6:10],2)
 
-                    print(f"Desired/Current Altitude+Attitude: ({z0ds}/{z0cr})({q0ds}/{q0cr})")
+                    # print(f"Desired/Current Altitude+Attitude: ({z0ds}/{z0cr})({q0ds}/{q0cr})")
+                    # print(f"VO Yaw {np.degrees(yaw_world):.1f}°, EXT Yaw {yaw_ext_deg:.1f}°, Meas Yaw {yaw_meas_deg:.1f}°, NED Yaw {yaw_ned_deg:.1f}° ")
+                    print(f"VO Yaw {np.degrees(yaw_world):.1f}°, EXT Yaw {yaw_ext_deg:.1f}°, NED Yaw {yaw_ned_deg:.1f}° ")
 ###########################################
 #NOTE                TEST
 ###########################################
@@ -925,31 +965,6 @@ class FlightCommand(Node):
                 u_ref = self.uref
             #FIXME
                 # --- vo_ext readout: position, velocity, orientation (planar yaw) ---
-                pos_ext = x_ext[0:3]
-                vel_ext = x_ext[3:6]
-                R_b2w_ext = zch.quat_xyzw_to_R(*x_ext[6:10].astype(np.float64))
-                yaw_ext = float(np.arctan2(R_b2w_ext[1, 0], R_b2w_ext[0, 0]))
-                yaw_ext_deg = float(np.degrees(np.arctan2(R_b2w_ext[1, 0], R_b2w_ext[0, 0])))
-
-                # pos_ned = self.vo_est_ned.position
-                # vel_ned = self.vo_est_ned.velocity
-                # yaw_ned = self.vl_est_ned.heading
-                orientation_meas = self.vo_meas.pose.orientation
-                qx_meas, qy_meas, qz_meas, qw_meas = orientation_meas.x, orientation_meas.y, orientation_meas.z, orientation_meas.w
-                yaw_meas = zch.quat_xyzw_to_R(qx_meas, qy_meas, qz_meas, qw_meas)
-                yaw_meas = float(np.arctan2(yaw_meas[1, 0], yaw_meas[0, 0]))
-                yaw_meas_deg = float(np.degrees(yaw_meas))
-
-                vl_head_ok = self.vl_est_ned.heading_good_for_control
-                yaw_ned_deg = float(np.degrees(self.vl_est_ned.heading))
-                vl_pos_ok = self.vl_est_ned.xy_valid
-                vl_vel_ok = self.vl_est_ned.v_xy_valid
-                vl_ned_vx = self.vl_est_ned.vx
-                vl_ned_vy = self.vl_est_ned.vy
-                vl_ned_vz = self.vl_est_ned.vz
-                
-                vo_vel_frame = self.vo_est.velocity_frame
-                vo_pos_frame = self.vo_est.pose_frame
 ######################################INTRACTIBLE#######################################
                 # Determine yaw rate using PID
                 k_gate       = 1.5
@@ -958,8 +973,8 @@ class FlightCommand(Node):
                 yaw_err      = float(np.clip(yaw_err_norm, -1.0, 1.0))
                 alpha        = float(np.clip(1.0 - k_gate * abs(yaw_err), 0.0, 1.0))
 
-                R_b2w          = zch.quat_xyzw_to_R(*x_cur[6:10].astype(np.float64))
-                fwd            = R_b2w[:,0]
+                # R_b2w          = zch.quat_xyzw_to_R(*x_cur[6:10].astype(np.float64))
+                # fwd            = R_b2w[:,0]
                 # vx_dir, vy_dir = fwd[0], fwd[1]
                 # norm_xy        = np.hypot(vx_dir, vy_dir)
 
@@ -969,10 +984,10 @@ class FlightCommand(Node):
                 # v_fwd          = float(np.clip(1.0 * alpha, 0.0, 1.0))
                 # vx, vy         = v_fwd * vx_dir, v_fwd * vy_dir
 
-                yaw_world      = float(np.arctan2(R_b2w[1, 0], R_b2w[0, 0]))
+                # yaw_world      = float(np.arctan2(R_b2w[1, 0], R_b2w[0, 0]))
                 v_fwd          = float(np.clip(1.0 * alpha, 0.0, 1.0))
-                vx, vy         = v_fwd * np.cos(yaw_world), v_fwd * np.sin(yaw_world)
-                # vx, vy         = v_fwd * np.cos(yaw_ext), v_fwd * np.sin(yaw_ext)
+                # vx, vy         = v_fwd * np.cos(yaw_world), v_fwd * np.sin(yaw_world)
+                vx, vy         = v_fwd * np.cos(yaw_ext), v_fwd * np.sin(yaw_ext)
 
                 # Px4 does something insane with velocities here, so we have to transform
                 # v_w       = np.array([vx, vy, 0.0], dtype=float)
@@ -985,6 +1000,9 @@ class FlightCommand(Node):
                 # vx_send, vy_send = v_b_flu[0], v_b_flu[1]
                 # vx_send = -1.0*v_fwd
                 # vy_send = 0.0
+
+                # re-express velocity in true NED heading (passive rotation)
+                # vx_send, vy_send = self.rotate_vo_to_lpos(vx, vy, yaw_world, psi_cmd_ned)
 
 ################DEBUG#####################
                 now_s = time.time()
@@ -1004,13 +1022,13 @@ class FlightCommand(Node):
                         print(f"{('Pos (m): VO. ' + np.array2string(pos, precision=3, separator=', ')):<48} "
                             f"VO Frame. {vo_pos_frame} "
                             f"VLP XY OK. [{vl_pos_ok}] "
-                            f"EXT. [{vel_ext[0]:.3f}, {vel_ext[1]:.3f}, {vel_ext[2]:.3f}] "
-                            f"MEAS. [{self.vo_meas.pose.position.x:.3f}, {self.vo_meas.pose.position.y:.3f}, {self.vo_meas.pose.position.z:.3f}]")
+                            f"EXT. [{vel_ext[0]:.3f}, {vel_ext[1]:.3f}, {vel_ext[2]:.3f}] ")
+                            # f"MEAS. [{self.vo_meas.pose.position.x:.3f}, {self.vo_meas.pose.position.y:.3f}, {self.vo_meas.pose.position.z:.3f}]")
                     else:
                         print(f"{('Pos (m): VO. ' + np.array2string(pos, precision=3, separator=', ')):<48} "
                             f"VO Frame. {vo_pos_frame} "
-                            f"EXT. [{vel_ext[0]:.3f}, {vel_ext[1]:.3f}, {vel_ext[2]:.3f}] "
-                            f"MEAS. [{self.vo_meas.pose.position.x:.3f}, {self.vo_meas.pose.position.y:.3f}, {self.vo_meas.pose.position.z:.3f}]")
+                            f"EXT. [{vel_ext[0]:.3f}, {vel_ext[1]:.3f}, {vel_ext[2]:.3f}] ")
+                            # f"MEAS. [{self.vo_meas.pose.position.x:.3f}, {self.vo_meas.pose.position.y:.3f}, {self.vo_meas.pose.position.z:.3f}]")
                     if vl_vel_ok:
                         print(f"{('Vel (m/s): VO. ' + str(vel.tolist())):<48} "
                             f"VO Frame. {vo_vel_frame} "
@@ -1030,9 +1048,9 @@ class FlightCommand(Node):
                     # print(f"{('Vel (m/s): EST. ' + str(vel.tolist())):<48} COMP. [{vx:.3f}, {vy:.3f}, 0.000] SENT. [{vx_send:.3f}, {vy_send:.3f}, 0.000]")
                     # print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f}")
                     if vl_head_ok:
-                        print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f} (from fwd: {yaw_from_fwd:.2f}) VLP: {yaw_ned_deg:.2f} MEAS: {yaw_meas_deg:.2f} EXT: {yaw_ext_deg:.2f}")
+                        print(f"Yaw (VO, planar) deg: {np.degrees(yaw_world):.2f} (from fwd: {yaw_from_fwd:.2f}) VLP: {yaw_vl_deg:.2f} MEAS: {yaw_meas_deg:.2f}")# EXT: {yaw_ext_deg:.2f}")
                     else:
-                        print(f"Yaw (planar) deg: {np.degrees(yaw_world):.2f} (from fwd: {yaw_from_fwd:.2f}) MEAS: {yaw_meas_deg:.2f} EXT: {yaw_ext_deg:.2f}")
+                        print(f"Yaw (VO, Planar) deg: {np.degrees(yaw_world):.1f}°, EXT: {yaw_ext_deg:.2f}")# Meas Yaw {yaw_meas_deg:.1f}°, NED {yaw_ned_deg:.1f}°")# (from fwd: {yaw_from_fwd:.2f})")# VA-EST: {yaw_est_deg:.2f}")# EXT: {yaw_ext_deg:.2f}")
                     print(f"Commanded yawspeed (rad/s): {yaw_rate_cmd:.3f}")
 
                     # print(f"[ACTIVE FILL] p_inst={m['p_inst']:.3f} p_s={m['p_s']:.3f} "
