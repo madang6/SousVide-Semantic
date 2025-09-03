@@ -9,11 +9,11 @@
         "height_tolerance": 0.10      
     },
 
-    "prompt": "ladder",
+    "prompt": "shop vacuum",
     "hf_model": "CIDAS/clipseg-rd64-refined",
     "onnx_model_path": "~/StanfordMSL/SousVide-Semantic/notebooks/clipseg_model.onnx",
 
     
-    "linger": 5.0,
+    "linger": 9.0,
     "images_per_second": 10
 }

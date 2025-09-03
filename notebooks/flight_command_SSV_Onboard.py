@@ -21,6 +21,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
+from geometry_msgs.msg import PoseStamped
 from px4_msgs.msg import (
     VehicleCommand,
     OffboardControlMode,
@@ -197,8 +198,10 @@ class FlightCommand(Node):
         # Create subscribers
         self.internal_estimator_subscriber = self.create_subscription(
             VehicleOdometry, drone_prefix+'/fmu/out/vehicle_odometry', self.internal_estimator_callback, qos_drone)
+        self.measurement_subscriber = self.create_subscription(
+            PoseStamped, '/vrpn_mocap/ssv/pose', self.mocap_measurement_callback, qos_mocap)
         self.external_estimator_subscriber = self.create_subscription(
-            VehicleOdometry, '/drone0/fmu/in/vehicle_visual_odometry', self.external_estimator_callback, qos_mocap)
+            VehicleOdometry, '/drone4/fmu/in/vehicle_visual_odometry', self.external_estimator_callback, qos_mocap)
         self.vehicle_rates_subcriber = self.create_subscription(
             VehicleRatesSetpoint, drone_prefix+'/fmu/out/vehicle_rates_setpoint', self.vehicle_rates_setpoint_callback, qos_drone)
         
@@ -429,6 +432,10 @@ class FlightCommand(Node):
     def internal_estimator_callback(self, vehicle_odometry:VehicleOdometry):
         """Callback function for internal vehicle_odometry topic subscriber."""
         self.vo_est = vehicle_odometry
+
+    def mocap_measurement_callback(self, pose_stamped:PoseStamped):
+        """Callback function for mocap measurement topic subscriber."""
+        self.vo_meas = pose_stamped
 
     def external_estimator_callback(self, vehicle_odometry:VehicleOdometry):
         """Callback function for external vehicle_odometry topic subscriber."""
@@ -686,7 +693,11 @@ class FlightCommand(Node):
                 # Compute the reference trajectory current point
                 t_ref = np.min((t_tr,self.Tpi[-1]))                             # Reference time (does not exceed ideal)
 
-                x_ref = self.xref
+                # x_ref = self.xref
+                xref = np.zeros(self.recorder.Xref.shape[0], dtype=float)
+                xref[2] = self.vo_meas.pose.position.z
+                xref[0] = self.vo_meas.pose.position.x
+                xref[1] = self.vo_meas.pose.position.y
                 u_ref = self.uref
 
                 # Generate vrs command
@@ -697,7 +708,7 @@ class FlightCommand(Node):
                 
                 # Record data
                 t_sol = np.hstack((t_sol_ctl,time.time()-t0_lp))
-                self.recorder.record(img,t_tr,u_act,x_ref,u_ref,x_est,x_ext,adv,t_sol)
+                self.recorder.record(img,t_tr,u_act,xref,u_ref,x_est,x_ext,adv,t_sol)
             else:
                 # trajectory has ended → HOLD Position
                 self.policy_duration       = t_tr

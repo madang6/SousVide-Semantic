@@ -2,7 +2,7 @@
     "cohort": "ssv_CLIPSEG_NORMAL",
     "pilot" : "range_velocity",
     "drone" : "drone4",
-    "scene": "flightroom_any",
+    "scene": "flightroom_Onboard_clock",
     "frame" : "carl",
     "failsafes": {
         "attitude_tolerance": 0.30,
@@ -14,6 +14,6 @@
     "onnx_model_path": "~/StanfordMSL/SousVide-Semantic/notebooks/clipseg_model.onnx",
 
     
-    "linger": 4.0,
+    "linger": 2.5,
     "images_per_second": 10
 }
