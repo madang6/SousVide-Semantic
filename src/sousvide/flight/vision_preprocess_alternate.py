@@ -593,6 +593,7 @@ class CLIPSegHFModel:
 
         # --- Step 6: Render and cache ---
         colorized = colorize_mask_fast(mask_u8, self.lut)
+        # colorized = colorize_mask_fast((prob_scaled*255).astype(np.uint8),self.lut)
 #FIXME
         # regular_prob = colorize_mask_fast(regular_prob, self.lut)
 #

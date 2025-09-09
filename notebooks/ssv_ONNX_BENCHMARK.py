@@ -181,6 +181,7 @@ def main():
         print(f"Average FPS: {avg_fps:.2f}")
         if frames:
             imageio.mimsave(output_path, frames, fps=avg_fps)
+            print(f"Output video saved to: {output_path}")
     else:
         print("No frames were processed.")
 

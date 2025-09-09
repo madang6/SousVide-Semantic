@@ -2,18 +2,18 @@
     "cohort": "ssv_CLIPSEG_NORMAL",
     "pilot" : "range_velocity",
     "drone" : "drone4",
-    "scene": "flightroom_Onboard_clock",
+    "scene": "flightroom_Onboard_leafblower",
     "frame" : "carl",
     "failsafes": {
         "attitude_tolerance": 0.30,
         "height_tolerance": 0.10      
     },
 
-    "prompt": "clock",
+    "prompt": "dewalt cordless drill",
     "hf_model": "CIDAS/clipseg-rd64-refined",
     "onnx_model_path": "~/StanfordMSL/SousVide-Semantic/notebooks/clipseg_model.onnx",
 
     
-    "linger": 2.5,
+    "linger": 3.0,
     "images_per_second": 10
 }
