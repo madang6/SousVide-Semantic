@@ -476,11 +476,16 @@ class FlightCommand(Node):
                 time.sleep(0.02)
                 continue
             else:
-                self.found, self.sim_score, self.area_frac, self.latest_loiter_overlay, self.frac_hot = self.vision_model.loiter_calibrate(
-                logits=self.latest_similarity,           # your logits/similarity map
-                frame_img=self.latest_frame,         # original frame in BGR
-                active_arm = self.active_arm
+                self.found, self.sim_score, self.area_frac, self.latest_loiter_overlay, self.frac_hot = self.vision_model.loiter_calibrate_robust(
+                logits=self.latest_similarity,           
+                frame_img=self.latest_frame,             
+                active_arm=self.active_arm
                 )
+                # self.found, self.sim_score, self.area_frac, self.latest_loiter_overlay, self.frac_hot = self.vision_model.loiter_calibrate(
+                # logits=self.latest_similarity,           # your logits/similarity map
+                # frame_img=self.latest_frame,         # original frame in BGR
+                # active_arm = self.active_arm
+                # )
                 # self.found, self.sim_score, self.area_frac = \
                 #     self.vision_model.loiter_calibrate(
                 #         logits=self.latest_similarity,
@@ -679,7 +684,8 @@ class FlightCommand(Node):
             t0_lp  = time.time()                                                # Algorithm start time
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
 
-            sem_exit, reason, m = self.vision_model._query_found(similarity)
+            # sem_exit, reason, m = self.vision_model._query_found(similarity)
+            sem_exit, reason, m = self.vision_model._query_found_v2(similarity)
             
             # Check if we are still in the trajectory
             if t_tr < (self.Tpi[-1]+self.t_lg) or sem_exit:
@@ -717,6 +723,11 @@ class FlightCommand(Node):
             #
                 self.ready_active = False                                                 # Reset ready active flag
                 self.found = False
+
+                self.vision_model.loiter_max = 0.0
+                self.vision_model.loiter_area_frac = 0.0  
+                self.vision_model.calibration_candidates = []
+                
                 self.sm                    = StateMachine.HOLD
                 print('Trajectory Finished → HOLDing Position, readying for next query...')
 
