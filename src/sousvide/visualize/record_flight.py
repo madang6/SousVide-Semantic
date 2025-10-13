@@ -15,7 +15,7 @@ class FlightRecorder():
                  obj:np.ndarray,
                  cohort_name:str,course_name:str,pilot_name:str,
                  Ntsol:int=5,Nimps:int=20,
-                 max_time: float=45.0):
+                 max_time: float=120.0):
         """
         FlightRecorder class for recording flight data and images. We record images every
         n_im time steps to save space.

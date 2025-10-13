@@ -993,13 +993,13 @@ class CLIPSegHFModel:
         logits: np.ndarray,
         frame_img: np.ndarray,
         active_arm: bool = False
-    ) -> Tuple[bool, float, float, Optional[np.ndarray]]:
+    ) -> Tuple[bool, float, float, Optional[np.ndarray], float]:
         """
         Enhanced version of loiter_calibrate that collects multiple good candidates
         during calibration for robustness, then picks the most representative one.
         Uses the exact same approach as the original but with multi-reference robustness.
         
-        Returns (found, sim_score, area_frac, overlay_bgr_or_None)
+        Returns (found, sim_score, area_frac, overlay_bgr_or_None, frac_hot)
         """
         found = False
         H, W = logits.shape
@@ -1105,11 +1105,11 @@ class CLIPSegHFModel:
                     self.high_streak = 0
                     cv2.drawContours(overlay, [self.loiter_cnt], -1, (0, 200, 255), 5)
 
-            return found, sim_score, area_frac, overlay
+            return found, sim_score, area_frac, overlay, 0.0
 
         # --- ACTIVE / ARM PHASE - SAME AS ORIGINAL ---
         if self.loiter_cnt is None:
-            return found, sim_score, area_frac, overlay
+            return found, sim_score, area_frac, overlay, 0.0
 
         # rebuild mask to match reference area
         curr_region_mask = self._area_targeted_mask(logits, target_frac=self.loiter_area_frac)
@@ -1119,7 +1119,7 @@ class CLIPSegHFModel:
 
         cur_cnt, cur_area_px, cur_sol, cur_ecc = self._largest_contour_from_mask(curr_region_mask)
         if cur_cnt is None:
-            return found, sim_score, cur_area_frac, overlay
+            return found, sim_score, cur_area_frac, overlay, 0.0
 
         # 1) Area sanity using cur_area_frac - SAME AS ORIGINAL
         area_ok = abs(cur_area_frac - self.loiter_area_frac) <= self.area_tolerance * self.loiter_area_frac
@@ -1155,7 +1155,7 @@ class CLIPSegHFModel:
 
             overlay = rgb_overlay
 
-        return found, sim_score, cur_area_frac, overlay
+        return found, sim_score, cur_area_frac, overlay, frac_hot
 
     def _select_most_robust_reference(self):
         """

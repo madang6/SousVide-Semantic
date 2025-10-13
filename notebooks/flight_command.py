@@ -213,7 +213,8 @@ class FlightCommand(Node):
         print(f"Query Set to: {self.prompt}")
 #FIXME
         self.hold_prompt           = self.prompt
-        self.prompt_2              = "mannequin in a shirt"  # TODO: remove this, it's just for testing
+        self.prompt_1              = "yellow dewalt cordless drill on table"
+        self.prompt_2              = "mannequin and wagon"  # TODO: remove this, it's just for testing
         self.active_arm            = False
 #
         self.hf_model = mission_config.get('hf_model', 'CIDAS/clipseg-rd64-refined')
@@ -491,7 +492,7 @@ class FlightCommand(Node):
                 #         logits=self.latest_similarity,
                 #         active_arm=self.active_arm
                 #     )
-                time.sleep(0.05)
+                time.sleep(0.02)
 
     def quat_to_yaw(self,q):
         x, y, z, w = q
@@ -547,7 +548,7 @@ class FlightCommand(Node):
                 self.get_current_timestamp_time(),
                 self.offboard_control_mode_publisher,
                 body_rate=False,
-                position=False,
+                position=True,
                 velocity=True
             )
 
@@ -709,24 +710,28 @@ class FlightCommand(Node):
                 self.policy_duration       = t_tr
                 self.hold_prompt           = self.prompt
             #FIXME
-                # self.prompt                = self.prompt_2
-                # self.vision_model.running_min = float('inf')
-                # self.vision_model.running_max = float('-inf')
-                # self.vision_model._max_prob_logit = float('-inf')
-            #
-                # self.hold_state = x_est.copy()
-                self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
-                # self.finding_shutdown = False
-            #NOTE True for multi-obj, False for single
-                # self.spin_cycle = True
-                self.spin_cycle = False                                                
-            #
-                self.ready_active = False                                                 # Reset ready active flag
-                self.found = False
+                if self.prompt != self.prompt_1 and self.prompt != self.prompt_2:
+                    self.prompt = self.prompt_1
+                elif self.prompt != self.prompt_2 and self.prompt == self.prompt_1:
+                    self.prompt = self.prompt_2
+                
+                self.vision_model.running_min = float('inf')
+                self.vision_model.running_max = float('-inf')
+                self.vision_model._max_prob_logit = float('-inf')
 
                 self.vision_model.loiter_max = 0.0
                 self.vision_model.loiter_area_frac = 0.0  
                 self.vision_model.calibration_candidates = []
+            #
+                # self.hold_state = x_est.copy()
+                self.t_tr0 = self.get_clock().now().nanoseconds/1e9                       # Record start time
+            #NOTE True for multi-obj, False for single
+                self.spin_cycle = True
+                # self.finding_shutdown = False
+            #
+                self.ready_active = False                                                 # Reset ready active flag
+                self.found = False
+
                 
                 self.sm                    = StateMachine.HOLD
                 print('Trajectory Finished → HOLDing Position, readying for next query...')
