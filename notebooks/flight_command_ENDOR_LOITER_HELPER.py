@@ -38,8 +38,8 @@ class OffboardHelper(Node):
     def __init__(
         self,
         drone_prefix: str,
-        image_topic: str,
-        depth_topic: Optional[str],
+        # image_topic: str,
+        # depth_topic: Optional[str],
         hz: int,
         mission_name: Optional[str] = None,
     ) -> None:
@@ -59,8 +59,8 @@ class OffboardHelper(Node):
 
         # ---------- Args / members ----------
         self.drone_prefix = drone_prefix
-        self.image_topic = image_topic
-        self.depth_topic = depth_topic
+        # self.image_topic = image_topic
+        # self.depth_topic = depth_topic
         self.hz = hz
 
         self.bridge = CvBridge()
@@ -69,6 +69,16 @@ class OffboardHelper(Node):
         self.staging_query = ""  # edited while not processing
         self.active_query = ""   # frozen during processing window
         self.reported = False    # ensures single publish per window
+
+        self.ui_mode = 'LISTEN'       # or 'PROCESS'
+        self.recorded_frames = 0
+        self.ui_shutdown = threading.Event()
+        self.ui_thread = threading.Thread(target=self._ui_loop, daemon=True)
+        self.ui_thread.start()
+
+        self.proc_writer = None
+        self.proc_out_path = None
+        self.proc_fps = float(self.hz)   # use your main loop rate
 
         self.latest_rgb = None
         self.latest_depth = None
@@ -123,6 +133,7 @@ class OffboardHelper(Node):
             self._rgb_compressed_cb,
             qos_profile_sensor_data
         )
+        self.get_logger().info(f"Subscribing to COMPRESSED RGB: {self.rgb_sub}")
 
         # ---------- Publishers ----------
         self.state_cmd_pub = self.create_publisher(
@@ -141,6 +152,71 @@ class OffboardHelper(Node):
         atexit.register(self._cleanup)
         signal.signal(signal.SIGINT, self._sigint)
 
+    # ===== CLI helpers =====
+    def _c(self, s, color):  # simple colorizer
+        colors = {
+            'red':'\x1b[31m','green':'\x1b[32m','yellow':'\x1b[33m',
+            'blue':'\x1b[34m','magenta':'\x1b[35m','cyan':'\x1b[36m',
+            'bold':'\x1b[1m','reset':'\x1b[0m'
+        }
+        return f"{colors.get(color,'')}{s}{colors['reset']}"
+
+    def _banner(self, title, color='cyan'):
+        bar = '═' * max(10, len(title) + 2)
+        print(f"\n\x1b[1m{self._c('╔'+bar+'╗', color)}\x1b[0m")
+        print(f"\x1b[1m{self._c('║ '+title+' ║', color)}\x1b[0m")
+        print(f"\x1b[1m{self._c('╚'+bar+'╝', color)}\x1b[0m")
+
+    def _ui_loop(self):
+        # hide cursor
+        try: sys.stdout.write("\x1b[?25l"); sys.stdout.flush()
+        except: pass
+        spinner = ['|','/','-','\\']
+        i = 0
+        while not self.ui_shutdown.is_set():
+            if self.ui_mode == 'PROCESS':
+                left = self._c('PROCESSING', 'green')
+                rec  = self._c('● REC', 'red') if self.proc_writer else '   '
+                q    = (self.active_query or '—')
+                path = (self.proc_out_path or '')
+                line = f"{left} {rec}  frames={self.recorded_frames}  query='{q}'  {path}"
+            else:
+                left = self._c('LISTENING', 'yellow')
+                q    = (self.staging_query or '—')
+                line = f"{left}  {spinner[i%4]}  staged_query='{q}'"
+            i += 1
+            # draw one-line status
+            try:
+                sys.stdout.write('\r' + ' ' * (os.get_terminal_size().columns - 1))
+                sys.stdout.write('\r' + line[:os.get_terminal_size().columns - 1])
+                sys.stdout.flush()
+            except Exception:
+                pass
+            time.sleep(0.15)
+        # show cursor again
+        try: sys.stdout.write("\x1b[?25h\n"); sys.stdout.flush()
+        except: pass
+
+    def _open_proc_video(self, frame_shape):
+        h, w = frame_shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        ts = time.strftime('%Y%m%d_%H%M%S')
+        safe_query = (self.active_query or 'noquery').replace(' ', '_')[:48]
+        # self.proc_out_path = f'/tmp/processed_{ts}_{safe_query}.mp4'
+        self.proc_out_path = f"/home/ewok/msl_users/maximilian/ssv/SousVide-Semantic/cohorts/processed_{ts}_{safe_query}.mp4"
+        self.proc_writer = cv2.VideoWriter(self.proc_out_path, fourcc, self.proc_fps, (w, h))
+        if not self.proc_writer.isOpened():
+            self.proc_writer = None
+            raise RuntimeError('Failed to open processed video writer')
+        self._publish_diag(f'Processed video recording → {self.proc_out_path}')
+
+    def _close_proc_video(self):
+        if self.proc_writer is not None:
+            self.proc_writer.release()
+            self.proc_writer = None
+            self._publish_diag(f'Processed video saved: {self.proc_out_path}')
+            self.proc_out_path = None
+
     # ---------- Callbacks ----------
     def _handshake_cb(self, msg: Bool):
         new_val = bool(msg.data)
@@ -148,30 +224,24 @@ class OffboardHelper(Node):
         if new_val and not self.handshake_ok:
             self.active_query = self.staging_query
             self.reported = False
-            self._publish_diag(f'Handshake ON. Using active_query="{self.active_query}"')
+            self.recorded_frames = 0
+            self.ui_mode = 'PROCESS'
+            self._banner(f"Handshake ON → using query: '{self.active_query or '—'}'", color='green')
+        
         # falling edge → allow edits again
         if not new_val and self.handshake_ok:
             self.reported = False
-            self._publish_diag('Handshake OFF. You can edit the query.')
+            self.ui_mode = 'LISTEN'
+            self._banner("Handshake OFF → stopped processing", color='yellow')
+            self._close_proc_video()
         self.handshake_ok = new_val
-
-    def _rgb_cb(self, msg: Image):
-        try:
-            self.latest_rgb = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-        except Exception as e:
-            self.get_logger().warn(f'RGB conversion failed: {e}')
 
     def _rgb_compressed_cb(self, msg: CompressedImage):
         np_arr = np.frombuffer(msg.data, np.uint8)
         bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         if bgr is not None:
+            bgr = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             self.latest_rgb = bgr
-
-    def _depth_cb(self, msg: Image):
-        try:
-            self.latest_depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-        except Exception as e:
-            self.get_logger().warn(f'Depth conversion failed: {e}')
 
     # ---------- Main loop ----------
     def _loop(self):
@@ -208,9 +278,22 @@ class OffboardHelper(Node):
             self.query_pub.publish(String(data=query))
             self.reported = True
 
-        # (Optional) save artifacts:
-        # if 'masks_u8' in extras:
-        #     cv2.imwrite('/tmp/offboard_mask.png', extras['masks_u8'])
+        # Record Mask:
+        if overlay is not None:
+            # open lazily on the first overlay of this window
+            if self.proc_writer is None:
+                try:
+                    self._open_proc_video(overlay.shape)
+                except Exception as e:
+                    self._publish_diag(f'Processed video open error: {e}')
+            if self.proc_writer is not None:
+                ov = overlay
+                if ov.dtype != np.uint8:
+                    ov = np.clip(ov, 0, 255).astype(np.uint8)
+                if ov.ndim == 2:
+                    ov = cv2.cvtColor(ov, cv2.COLOR_GRAY2BGR)
+                self.proc_writer.write(ov)
+                self.recorded_frames += 1
 
     # ---------- Helpers ----------
     def _simple_proximity_check(self, depth: np.ndarray, max_depth: float = 0.6, frac: float = 0.04) -> bool:
@@ -286,10 +369,23 @@ class OffboardHelper(Node):
     # ---------- Cleanup ----------
     def _cleanup(self):
         try:
+            self._close_proc_video()
+        except Exception:
+            pass
+
+        try:
+            self.ui_shutdown.set()
+            if getattr(self, 'ui_thread', None):
+                self.ui_thread.join(timeout=0.5)
+        except Exception:
+            pass
+
+        try:
             self.kb_shutdown.set()
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_tty)
         except Exception:
             pass
+        
 
     def _sigint(self, signum, frame):
         self._cleanup()
@@ -299,18 +395,18 @@ class OffboardHelper(Node):
 def main():
     parser = argparse.ArgumentParser(description='Offboard helper node')
     parser.add_argument('--drone', type=str, default='/drone0', help='Drone namespace/prefix (e.g., /drone0)')
-    parser.add_argument('--rgb', type=str, default='/zed/zed_node/rgb/image_rect_color', help='RGB image topic')
-    parser.add_argument('--depth', type=str, default='', help='Depth image topic (optional)')
+    # parser.add_argument('--rgb', type=str, default='/zed/zed_node/rgb/image_rect_color', help='RGB image topic')
+    # parser.add_argument('--depth', type=str, default='', help='Depth image topic (optional)')
     parser.add_argument('--hz', type=int, default=20, help='Main loop Hz')
     parser.add_argument('--mission', type=str, default='', help='Mission config name (without .json)')
     args = parser.parse_args()
 
     rclpy.init()
-    depth_topic = args.depth.strip() or None
+    # depth_topic = args.depth.strip() or None
     node = OffboardHelper(
         drone_prefix=args.drone,
-        image_topic=args.rgb,
-        depth_topic=depth_topic,
+        # image_topic=args.rgb,
+        # depth_topic=depth_topic,
         hz=args.hz,
         mission_name=(args.mission.strip() or None),
     )
