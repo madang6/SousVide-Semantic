@@ -262,70 +262,6 @@ class CLIPSegHFModel:
             onnx.save(model_onnx, onnx_path)
             print(f"[INFO] Patched Resize mode→'linear' in {onnx_path}")
         print(f"[INFO] Exported ONNX model with inputs ['input_ids','pixel_values','attention_mask'] → '{onnx_path}' ✅")
-    # def _export_onnx(self, onnx_path: str):
-    #     """
-    #     Exports the HF CLIPSeg model to ONNX at onnx_path.
-    #     Uses a dummy text+image input from the processor.
-    #     """
-    #     # pick a dummy prompt and image
-    #     dummy_prompt = "a photo of a cat"
-    #     dummy_img = Image.new("RGB", (224, 224), color="white")
-
-    #     # prepare torch inputs
-    #     torch_inputs = self.processor(
-    #         images=dummy_img,
-    #         text=dummy_prompt,
-    #         return_tensors="pt"
-    #     )
-    #     torch_inputs = {k: v.to(self.device) for k, v in torch_inputs.items()}
-
-    #     # names must match the processor/model
-    #     # input_names = ["pixel_values", "input_ids", "attention_mask"]
-    #     # output_names = ["logits"]
-    #     # dynamic_axes = {
-    #     #     "pixel_values":   {0: "batch", 2: "height", 3: "width"},
-    #     #     "input_ids":      {0: "batch", 1: "seq_len"},
-    #     #     "attention_mask": {0: "batch", 1: "seq_len"},
-    #     #     "logits":         {0: "batch", 2: "height", 3: "width"},
-    #     # }
-
-    #     # export
-    #     torch.onnx.export(
-    #         self.model,
-    #         (
-    #             torch_inputs["input_ids"],
-    #             torch_inputs["pixel_values"],
-    #             torch_inputs["attention_mask"],
-    #         ),
-    #         onnx_path,
-    #         input_names=["input_ids", "pixel_values", "attention_mask"],
-    #         # input_names=["input_ids", "pixel_values"],session
-    #         output_names=["logits"],
-    #         dynamic_axes={
-    #             "input_ids":      {1: "seq_len"},
-    #             # "pixel_values":   {2: "height", 3: "width"},
-    #             "attention_mask": {1: "seq_len"},
-    #             # "logits":         {2: "height", 3: "width"},
-    #         },
-    #         opset_version=17,
-    #         do_constant_folding=True,
-    #     )
-    
-    # def _convert_to_fp16(self, onnx_path: str, fp16_path: str):
-    #     import onnx
-    #     from onnxconverter_common import float16
-
-    #     model = onnx.load("clipseg_model.onnx")
-
-    #     model_fp16 = float16.convert_float_to_float16(
-    #         model,
-    #         keep_io_types=False,       # keep inputs/outputs in float32
-    #         disable_shape_infer=True,  # skip ONNX shape inference
-    #         op_block_list=[],
-    #         check_fp16_ready=False
-    #     )
-
-    #     onnx.save_model(model_fp16, "clipseg_model_fp16.onnx")
 
     def _convert_to_fp16(self, onnx_path: str, fp16_path: str):
         import onnx
@@ -357,27 +293,6 @@ class CLIPSegHFModel:
         else:
             scaled = (arr - self.running_min) / span
         return scaled
-    
-    # def _run_onnx_model(self, img: Image.Image, prompt: str) -> np.ndarray:
-    #     """
-    #     Runs forward pass via onnxruntime and returns the raw logits as a float32 numpy array.
-    #     """
-    #     # 1) Get PyTorch tensors from the HF processor...
-    #     torch_inputs = self.processor(images=img, text=prompt, return_tensors="pt")
-    #     # 2) Move them to CPU & convert to numpy for ONNX runtime
-    #     ort_inputs = {}
-    #     for inp in self.ort_session.get_inputs():
-    #         name = inp.name
-    #         tensor = torch_inputs.get(name)
-    #         if tensor is None:
-    #             continue
-    #         # detach, move to CPU, numpy
-    #         ort_inputs[name] = tensor.cpu().numpy()
-    #     # 3) Run the ONNX session
-    #     ort_outs = self.ort_session.run(None, ort_inputs)
-    #     # assume first output is logits [1,1,H,W]
-    #     logits = ort_outs[0]
-    #     return logits.squeeze().astype(np.float32)
 
     def _run_onnx_model(self, img: Image.Image, prompt: str) -> np.ndarray:
         import numpy as np
@@ -449,74 +364,6 @@ class CLIPSegHFModel:
         if result.ndim == 4 and result.shape[1] == 1:
             result = result[:, 0]
         return result.squeeze()
-    # def _run_onnx_model(self, img: Image.Image, prompt: str) -> np.ndarray:
-    #     import numpy as np
-    #     import torch
-
-    #     # 1) Preprocess on GPU
-    #     torch_inputs = self.processor(images=img, text=prompt, return_tensors="pt")
-    #     if self.using_fp16:
-    #         # convert to FP16 if needed and move to device
-    #         torch_inputs = {
-    #             k: (v.half().to(self.device) if k == "pixel_values" else v.to(self.device))
-    #             for k, v in torch_inputs.items()
-    #         }
-    #     else:
-    #         torch_inputs = {k: v.to(self.device) for k, v in torch_inputs.items()}
-
-    #     # 2) Fresh IOBinding
-    #     io_binding = self.ort_session.io_binding()
-
-    #     # 3) Bind inputs zero-copy
-    #     sess_input_names = {inp.name for inp in self.ort_session.get_inputs()}
-    #     for name, tensor in torch_inputs.items():
-    #         if name not in sess_input_names:
-    #             continue
-    #         elem_type = np.float32 if tensor.dtype == torch.float32 else np.int64
-    #         io_binding.bind_input(
-    #             name=name,
-    #             device_type=self.device,   # e.g. "cuda"
-    #             device_id=0,
-    #             element_type=elem_type,
-    #             shape=tuple(tensor.shape),
-    #             buffer_ptr=tensor.data_ptr(),
-    #         )
-
-    #     # 4) Figure out the ONNX output shape
-    #     out_meta = self.ort_session.get_outputs()[0]
-    #     B, _, H, W = torch_inputs["pixel_values"].shape
-    #     if len(out_meta.shape) == 3:
-    #         # [batch, height, width]
-    #         out_shape = (B, H, W)
-    #     elif len(out_meta.shape) == 4:
-    #         # [batch, channels, height, width]
-    #         C = out_meta.shape[1] if isinstance(out_meta.shape[1], int) else 1
-    #         out_shape = (B, C, H, W)
-    #     else:
-    #         raise RuntimeError(f"Unsupported logits rank: {len(out_meta.shape)}")
-
-    #     # 5) Allocate & bind output buffer on GPU
-    #     out_dtype = torch.float16 if self.using_fp16 else torch.float32
-    #     output_gpu = torch.empty(out_shape, dtype=out_dtype, device=self.device)
-    #     io_binding.bind_output(
-    #         name=out_meta.name,
-    #         device_type=self.device,
-    #         device_id=0,
-    #         element_type=(np.float16 if self.using_fp16 else np.float32),
-    #         shape=out_shape,
-    #         buffer_ptr=output_gpu.data_ptr(),
-    #     )
-
-    #     # 6) Run
-    #     self.ort_session.run_with_iobinding(io_binding)
-
-    #     # 7) Fetch & squeeze
-    #     result = output_gpu.cpu().numpy()
-    #     # if it’s [B, 1, H, W], drop the channel axis
-    #     if result.ndim == 4 and result.shape[1] == 1:
-    #         result = result[:, 0]
-    #     # if batch‐size is 1, you can also drop that:
-    #     return result.squeeze()
 
     def clipseg_hf_inference(
         self,
@@ -1403,6 +1250,165 @@ def warp_mask(prev_rgb, curr_rgb, prev_mask):
     remap = flow_map + flow
     warped = cv2.remap(prev_mask, remap[..., 0], remap[..., 1], interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
     return warped.astype(np.uint8)
+
+def check_depth_similarity_overlap(
+    depth_image: np.ndarray,
+    similarity_image: np.ndarray,
+    max_depth: float = 1.5,
+    similarity_thresh: float = 0.7,
+    overlap_thresh: float = 0.8,
+    return_visualization: bool = True
+) -> Union[bool, Tuple[bool, dict]]:
+    """
+    Check if there's significant overlap between high similarity regions and close-range depth regions.
+    
+    Args:
+        depth_image: Single-channel depth image
+        similarity_image: Single-channel semantic similarity image
+        max_depth: Maximum depth to consider (in meters)
+        similarity_thresh: Threshold for high similarity regions (0-1)
+        overlap_thresh: Required overlap fraction for positive detection
+        return_visualization: If True, return visualization images along with the result
+        
+    Returns:
+        If return_visualization is False:
+            bool: True if significant overlap exists between depth and similarity regions
+        If return_visualization is True:
+            Tuple[bool, dict]: (result, {'depth': depth_viz, 'similarity': sim_viz, 'overlap': overlap_viz})
+    """
+    # Create depth mask for regions within max_depth
+    depth_mask = depth_image < max_depth
+    
+    # Create similarity mask for high similarity regions
+    # sim_mask = similarity_image > similarity_thresh
+    thresh = np.percentile(similarity_image, 90.0)
+    sim_mask = (similarity_image >= thresh).astype(np.uint8)  # 0/1
+    
+    # Calculate overlap
+    overlap = np.logical_and(depth_mask, sim_mask)
+    overlap_pixels = np.sum(overlap)
+    
+    # Calculate overlap fraction relative to the smaller of the two masks
+    depth_pixels = np.sum(depth_mask)
+    sim_pixels = np.sum(sim_mask)
+    min_pixels = min(depth_pixels, sim_pixels)
+    
+    if min_pixels == 0:
+        if return_visualization:
+            return False, {}
+        return False
+    
+    overlap_fraction = overlap_pixels / min_pixels
+    result = overlap_fraction > overlap_thresh
+    
+    if return_visualization:
+        # Prepare visualizations
+        # Normalize depth image for visualization
+        depth_viz = cv2.normalize(depth_image, None, 0, 255, cv2.NORM_MINMAX)
+        depth_viz = cv2.applyColorMap(depth_viz.astype(np.uint8), cv2.COLORMAP_JET)
+        
+        # Visualize similarity map
+        sim_viz = cv2.normalize(similarity_image, None, 0, 255, cv2.NORM_MINMAX)
+        sim_viz = cv2.applyColorMap(sim_viz.astype(np.uint8), cv2.COLORMAP_VIRIDIS)
+        
+        # Visualize overlap
+        overlap_viz = np.zeros_like(depth_viz)
+        overlap_viz[overlap] = [0, 255, 0]  # Green for overlap regions
+        
+        # Prepare binary masks for visualization (convert to 0-255 uint8)
+        depth_mask_viz = depth_mask.astype(np.uint8) * 255
+        sim_mask_viz = sim_mask.astype(np.uint8) * 255
+        
+        return result, {
+            'depth': depth_viz,
+            'similarity': sim_viz,
+            'overlap': overlap_viz,
+            'depth_mask': depth_mask_viz,
+            'sim_mask': sim_mask_viz
+        }
+        
+    return result
+
+def close_enough_for_collision(
+    depth_image: np.ndarray,
+    max_depth: float = 0.4,
+    collision_fraction: float = 0.10,
+) -> Tuple[bool, np.ndarray]:
+    """
+    Returns:
+      - collision_flag (bool): True if a substantial fraction of valid pixels are within max_depth
+      - close_mask_img (uint8 HxW): 0/255 mask suitable for cv2.imwrite
+    """
+    # Valid depth (finite and positive)
+    valid = np.isfinite(depth_image) & (depth_image > 0)
+
+    if not np.any(valid):
+        # No valid depth: no collision; return a writable empty mask (uint8)
+        h, w = depth_image.shape[:2]
+        return False, np.zeros((h, w), dtype=np.uint8)
+
+    # Boolean mask of "too close"
+    close_mask_bool = (depth_image < max_depth) & valid
+
+    # Fraction of close pixels over valid pixels
+    fraction_close = close_mask_bool.sum() / valid.sum()
+    collision_flag = bool(fraction_close > collision_fraction)
+
+    # Make it imwrite-able: single-channel uint8 (0 or 255)
+    close_mask_img = np.ascontiguousarray(close_mask_bool.astype(np.uint8) * 255)
+
+    return collision_flag, close_mask_img
+
+def should_brake_ttc(prev_bgr, curr_bgr, q_prev, q_curr, K, dt, ttc_thresh=1.0):
+    """
+    Returns True if TTC (after rotation compensation) is below threshold.
+    Inputs:
+      prev_bgr, curr_bgr : HxWx3 uint8 frames
+      q_prev, q_curr     : (w,x,y,z) camera->world quaternions
+      K                  : 3x3 intrinsics (fx,0,cx; 0,fy,cy; 0,0,1)
+      dt                 : time between frames (seconds)
+      ttc_thresh         : braking threshold in seconds
+    """
+    # --- quat->R (camera->world)
+    w1,x1,y1,z1 = q_prev; w2,x2,y2,z2 = q_curr
+    R1 = np.array([[1-2*(y1*y1+z1*z1), 2*(x1*y1 - z1*w1), 2*(x1*z1 + y1*w1)],
+                   [2*(x1*y1 + z1*w1), 1-2*(x1*x1+z1*z1), 2*(y1*z1 - x1*w1)],
+                   [2*(x1*z1 - y1*w1), 2*(y1*z1 + x1*w1), 1-2*(x1*x1+y1*y1)]], dtype=np.float32)
+    R2 = np.array([[1-2*(y2*y2+z2*z2), 2*(x2*y2 - z2*w2), 2*(x2*z2 + y2*w2)],
+                   [2*(x2*y2 + z2*w2), 1-2*(x2*x2+z2*z2), 2*(y2*z2 - x2*w2)],
+                   [2*(x2*z2 - y2*w2), 2*(y2*z2 + x2*w2), 1-2*(x2*x2+y2*y2)]], dtype=np.float32)
+    # Relative rotation mapping prev-camera -> curr-camera
+    Rrel = R2.T @ R1  # (R_cw_curr)^T * R_cw_prev
+
+    # --- rotate-compensate previous frame
+    h, w = prev_bgr.shape[:2]
+    H = (K @ Rrel @ np.linalg.inv(K)).astype(np.float32)
+    prev_gray = cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2GRAY)
+    curr_gray = cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2GRAY)
+    prev_stab = cv2.warpPerspective(prev_gray, H, (w, h), flags=cv2.INTER_LINEAR)
+
+    # --- dense optical flow on stabilized pair
+    flow = cv2.calcOpticalFlowFarneback(prev_stab, curr_gray, None,
+                                        0.5, 3, 21, 3, 5, 1.2, 0)
+    u = flow[...,0] / max(dt, 1e-3)  # px/s
+    v = flow[...,1] / max(dt, 1e-3)
+
+    # --- divergence and TTC map
+    dudx = cv2.Sobel(u, cv2.CV_32F, 1, 0, ksize=3)
+    dvdy = cv2.Sobel(v, cv2.CV_32F, 0, 1, ksize=3)
+    div = dudx + dvdy  # 1/s
+
+    EPS = 1e-6
+    ttc_map = np.where(div > 0, 1.0 / (div + EPS), np.inf)
+
+    # --- robust scene TTC from central ROI (60% box)
+    r0, r1 = int(0.2*h), int(0.8*h)
+    c0, c1 = int(0.2*w), int(0.8*w)
+    roi = ttc_map[r0:r1, c0:c1]
+    finite = roi[np.isfinite(roi)]
+    scene_ttc = np.median(finite) if finite.size else np.inf
+
+    return bool(scene_ttc < ttc_thresh)
 
 def has_one_large_high_sim_region(
     image: np.ndarray,

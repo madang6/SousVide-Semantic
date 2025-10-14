@@ -1,0 +1,14 @@
+{
+    "drone" : "drone4",
+
+    "default_prompt": "ladder",
+
+    "engine": "groundedsam",
+    "gd_model_id": "IDEA-Research/grounding-dino-tiny",
+    "sam_model_id": "facebook/sam-vit-base",
+    "box_threshold": 0.35,
+    "text_threshold": 0.25,
+    "mask_iou_threshold": 0.0,
+    "overlay_alpha": 0.45,
+    "camera_mode": false
+}

@@ -1,0 +1,12 @@
+{
+    "engine": "groundedsam",
+    "input_video_path": "/home/admin/StanfordMSL/SousVide-Semantic/notebooks/test_space/sim_video_sv_917_3_left_gemsplat_microwave_expert_rgb.mp4",
+    "prompt": "ladder",
+    "gd_model_id": "IDEA-Research/grounding-dino-tiny",
+    "sam_model_id": "facebook/sam-vit-base",
+    "box_threshold": 0.35,
+    "text_threshold": 0.25,
+    "mask_iou_threshold": 0.0,
+    "overlay_alpha": 0.45,
+    "camera_mode": false
+  }
