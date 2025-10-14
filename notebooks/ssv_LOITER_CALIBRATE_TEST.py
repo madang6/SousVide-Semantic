@@ -8,11 +8,11 @@ import imageio
 import cv2
 
 import sousvide.flight.vision_preprocess_alternate as vp
-# import sousvide.flight.zed_command_helper as zed
+import sousvide.flight.zed_command_helper as zed
 
 # Path to the external JSON config file
 CONFIG_PATH = (
-    "/home/admin/StanfordMSL/SousVide-Semantic/"
+    "/home/cassie/StanfordMSL/SousVide-Semantic/"
     "configs/perception/onnx_benchmark_config.json"
 )
 

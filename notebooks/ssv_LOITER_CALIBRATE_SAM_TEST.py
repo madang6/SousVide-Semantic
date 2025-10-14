@@ -12,7 +12,7 @@ import sousvide.flight.vision_preprocess_groundedsam as vp
 
 # Path to the external JSON config file
 CONFIG_PATH = (
-    "/home/admin/StanfordMSL/SousVide-Semantic/"
+    "/home/cassie/StanfordMSL/SousVide-Semantic/"
     "configs/perception/onnx_benchmark_dino_config.json"
 )
 
