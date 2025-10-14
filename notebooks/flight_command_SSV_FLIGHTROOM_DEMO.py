@@ -21,8 +21,9 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
-from sensor_msgs.msg import Image, CompressedImage  # add CompressedImage
+from sensor_msgs.msg import Image, CompressedImage
 from std_msgs.msg import Header
+from std_msgs.msg import UInt8, String, Bool
 
 from px4_msgs.msg import (
     VehicleCommand,
@@ -512,12 +513,12 @@ class FlightCommand(Node):
             )
             if exit_flag:
                 print("\033[95m📍 HOVERING!!!, Close to query ✨\033[0m")
-                early_exit = exit_flag
+                self.early_exit = exit_flag
 
             collision, collision_depth_mask = vp.close_enough_for_collision(xyz_np[...,2].astype(np.float32))
             if collision:
                 print("\033[91m💥 COLLISION DETECTED!!! 💥\033[0m")
-                early_exit = True
+                self.early_exit = True
                 # decision_data = {"collision_depth_mask": collision_depth_mask}
                 # log("Collision detected, triggering early exit")
 
@@ -823,7 +824,8 @@ class FlightCommand(Node):
                 self.active_arm = True
                 # self.recorder.record(vp.colorize_mask_fast((similarity*255).astype(np.uint8),self.vision_model.lut))
                 self._publish_handshake(True)
-                vp.publish_rgb_compressed(frame, quality=80)
+                zch.publish_rgb_compressed(self.get_clock().now().to_msg(),
+                                            frame, quality=80, rgb_compressed_pub=self.rgb_compressed_pub)
                 if self.found:
                     self.t_tr0 = self.get_clock().now().nanoseconds/1e9
 

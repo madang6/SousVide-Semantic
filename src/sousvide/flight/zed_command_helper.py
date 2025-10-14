@@ -475,19 +475,19 @@ def vrs2uvr(vr:VehicleRatesSetpoint) -> np.ndarray:
     """Convert vehicle rates setpoint to vehicle rates input."""
     return np.array([vr.thrust_body[2],vr.roll,vr.pitch,vr.yaw])
 
-def publish_rgb_compressed(self, bgr_img: np.ndarray, quality: int = 80):
+def publish_rgb_compressed(timestamp, bgr_img: np.ndarray,  rgb_compressed_pub, quality: int = 80) -> None:
     if bgr_img is None:
         return
     msg = CompressedImage()
     msg.header = Header()
-    msg.header.stamp = self.get_clock().now().to_msg()
+    msg.header.stamp = timestamp
     msg.header.frame_id = 'zed_rgb_optical_frame'
     msg.format = 'jpeg'
     ok, buf = cv2.imencode('.jpg', bgr_img, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
     if not ok:
         return
     msg.data = np.asarray(buf).tobytes()
-    self.rgb_compressed_pub.publish(msg)
+    rgb_compressed_pub.publish(msg)
 
 # def publish_position_hold(timestamp: int,
 #                              x_est: np.ndarray,
