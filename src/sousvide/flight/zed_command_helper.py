@@ -393,6 +393,7 @@ def get_image(Camera: sl.Camera,
         get_image._image = sl.Mat()
         if use_depth:
             get_image._xyz = sl.Mat()
+            get_image._depth = sl.Mat()
             get_image._depth_viz = sl.Mat()
         get_image._rt = sl.RuntimeParameters()
         # get_image._rt.confidence_threshold = 95
@@ -409,9 +410,10 @@ def get_image(Camera: sl.Camera,
         if use_depth:
             # depth = sl.Mat()
             # depth_for_display = sl.Mat()
-            # Camera.retrieve_measure(depth, sl.MEASURE.DEPTH)
-            Camera.retrieve_measure(get_image._xyz, sl.MEASURE.XYZ)
-            xyz_np = get_image._xyz.get_data()
+            Camera.retrieve_measure(get_image._depth, sl.MEASURE.DEPTH)
+            depth = get_image._depth.get_data()
+            # Camera.retrieve_measure(get_image._xyz, sl.MEASURE.XYZ)
+            # xyz_np = get_image._xyz.get_data()
             Camera.retrieve_image(get_image._depth_viz, sl.VIEW.DEPTH)
             depth_viz_np = get_image._depth_viz.get_data()
 
@@ -419,7 +421,7 @@ def get_image(Camera: sl.Camera,
 
         # print(f"Image resolution: {image.get_width()} x {image.get_height()} || Image timestamp: {timestamp.get_milliseconds()}")
         if use_depth:
-            return img_np, xyz_np, depth_viz_np, timestamp.get_milliseconds()
+            return img_np, depth, depth_viz_np, timestamp.get_milliseconds()
         else:
             return img_np, None, None, timestamp.get_milliseconds()
 
@@ -515,6 +517,16 @@ def publish_rgb_compressed(timestamp, bgr_img: np.ndarray,  rgb_compressed_pub, 
 #     sp.jerk = [float('nan')] * 3
 
 #     traj_sp_pub.publish(sp)
+
+def publish_reorientation(timestamp: int, traj_sp_pub, yaw) -> None:
+    ts = TrajectorySetpoint(timestamp=timestamp)
+    ts.velocity     = [0.0, 0.0, 0.0]     # hold zero velocity
+    ts.position     = [float('nan')]*3
+    ts.acceleration = [float('nan')]*3
+    ts.jerk         = [float('nan')]*3
+    ts.yaw          = float(yaw)
+    ts.yawspeed     = float('nan')
+    traj_sp_pub.publish(ts)
 
 def publish_velocity_hold(timestamp: int, traj_sp_pub) -> None:
     ts = TrajectorySetpoint(timestamp=timestamp)

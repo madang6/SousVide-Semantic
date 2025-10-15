@@ -21,7 +21,9 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
+from std_msgs.msg import Float32
 from sensor_msgs.msg import Image, CompressedImage
+from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Header
 from std_msgs.msg import UInt8, String, Bool
 
@@ -54,6 +56,7 @@ class StateMachine(Enum):
     LAND   = 3
     HOLD   = 4
     SPIN   = 5
+    REORIENT = 6
 
 class FlightCommand(Node):
     """Node for generating commands from SFTI."""
@@ -210,7 +213,7 @@ class FlightCommand(Node):
         # listens for COMPLETE flag
         self.offboard_state_sub = self.create_subscription(
             UInt8, drone_prefix + '/offboard_helper/state_cmd', self.offboard_state_cb, qos_drone)
-
+        
         # listens for the query that triggered detection
         self.offboard_query_sub = self.create_subscription(
             String, drone_prefix + '/offboard_helper/query', self.offboard_query_cb, qos_drone)
@@ -218,11 +221,22 @@ class FlightCommand(Node):
         # publishes handshake gating (True = process now)
         self.offboard_handshake_pub = self.create_publisher(
             Bool, drone_prefix + '/offboard_helper/handshake', qos_drone)
+        
+        self.helper_yaw_sub = self.create_subscription(
+            Float32,
+            drone_prefix + '/offboard_helper/yaw',
+            self.helper_yaw_cb,
+            qos_drone
+        )
 
         self.rgb_compressed_pub = self.create_publisher(
             CompressedImage, drone_prefix + '/zed/zed_node/rgb/image_rect_color/compressed', qos_mocap
         )
-    #
+
+        self.pose_pub = self.create_publisher(
+            PoseStamped, drone_prefix + '/offboard_helper/pose', qos_mocap
+        )    
+#
         # Create publishers
         self.vehicle_command_publisher = self.create_publisher(VehicleCommand,drone_prefix+'/fmu/in/vehicle_command', qos_drone)
         self.offboard_control_mode_publisher = self.create_publisher(OffboardControlMode,drone_prefix+'/fmu/in/offboard_control_mode', qos_drone)
@@ -233,7 +247,7 @@ class FlightCommand(Node):
         self.prompt = mission_config.get('prompt', '')
         print(f"Query Set to: {self.prompt}")
 #FIXME
-        self.hold_prompt           = self.prompt
+        self.hold_prompt           = "None"
         self.prompt_1              = "yellow dewalt cordless drill on table"
         self.prompt_2              = "mannequin and wagon"  # TODO: remove this, it's just for testing
         self.active_arm            = False
@@ -269,6 +283,7 @@ class FlightCommand(Node):
         self.latest_loiter_overlay    = None
         self.latest_mask       = None
         self.latest_similarity = None
+        self.latest_depth      = None
 #has_one_large_high_sim_region
         self.finding_thread     = None
         self.finding_shutdown   = False
@@ -281,10 +296,13 @@ class FlightCommand(Node):
         # self.area_thresh       = 0.02
 
 #policy switch flag
-        self.ready_active     = False
-        self.spin_cycle       = False
+        self.ready_active      = False
+        self.spin_cycle        = False
         self.offboard_detected = False
-        self.early_exit       = False 
+        self.early_exit        = False
+        self.helper_yaw_ned    = 0.0
+        self.reorient_tol_rad = np.deg2rad(5.0)
+        self.policy_duration  = 3.0
 
 #NOTE streamline testing non-mpc pilots
         if not self.isNN:
@@ -479,6 +497,10 @@ class FlightCommand(Node):
             self.offboard_handshake_pub.publish(Bool(data=value))
         except Exception:
             pass
+
+    def helper_yaw_cb(self, msg: Float32):
+        self.helper_yaw_ned = float(msg.data)
+
 #
     def get_current_timestamp_time(self) -> int:
         """Get current timestamp in milliseconds."""
@@ -491,7 +513,7 @@ class FlightCommand(Node):
     def async_vision_loop(self):
         """Continuously grab + infer, store only the newest mask."""
         while not self.vision_shutdown:
-            imgz, xyz_np, _, _ = zch.get_image(self.pipeline, use_depth=True)
+            imgz, depth, _, _ = zch.get_image(self.pipeline, use_depth=True)
             if imgz is None:
                 time.sleep(0.01)
                 continue
@@ -506,27 +528,29 @@ class FlightCommand(Node):
                 scene_change_threshold=1.0,
                 verbose=False
             )
-
+ 
+            # print(f"depth shape and average: {depth.shape}, {np.nanmean(depth) if depth is not None else None}")
+            
             exit_flag, decision_data = vp.check_depth_similarity_overlap(
-                depth_image=xyz_np[...,2].astype(np.float32),
+                depth_image=depth,
                 similarity_image=similarity,
             )
-            if exit_flag:
-                print("\033[95m📍 HOVERING!!!, Close to query ✨\033[0m")
-                self.early_exit = exit_flag
+            if exit_flag and not self.early_exit:
+                print("\033[95m📍 Close to query ✨\033[0m")
+                # self.early_exit = exit_flag
 
-            collision, collision_depth_mask = vp.close_enough_for_collision(xyz_np[...,2].astype(np.float32))
-            if collision:
-                print("\033[91m💥 COLLISION DETECTED!!! 💥\033[0m")
-                self.early_exit = True
+            collision, collision_depth_mask = vp.close_enough_for_collision(depth)
+            if collision and not self.early_exit:
+                print("\033[91m💥 PROXIMITY ALERT!!! 💥\033[0m")
+                # self.early_exit = True
                 # decision_data = {"collision_depth_mask": collision_depth_mask}
                 # log("Collision detected, triggering early exit")
 
-            self.latest_depth = xyz_np[...,2].astype(np.float32)
+            self.latest_depth = depth
             self.latest_frame = frame
             self.latest_mask = mask
             self.latest_similarity = similarity
-            self.early_exit = exit_flag
+            self.early_exit = bool(self.early_exit or exit_flag or collision)
 
             t_elap = time.time() - t0_img
             self.img_times.append(t_elap)
@@ -568,6 +592,7 @@ class FlightCommand(Node):
         img = self.latest_mask
         # loiter_overlay = self.latest_loiter_overlay
         similarity = self.latest_similarity
+        depth = self.latest_depth
 
         # zch.heartbeat_offboard_control_mode(self.get_current_timestamp_time(),self.offboard_control_mode_publisher)
         if self.sm == StateMachine.ACTIVE:
@@ -596,6 +621,15 @@ class FlightCommand(Node):
                 position=True,
                 body_rate=False,
                 velocity=True   # drive the XY/Z & yaw velocity loops
+            )
+
+        elif self.sm == StateMachine.REORIENT:
+            zch.heartbeat_offboard_control_mode(
+                self.get_current_timestamp_time(), self.offboard_control_mode_publisher,
+                position=True,
+                body_rate=False,
+                velocity=True,
+                attitude=True
             )
         
         else:
@@ -641,6 +675,18 @@ class FlightCommand(Node):
             self.sm                    = StateMachine.HOLD
             print(f'Query {self.prompt} Found → HOLDing Position')
             self.key_pressed = None        # reset
+        elif self.key_pressed == 'm':      # q key
+            print("M key detected, switching to ACTIVE mode…")
+            self.k_rdy = 0                                                  # Reset ready counter
+            self.ready_active = False                                       # Reset ready active flag
+            self.found = False
+            self.spin_cycle   = True
+            self.found = False
+            self.finding_shutdown = False
+            self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
+            zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
+            self.sm = StateMachine.ACTIVE
+            self.key_pressed = None        # reset
         elif self.key_pressed == 'q':      # q key
             print("Q key detected, switching to HOLD startup mode…")
             self.k_rdy = 0                                                  # Reset ready counter
@@ -679,7 +725,6 @@ class FlightCommand(Node):
 
                 print("Starting Object Detection Thread")
                 if not self.finding_started:
-                    #NOTE HANDSHAKE HERE?
                     self.finding_started = True
                 print("Object Detection Thread Online")
 
@@ -720,9 +765,6 @@ class FlightCommand(Node):
             t0_lp  = time.time()                                                # Algorithm start time
             t_tr = self.get_current_trajectory_time()                           # Current trajectory time
 
-            # sem_exit, reason, m = self.vision_model._query_found(similarity)
-            # sem_exit, reason, m = self.vision_model._query_found_v2(similarity)
-
             self._publish_handshake(False)
 
         #FIXME
@@ -746,6 +788,8 @@ class FlightCommand(Node):
                 t_sol = np.hstack((t_sol_ctl,time.time()-t0_lp))
                 self.recorder.record(img,t_tr,u_act,x_ref,u_ref,x_est,x_ext,adv,t_sol)
             else:
+                if self.early_exit:
+                    print("\033[95m📍 HOVERING!!!, Close to query ✨\033[0m")
                 # trajectory has ended → HOLD Position
                 self.policy_duration       = t_tr
                 self.hold_prompt           = self.prompt
@@ -784,11 +828,12 @@ class FlightCommand(Node):
                 self.trajectory_setpoint_publisher
             )
         #NOTE THIS SHOULD BE REPLACED WITH A NEWER VERSION OF THE READY STATE, BUT FOR NOW IT SUFFICES
-            if (self.ready_active is True and self.spin_cycle is False) and t_tr > 3.0:
+            if (self.ready_active is True and self.spin_cycle is False) and t_tr > 3.0 and self.prompt.lower() != self.hold_prompt.lower():
                 print("Detector Thread Sleeping; Switching to Active")
                 self.t_tr0 = self.get_clock().now().nanoseconds/1e9             # Record start time
                 self.ready_active = False                                       # Reset ready active flag
                 self.found = False
+                self.early_exit = False
                 zch.engage_offboard_control_mode(self.get_current_timestamp_time(),self.vehicle_command_publisher)
                 self.sm = StateMachine.ACTIVE
                 
@@ -814,7 +859,7 @@ class FlightCommand(Node):
             zch.publish_velocity_hold_with_yaw_rate(
                 self.get_current_timestamp_time(),
                 self.trajectory_setpoint_publisher,
-                0.9
+                0.9  # yaw rate in rad/s
                 )
 
             if t_tr < 7.0:
@@ -826,6 +871,24 @@ class FlightCommand(Node):
                 self._publish_handshake(True)
                 zch.publish_rgb_compressed(self.get_clock().now().to_msg(),
                                             frame, quality=80, rgb_compressed_pub=self.rgb_compressed_pub)
+            #FIXME
+                ps = PoseStamped()
+                ps.header.stamp = self.get_clock().now().to_msg()
+                ps.header.frame_id = "map_ned"  # make frame explicit
+
+                # Position (from x_est[0:3])
+                ps.pose.position.x = float(x_est[0])   # North
+                ps.pose.position.y = float(x_est[1])   # East
+                ps.pose.position.z = float(x_est[2])   # Down
+
+                # Orientation quaternion (from x_est[6:10]) already in (x,y,z,w) order
+                ps.pose.orientation.x = float(x_est[6])
+                ps.pose.orientation.y = float(x_est[7])
+                ps.pose.orientation.z = float(x_est[8])
+                ps.pose.orientation.w = float(x_est[9])
+
+                self.pose_pub.publish(ps)
+            #
                 if self.found:
                     self.t_tr0 = self.get_clock().now().nanoseconds/1e9
 
@@ -845,8 +908,10 @@ class FlightCommand(Node):
                 #
                     self.ready_active = True
                     self.spin_cycle = False
-                    self.sm                    = StateMachine.HOLD
-                    print(f'Query {self.prompt} Found → HOLDing Position')
+                    # self.sm                    = StateMachine.HOLD
+                    self.sm = StateMachine.REORIENT
+                    # print(f'Query {self.prompt} Found → HOLDing Position')
+                    print(f'Query {self.prompt} Found → REORIENTing')
             else:
                 self.t_tr0 = self.get_clock().now().nanoseconds / 1e9
                 self._publish_handshake(False)
@@ -864,6 +929,67 @@ class FlightCommand(Node):
                 self.spin_cycle = False
                 self.sm   = StateMachine.HOLD
                 print(f'Query {self.prompt} Not Found → HOLDing Position, Preparing to Land')
+
+            if depth is not None:
+                # Handle invalid values (NaN, inf) in depth data
+                depth_clean = np.where(np.isfinite(depth), depth, 0)
+                
+                # Check if we have valid depth data to normalize
+                if np.any(depth_clean > 0):
+                    # Normalize 2D depth matrix to 0-255 range for grayscale visualization
+                    depth_normalized = cv2.normalize(depth_clean, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+                else:
+                    # If no valid depth data, create a zero array with same shape as depth
+                    depth_normalized = np.zeros(depth_clean.shape, dtype=np.uint8)
+                
+                # Convert 2D grayscale to 3-channel grayscale image (H x W x 3)
+                depth_grayscale = cv2.cvtColor(depth_normalized, cv2.COLOR_GRAY2RGB)
+                self.recorder.record(depth_grayscale)
+            else:
+                # Record black image if no depth available
+                black_image = np.zeros((self.cam_dim[0], self.cam_dim[1], 3), dtype=np.uint8)
+                self.recorder.record(black_image)
+
+        elif self.sm == StateMachine.REORIENT:
+            t_tr = self.get_current_trajectory_time()
+
+            # Current yaw (NED) from x_est quaternion you already compute above
+            yaw_cur = self.quat_to_yaw(x_est[6:10])          # radians, NED
+            yaw_des = float(self.helper_yaw_ned)             # radians, NED
+
+            # “gross” error in [0, 2π)
+            gross_err = abs((yaw_des - yaw_cur) % (2*np.pi))
+            # shortest signed error in [-π, π)
+            yaw_err = ((yaw_des - yaw_cur + np.pi) % (2*np.pi)) - np.pi
+
+            # --- Safety 1: if gross error > 180° → something is off → HOLD
+            if gross_err > np.pi + 1e-3:  # tiny epsilon
+                print(f"[REORIENT] BUG? | gross_err={np.degrees(gross_err):.1f}° > 180° → HOLD")
+                self.sm = StateMachine.HOLD
+                # make sure we don't keep reorienting next tick
+                self.t_tr0 = self.get_clock().now().nanoseconds/1e9
+                self.recorder.record(frame)
+                # return
+
+            # --- Success: if within a few degrees → HOLD
+            if abs(yaw_err) < self.reorient_tol_rad:
+                print(f"[REORIENT] Success | yaw_err={np.degrees(yaw_err):.1f}° ≤ {np.degrees(self.reorient_tol_rad):.1f}° → HOLD")
+                self.sm = StateMachine.HOLD
+                self.t_tr0 = self.get_clock().now().nanoseconds/1e9
+                self.recorder.record(frame)
+                # return
+
+            # Otherwise keep reorienting toward desired yaw
+            zch.publish_reorientation(
+                self.get_current_timestamp_time(),
+                self.trajectory_setpoint_publisher,
+                yaw_des
+            )
+
+            # optional: lightweight telemetry
+            if (int(t_tr*10) % 10) == 0:  # ~10 Hz print limit
+                print(f"[REORIENT] yaw_cur={np.degrees(yaw_cur):.1f}°, yaw_des={np.degrees(yaw_des):.1f}°, err={np.degrees(yaw_err):.1f}°")
+
             self.recorder.record(frame)
 
         else:
