@@ -143,7 +143,7 @@ class GroundedSAMHFModel:
         sam_model_id: str = "facebook/sam-vit-base",
         device: Optional[str] = None,
         box_threshold: float = 0.35,
-        text_threshold: float = 0.25,
+        text_threshold: float = 0.80,
         mask_iou_threshold: float = 0.0,     # keep all SAM proposals by default
         overlay_alpha: float = 0.45,
         return_patches: bool = True,

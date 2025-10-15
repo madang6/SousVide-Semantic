@@ -14,6 +14,10 @@ from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import UInt8, String, Bool
 from sensor_msgs.msg import Image
 from sensor_msgs.msg import CompressedImage
+from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Float32
+import math
+
 from cv_bridge import CvBridge
 
 import sousvide.flight.vision_preprocess_groundedsam as vpg
@@ -83,6 +87,8 @@ class OffboardHelper(Node):
         self.latest_rgb = None
         self.latest_depth = None
 
+        self.latest_yaw = 0.0  # radians
+
         # ---------- Keyboard: line-edit only ----------
         self._orig_tty = termios.tcgetattr(sys.stdin)
         tty.setcbreak(sys.stdin.fileno())
@@ -102,6 +108,12 @@ class OffboardHelper(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             history=HistoryPolicy.KEEP_LAST,
             depth=1
+        )
+        self.qos_pose = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
         )
 
         # ---------- Vision model ----------
@@ -134,6 +146,19 @@ class OffboardHelper(Node):
             qos_profile_sensor_data
         )
         self.get_logger().info(f"Subscribing to COMPRESSED RGB: {self.rgb_sub}")
+
+        # Subscribe to drone pose
+        self.pose_sub = self.create_subscription(
+            PoseStamped,
+            f'{self.drone_prefix}/offboard_helper/pose',
+            self._pose_cb,
+            self.qos_pose
+        )
+
+        # Publish yaw when we send COMPLETE (kept separate for minimal changes)
+        self.yaw_pub = self.create_publisher(
+            Float32, f'{self.drone_prefix}/offboard_helper/yaw', self.qos_cmd
+        )
 
         # ---------- Publishers ----------
         self.state_cmd_pub = self.create_publisher(
@@ -242,6 +267,15 @@ class OffboardHelper(Node):
         if bgr is not None:
             bgr = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             self.latest_rgb = bgr
+    
+    def _pose_cb(self, msg: PoseStamped):
+        qx = msg.pose.orientation.x
+        qy = msg.pose.orientation.y
+        qz = msg.pose.orientation.z
+        qw = msg.pose.orientation.w
+        # yaw from quaternion (NED): atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
+        self.latest_yaw = math.atan2(2.0*(qw*qz + qx*qy), 1.0 - 2.0*(qy*qy + qz*qz))
+
 
     # ---------- Main loop ----------
     def _loop(self):
@@ -273,10 +307,16 @@ class OffboardHelper(Node):
             proximity_ok = self._simple_proximity_check(self.latest_depth, max_depth=0.6, frac=0.04)
 
         if present and proximity_ok and not self.reported:
-            self._publish_diag(f'Found target for query="{query}" → sending COMPLETE + query')
+            self._publish_diag(f'Found target for query="{query}" → sending COMPLETE + query + yaw')
             self._send_state_cmd(HelperState.COMPLETE)
             self.query_pub.publish(String(data=query))
+            self.yaw_pub.publish(Float32(data=float(self.latest_yaw)))  # radians
             self.reported = True
+        # if present and proximity_ok and not self.reported:
+        #     self._publish_diag(f'Found target for query="{query}" → sending COMPLETE + query')
+        #     self._send_state_cmd(HelperState.COMPLETE)
+        #     self.query_pub.publish(String(data=query))
+        #     self.reported = True
 
         # Record Mask:
         if overlay is not None:
