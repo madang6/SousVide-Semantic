@@ -538,10 +538,20 @@ def publish_velocity_hold(timestamp: int, traj_sp_pub) -> None:
     ts.yawspeed     = float('nan')
     traj_sp_pub.publish(ts)
 
+# def publish_velocity_and_altitude_hold(timestamp: int, pos_hold_x: float, pos_hold_y: float, alt_hold: float, traj_sp_pub) -> None:
+#     ts = TrajectorySetpoint(timestamp=timestamp)
+#     ts.velocity     = [0.0, 0.0, float('nan')]     # hold zero velocity
+#     ts.position     = [float(pos_hold_x), float(pos_hold_y), float(alt_hold)]
+#     ts.acceleration = [float('nan')]*3
+#     ts.jerk         = [float('nan')]*3
+#     ts.yaw          = float('nan')
+#     ts.yawspeed     = float('nan')
+#     traj_sp_pub.publish(ts)
+
 def publish_velocity_and_altitude_hold(timestamp: int, alt_hold: float, traj_sp_pub) -> None:
     ts = TrajectorySetpoint(timestamp=timestamp)
     ts.velocity     = [0.0, 0.0, float('nan')]     # hold zero velocity
-    ts.position     = [float('nan'), float('nan'), alt_hold]#[float('nan')]*3
+    ts.position     = [float('nan'), float('nan'), float(alt_hold)]
     ts.acceleration = [float('nan')]*3
     ts.jerk         = [float('nan')]*3
     ts.yaw          = float('nan')
@@ -560,6 +570,22 @@ def publish_velocity_hold_with_yaw_rate(timestamp: int,
     ts.yaw          = float('nan')
     ts.yawspeed     = yaw_rate  # set yaw speed to desired rate
     traj_sp_pub.publish(ts)
+
+# def publish_velocity_and_altitude_hold_with_yaw_rate(timestamp: int,
+#                                         alt_hold: float,
+#                                         pos_hold_x: float,
+#                                         pos_hold_y: float,
+#                                         yaw_rate: float,
+#                                         traj_sp_pub) -> None:
+#     # zero-velocity setpoint → holds X/Y/Z
+#     ts = TrajectorySetpoint(timestamp=timestamp)
+#     ts.velocity     = [0.0, 0.0, float('nan')]     # hold zero velocity
+#     ts.position     = [float(pos_hold_x), float(pos_hold_y), float(alt_hold)]
+#     ts.acceleration = [float('nan')] * 3
+#     ts.jerk         = [float('nan')] * 3
+#     ts.yaw          = float('nan')
+#     ts.yawspeed     = yaw_rate  # set yaw speed to desired rate
+#     traj_sp_pub.publish(ts)
 
 def publish_velocity_and_altitude_hold_with_yaw_rate(timestamp: int,
                                         alt_hold: float,

@@ -1254,134 +1254,218 @@ def warp_mask(prev_rgb, curr_rgb, prev_mask):
 def check_depth_similarity_overlap(
     depth_image: np.ndarray,
     similarity_image: np.ndarray,
-    max_depth: float = 1000.0,
-    similarity_thresh: float = 0.7,        # used only if you switch from percentile to absolute
-    overlap_thresh: float = 0.8,
+    max_depth: float = 2000.0,
+    overlap_thresh: float = 0.5,          # require this fraction of sim region to be near
+    use_top_percentile: float = 50.0,     # top-P% similarity defines the sim region
     return_visualization: bool = True,
-    use_top_percentile: float = 90.0        # percentile for high-sim region (ignore NaNs)
 ) -> Union[bool, Tuple[bool, dict]]:
     """
-    Check if there's significant overlap between high similarity regions and close-range depth regions.
-    Robust to NaN/inf in both depth and similarity images.
-
-    Returns:
-        If return_visualization is False:
-            bool
-        If return_visualization is True:
-            (bool, {'depth': BGR, 'similarity': BGR, 'overlap': BGR,
-                    'depth_mask': 0/255, 'sim_mask': 0/255})
+    True if a sufficient fraction of the high-similarity region is within the near-depth mask.
+    Decision: |depth ∩ sim| / |sim| > overlap_thresh
+    All returned masks/images are 3-channel BGR for recording/debugging.
     """
-    # ---- Validate shapes ----
-    if depth_image.shape[:2] != similarity_image.shape[:2]:
-        raise ValueError("depth_image and similarity_image must have same HxW.")
+    h, w = depth_image.shape[:2]
+    if similarity_image.shape[:2] != (h, w):
+        raise ValueError("depth_image and similarity_image must have the same HxW.")
 
-    # ---- Validity masks ----
+    # ---------- helpers ----------
+    def to_bgr_mask(mask_bool: np.ndarray) -> np.ndarray:
+        m = (mask_bool.astype(np.uint8) * 255)
+        return cv2.cvtColor(m, cv2.COLOR_GRAY2BGR)
+
+    def colormap_valid(img: np.ndarray, valid: np.ndarray, cmap) -> np.ndarray:
+        if not np.any(valid):
+            return np.zeros((h, w, 3), dtype=np.uint8)
+        vals = img[valid].astype(np.float32)
+        lo, hi = np.nanpercentile(vals, [1.0, 99.0])
+        if hi <= lo: hi = lo + 1e-6
+        norm = (np.clip(img.astype(np.float32), lo, hi) - lo) / (hi - lo)
+        norm[~valid] = 0.0
+        u8 = np.clip(norm * 255.0, 0, 255).astype(np.uint8)
+        return cv2.applyColorMap(u8, cmap)
+
+    # ---------- validity ----------
     valid_depth = np.isfinite(depth_image) & (depth_image > 0)
     valid_sim   = np.isfinite(similarity_image)
 
-    # If nothing valid in depth, we can't conclude overlap
-    if not np.any(valid_depth):
+    if not np.any(valid_depth) or not np.any(valid_sim):
         if return_visualization:
-            h, w = depth_image.shape[:2]
-            zeros_bgr = np.zeros((h, w, 3), dtype=np.uint8)
-            zeros_u8  = np.zeros((h, w), dtype=np.uint8)
+            zeros = np.zeros((h, w, 3), dtype=np.uint8)
             return False, {
-                'depth': zeros_bgr, 'similarity': zeros_bgr, 'overlap': zeros_bgr,
-                'depth_mask': zeros_u8, 'sim_mask': zeros_u8
+                "depth": zeros, "similarity": zeros, "overlap": zeros,
+                "depth_mask": zeros, "sim_top_mask": zeros
             }
         return False
 
-    # ---- Depth mask (close range) ----
+    # ---------- masks ----------
     depth_mask = valid_depth & (depth_image < max_depth)
 
-    # ---- Similarity mask (top percentile over valid pixels) ----
-    # You can switch to an absolute threshold by uncommenting the next line and commenting percentile logic.
-    # sim_mask = (similarity_image >= similarity_thresh) & valid_sim
-    if np.any(valid_sim):
-        perc = float(use_top_percentile)
-        perc = min(max(perc, 0.0), 100.0)
-        sim_thresh = np.nanpercentile(similarity_image[valid_sim], perc)
-        sim_mask = (similarity_image >= sim_thresh) & valid_sim
-    else:
-        sim_mask = np.zeros_like(depth_mask, dtype=bool)
+    perc = float(np.clip(use_top_percentile, 0.0, 100.0))
+    sim_thresh = np.nanpercentile(similarity_image[valid_sim], perc)
+    sim_top_mask = (similarity_image >= sim_thresh) & valid_sim
 
-    # ---- Overlap computation ----
-    overlap = depth_mask & sim_mask
-    overlap_pixels = int(np.sum(overlap))
-    depth_pixels   = int(np.sum(depth_mask))
-    sim_pixels     = int(np.sum(sim_mask))
-    min_pixels     = min(depth_pixels, sim_pixels)
+    overlap = depth_mask & sim_top_mask
+    sim_pixels = int(sim_top_mask.sum())
+    overlap_pixels = int(overlap.sum())
 
-    if min_pixels == 0:
-        if return_visualization:
-            # Create empty visualizations
-            h, w = depth_image.shape[:2]
-            zeros_bgr = np.zeros((h, w, 3), dtype=np.uint8)
-            return False, {
-                'depth': zeros_bgr,
-                'similarity': zeros_bgr,
-                'overlap': zeros_bgr,
-                'depth_mask': (depth_mask.astype(np.uint8) * 255),
-                'sim_mask': (sim_mask.astype(np.uint8) * 255)
-            }
-        return False
-
-    overlap_fraction = overlap_pixels / float(min_pixels)
-    result = overlap_fraction > overlap_thresh
+    # Decision: fraction of the semantic region that is near
+    # overlap_fraction = (overlap_pixels / float(sim_pixels)) if sim_pixels > 0 else 0.0
+    # result = overlap_fraction > overlap_thresh
+    # result = overlap_pixels > 0.1*sim_pixels
+    result = overlap.sum() > 0.1*(valid_depth & valid_sim).sum()
 
     if not return_visualization:
         return bool(result)
 
-    # -------- Visualizations (robust to NaNs/Infs) --------
-    h, w = depth_image.shape[:2]
+    # ---------- visualizations (3-channel) ----------
+    depth_bgr      = colormap_valid(depth_image, valid_depth, cv2.COLORMAP_JET)
+    similarity_bgr = colormap_valid(similarity_image, valid_sim, cv2.COLORMAP_VIRIDIS)
+    depth_mask_bgr   = to_bgr_mask(depth_mask)
+    sim_top_mask_bgr = to_bgr_mask(sim_top_mask)
 
-    # Depth viz: normalize only valid pixels
-    depth_viz = np.zeros((h, w), dtype=np.uint8)
-    if np.any(valid_depth):
-        d_valid_vals = depth_image[valid_depth].astype(np.float32)
-        # Clip range using robust percentiles to avoid outliers in the colormap
-        d_min = float(np.nanpercentile(d_valid_vals, 1.0))
-        d_max = float(np.nanpercentile(d_valid_vals, 99.0))
-        if d_max <= d_min:
-            d_max = d_min + 1e-6
-        d_norm = (np.clip(depth_image.astype(np.float32), d_min, d_max) - d_min) / (d_max - d_min)
-        d_norm[~valid_depth] = 0.0
-        depth_viz = np.clip(d_norm * 255.0, 0, 255).astype(np.uint8)
-    depth_viz_bgr = cv2.applyColorMap(depth_viz, cv2.COLORMAP_JET)
-
-    # Similarity viz: normalize only valid similarity pixels
-    sim_viz = np.zeros((h, w), dtype=np.uint8)
-    if np.any(valid_sim):
-        s_valid_vals = similarity_image[valid_sim].astype(np.float32)
-        s_min = float(np.nanpercentile(s_valid_vals, 1.0))
-        s_max = float(np.nanpercentile(s_valid_vals, 99.0))
-        if s_max <= s_min:
-            s_max = s_min + 1e-6
-        s_norm = (np.clip(similarity_image.astype(np.float32), s_min, s_max) - s_min) / (s_max - s_min)
-        s_norm[~valid_sim] = 0.0
-        sim_viz = np.clip(s_norm * 255.0, 0, 255).astype(np.uint8)
-    sim_viz_bgr = cv2.applyColorMap(sim_viz, cv2.COLORMAP_VIRIDIS)
-
-    # Overlap viz: draw green over depth colormap where overlap is True
-    overlap_viz = depth_viz_bgr.copy()
-    overlap_u8 = overlap.astype(np.uint8)
-    overlap_viz[overlap_u8 == 1] = [0, 255, 0]
-
-    # 0/255 masks for inspection/saving
-    depth_mask_viz = (depth_mask.astype(np.uint8) * 255)
-    sim_mask_viz   = (sim_mask.astype(np.uint8) * 255)
+    overlap_bgr = depth_bgr.copy()
+    overlap_bgr[overlap] = [0, 255, 0]  # highlight intersection in green
 
     return bool(result), {
-        'depth': depth_viz_bgr,
-        'similarity': sim_viz_bgr,
-        'overlap': overlap_viz,
-        'depth_mask': depth_mask_viz,
-        'sim_mask': sim_mask_viz
+        "depth": depth_bgr,
+        "similarity": similarity_bgr,
+        "overlap": overlap_bgr,
+        "depth_mask": depth_mask_bgr,
+        "sim_top_mask": sim_top_mask_bgr,
     }
+
+# def check_depth_similarity_overlap(
+#     depth_image: np.ndarray,
+#     similarity_image: np.ndarray,
+#     max_depth: float = 500.0,
+#     similarity_thresh: float = 0.7,        # used only if you switch from percentile to absolute
+#     overlap_thresh: float = 0.5,
+#     return_visualization: bool = True,
+#     use_top_percentile: float = 90.0        # percentile for high-sim region (ignore NaNs)
+# ) -> Union[bool, Tuple[bool, dict]]:
+#     """
+#     Check if there's significant overlap between high similarity regions and close-range depth regions.
+#     Robust to NaN/inf in both depth and similarity images.
+
+#     Returns:
+#         If return_visualization is False:
+#             bool
+#         If return_visualization is True:
+#             (bool, {'depth': BGR, 'similarity': BGR, 'overlap': BGR,
+#                     'depth_mask': 0/255, 'sim_mask': 0/255})
+#     """
+#     # ---- Validate shapes ----
+#     if depth_image.shape[:2] != similarity_image.shape[:2]:
+#         raise ValueError("depth_image and similarity_image must have same HxW.")
+
+#     # ---- Validity masks ----
+#     valid_depth = np.isfinite(depth_image) & (depth_image > 0)
+#     valid_sim   = np.isfinite(similarity_image)
+
+#     # If nothing valid in depth, we can't conclude overlap
+#     if not np.any(valid_depth):
+#         if return_visualization:
+#             h, w = depth_image.shape[:2]
+#             zeros_bgr = np.zeros((h, w, 3), dtype=np.uint8)
+#             zeros_u8  = np.zeros((h, w), dtype=np.uint8)
+#             return False, {
+#                 'depth': zeros_bgr, 'similarity': zeros_bgr, 'overlap': zeros_bgr,
+#                 'depth_mask': zeros_u8, 'sim_mask': zeros_u8
+#             }
+#         return False
+
+#     # ---- Depth mask (close range) ----
+#     depth_mask = valid_depth & (depth_image < max_depth)
+
+#     # ---- Similarity mask (top percentile over valid pixels) ----
+#     # sim_mask = (similarity_image >= similarity_thresh) & valid_sim
+#     if np.any(valid_sim):
+#         perc = float(use_top_percentile)
+#         perc = min(max(perc, 0.0), 100.0)
+#         sim_thresh = np.nanpercentile(similarity_image[valid_sim], perc)
+#         sim_mask = (similarity_image >= sim_thresh) & valid_sim
+#     else:
+#         sim_mask = np.zeros_like(depth_mask, dtype=bool)
+
+#     # ---- Overlap computation ----
+#     overlap = depth_mask & sim_mask
+#     overlap_pixels = int(np.sum(overlap))
+#     depth_pixels   = int(np.sum(depth_mask))
+#     sim_pixels     = int(np.sum(sim_mask))
+#     min_pixels     = min(depth_pixels, sim_pixels)
+
+#     if min_pixels == 0:
+#         if return_visualization:
+#             # Create empty visualizations
+#             h, w = depth_image.shape[:2]
+#             zeros_bgr = np.zeros((h, w, 3), dtype=np.uint8)
+#             return False, {
+#                 'depth': zeros_bgr,
+#                 'similarity': zeros_bgr,
+#                 'overlap': zeros_bgr,
+#                 'depth_mask': (depth_mask.astype(np.uint8) * 255),
+#                 'sim_mask': (sim_mask.astype(np.uint8) * 255)
+#             }
+#         return False
+
+#     overlap_fraction = overlap_pixels / float(sim_pixels)
+#     # print(f"[DBG] Overlap fraction: {overlap_fraction:.3f} (thresh {overlap_thresh})")
+#     result = overlap_fraction > overlap_thresh
+
+#     if not return_visualization:
+#         return bool(result)
+
+#     # -------- Visualizations (robust to NaNs/Infs) --------
+#     h, w = depth_image.shape[:2]
+
+#     # Depth viz: normalize only valid pixels
+#     depth_viz = np.zeros((h, w), dtype=np.uint8)
+#     if np.any(valid_depth):
+#         d_valid_vals = depth_image[valid_depth].astype(np.float32)
+#         # Clip range using robust percentiles to avoid outliers in the colormap
+#         d_min = float(np.nanpercentile(d_valid_vals, 1.0))
+#         d_max = float(np.nanpercentile(d_valid_vals, 99.0))
+#         if d_max <= d_min:
+#             d_max = d_min + 1e-6
+#         d_norm = (np.clip(depth_image.astype(np.float32), d_min, d_max) - d_min) / (d_max - d_min)
+#         d_norm[~valid_depth] = 0.0
+#         depth_viz = np.clip(d_norm * 255.0, 0, 255).astype(np.uint8)
+#     depth_viz_bgr = cv2.applyColorMap(depth_viz, cv2.COLORMAP_JET)
+
+#     # Similarity viz: normalize only valid similarity pixels
+#     sim_viz = np.zeros((h, w), dtype=np.uint8)
+#     if np.any(valid_sim):
+#         s_valid_vals = similarity_image[valid_sim].astype(np.float32)
+#         s_min = float(np.nanpercentile(s_valid_vals, 1.0))
+#         s_max = float(np.nanpercentile(s_valid_vals, 99.0))
+#         if s_max <= s_min:
+#             s_max = s_min + 1e-6
+#         s_norm = (np.clip(similarity_image.astype(np.float32), s_min, s_max) - s_min) / (s_max - s_min)
+#         s_norm[~valid_sim] = 0.0
+#         sim_viz = np.clip(s_norm * 255.0, 0, 255).astype(np.uint8)
+#     sim_viz_bgr = cv2.applyColorMap(sim_viz, cv2.COLORMAP_VIRIDIS)
+
+#     # Overlap viz: draw green over depth colormap where overlap is True
+#     overlap_viz = depth_viz_bgr.copy()
+#     overlap_u8 = overlap.astype(np.uint8)
+#     overlap_viz[overlap_u8 == 1] = [0, 255, 0]
+
+#     # 0/255 masks for inspection/saving
+#     depth_mask_viz = (depth_mask.astype(np.uint8) * 255)
+#     depth_mask_viz = cv2.cvtColor(depth_mask_viz, cv2.COLOR_GRAY2BGR)  # Convert to 3-channel
+#     sim_mask_viz   = (sim_mask.astype(np.uint8) * 255)
+
+#     return bool(result), {
+#         'depth': depth_viz_bgr,
+#         'similarity': sim_viz_bgr,
+#         'overlap': overlap_viz,
+#         'depth_mask': depth_mask_viz,
+#         'sim_mask': sim_mask_viz
+#     }
 
 def close_enough_for_collision(
     depth_image: np.ndarray,
-    max_depth: float = 200,
+    max_depth: float = 1500,
     collision_fraction: float = 0.10,
 ) -> Tuple[bool, np.ndarray]:
     """
@@ -1400,6 +1484,7 @@ def close_enough_for_collision(
 
     # Boolean mask of "too close"
     close_mask_bool = (depth_image < max_depth) & valid
+    # print(f"[DBG] average depth of valid pixels: {depth_image[valid].mean():.1f}")
     # print(f"[DBG] close_enough_for_collision: {close_mask_bool.sum()} close pixels out of {valid.sum()} valid pixels")
 
     # Fraction of close pixels over valid pixels
